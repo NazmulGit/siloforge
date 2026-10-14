@@ -118,9 +118,20 @@ fn provider_from_row(r: &rusqlite::Row<'_>, key: &[u8; 32]) -> Value {
         };
         o.insert("api_key_masked".into(), Value::String(masked));
         o.insert("has_api_key".into(), Value::Bool(has));
-        if !o.get("headers").is_some_and(Value::is_object) {
-            o.insert("headers".into(), json!({}));
-        }
+        // L-07: header values are sealed at rest and masked in every response.
+        let masked_headers: serde_json::Map<String, Value> = o
+            .get("headers")
+            .and_then(Value::as_object)
+            .map(|h| {
+                h.iter()
+                    .filter_map(|(k, v)| {
+                        let plain = sf_core::crypto::open_header_value(key, v.as_str()?);
+                        Some((k.clone(), Value::String(mask_secret(&plain))))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        o.insert("headers".into(), Value::Object(masked_headers));
     }
     v
 }
@@ -176,6 +187,63 @@ fn check_headers(h: &Option<Value>) -> ApiResult<Option<String>> {
         }
         Some(_) => Err(ApiError::bad("headers must be an object of strings")),
     }
+}
+
+/// L-07: seal header values. A value equal to the masked form of the stored value (a client
+/// echoing back what it was shown) keeps the stored secret.
+fn seal_headers(st: &AppState, json_text: &str, existing: Option<&str>) -> ApiResult<String> {
+    let mut v: Value = serde_json::from_str(json_text).unwrap_or_else(|_| json!({}));
+    let old: Value = existing
+        .and_then(|e| serde_json::from_str(e).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(o) = v.as_object_mut() {
+        for (k, val) in o.iter_mut() {
+            let (Some(new), Some(prev)) = (val.as_str(), old.get(k).and_then(Value::as_str)) else {
+                continue;
+            };
+            let prev_plain = sf_core::crypto::open_header_value(&st.secret_key, prev);
+            if new != prev_plain && new == mask_secret(&prev_plain) {
+                *val = Value::String(prev.to_string());
+            }
+        }
+    }
+    Ok(sf_core::crypto::seal_header_values(&st.secret_key, &v)?.to_string())
+}
+
+/// L-07: seal any legacy plaintext provider header values in place (v1 imports, pre-2.0.2).
+pub async fn seal_legacy_provider_headers(st: &AppState) -> sf_core::Result<usize> {
+    let key = st.secret_key.clone();
+    st.db
+        .write(move |t| {
+            let rows: Vec<(String, String)> = {
+                let mut q = t
+                    .prepare(
+                        "SELECT id, headers FROM model_providers WHERE headers NOT IN ('', '{}')",
+                    )
+                    .map_err(err)?;
+                q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(err)?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(err)?
+            };
+            let mut n = 0usize;
+            for (id, h) in rows {
+                let Ok(v) = serde_json::from_str::<Value>(&h) else {
+                    continue;
+                };
+                let sealed = sf_core::crypto::seal_header_values(&key, &v)?.to_string();
+                if sealed != h && v != serde_json::from_str::<Value>(&sealed).unwrap_or_default() {
+                    n += t
+                        .execute(
+                            "UPDATE model_providers SET headers=?2 WHERE id=?1 AND headers=?3",
+                            params![id, sealed, h],
+                        )
+                        .map_err(err)?;
+                }
+            }
+            Ok(n)
+        })
+        .await
 }
 
 fn normalize_base_url(u: &str) -> ApiResult<String> {
@@ -297,6 +365,7 @@ pub async fn create_provider(
     check_kind(&b.kind)?;
     let base = normalize_base_url(&b.base_url)?;
     let headers = check_headers(&b.headers)?.unwrap_or_else(|| "{}".into());
+    let headers = seal_headers(&st, &headers, None)?;
     let enc = encrypt(&st, b.api_key.as_deref().unwrap_or(""))?;
     let id = sf_core::new_id();
     let label = b.label.unwrap_or_else(|| name.clone());
@@ -384,6 +453,25 @@ pub async fn patch_provider(
     }
     let base = b.base_url.as_deref().map(normalize_base_url).transpose()?;
     let headers = check_headers(&b.headers)?;
+    let headers = match headers {
+        Some(h) => {
+            let id3 = id.clone();
+            let existing: Option<String> = st
+                .db
+                .read(move |c| {
+                    c.query_row(
+                        "SELECT headers FROM model_providers WHERE id=?1",
+                        [&id3],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(err)
+                })
+                .await?;
+            Some(seal_headers(&st, &h, existing.as_deref())?)
+        }
+        None => None,
+    };
     let enc = b.api_key.as_deref().map(|k| encrypt(&st, k)).transpose()?;
     let (id2, key) = (id.clone(), st.secret_key.clone());
     let key_changed = enc.is_some();
@@ -735,6 +823,24 @@ pub async fn patch_model(
     let v = st
         .db
         .write(move |t| {
+            // B11: an embed model that is a rung of an embed chain must keep the index width.
+            if let Some(d) = b.dim
+                && d != INDEX_DIM
+            {
+                let chained: i64 = t
+                    .query_row(
+                        "SELECT count(*) FROM model_chain_rungs r JOIN model_chains c ON c.id = r.chain_id
+                          WHERE r.model_id = ?1 AND c.role = 'embed'",
+                        [&id2],
+                        |r| r.get(0),
+                    )
+                    .map_err(err)?;
+                if chained > 0 {
+                    return Err(sf_core::Error::bad(format!(
+                        "this model is a rung of an embed chain; dim must stay {INDEX_DIM} (remove it from the chain first)"
+                    )));
+                }
+            }
             let n = t
                 .execute(
                     "UPDATE models SET model_id=coalesce(?2,model_id), label=coalesce(?3,label),

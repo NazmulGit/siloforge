@@ -224,6 +224,29 @@ async fn plan_suggests_valid_unique_edges_and_respects_rejections() {
         shared, 0,
         "re-plan: two native suggestions share a paragraph"
     );
+    // #6: an editor links a pending pair by hand -> the next plan drops that suggestion.
+    let (pend_id, pend_src, pend_tgt, ..) = suggested(&e, &site).await[0].clone();
+    exec(
+        &e.db,
+        "INSERT INTO link_edges(id, site_id, source_post_id, target_post_id, anchor, status, origin)
+         VALUES('hand-made', ?1, ?2, ?3, 'editor typed this', 'applied', 'existing')",
+        vec![site.clone(), pend_src.clone(), pend_tgt.clone()],
+    )
+    .await;
+    let st4 = run_job(
+        &e,
+        JobKind::Plan,
+        &site,
+        json!({"topology": "bidirectional"}),
+    )
+    .await;
+    let after = suggested(&e, &site).await;
+    assert!(
+        !after
+            .iter()
+            .any(|x| x.0 == pend_id || (x.1 == pend_src && x.2 == pend_tgt)),
+        "pending suggestion of a now-linked pair survived: {st4}"
+    );
 }
 
 /// Approve up to `n` in-paragraph edges from distinct-or-same sources; returns them.
@@ -938,6 +961,8 @@ async fn keyword_link_link_health_and_audit() {
     let st = run_job(&e, JobKind::KeywordLink, &site, json!({})).await;
     let created = st["created"].as_i64().unwrap();
     assert!((1..=2).contains(&created), "{st}");
+    // #20: the site's max_links_per_post (10 in SITE_SETTINGS) caps keyword edges per source.
+    assert_eq!(st["max_per_source"], 10, "{st}");
     let kl = q_rows(&e.db, "SELECT anchor, score_breakdown, paragraph_id FROM link_edges WHERE origin='keyword_linker'", vec![]).await;
     assert!(kl.iter().all(|r| r[0] == "road bike saddles"
         && s(&r[1]).contains("keyword_rule")

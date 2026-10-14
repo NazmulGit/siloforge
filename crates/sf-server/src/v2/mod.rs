@@ -13,6 +13,7 @@
 //! | `GET /errors`, `POST /errors/{fp}/resolve` | admin |
 //! | `GET/POST /backups`, `GET /backups/{id}/download`, `POST /backups/{id}/verify`, `DELETE /backups/{id}` | admin |
 //! | `GET/POST /tokens`, `DELETE /tokens/{id}` | user (own tokens) |
+//! | `POST /auth/logout-all` | user session (ends all sessions, revokes own API tokens; I-02) |
 //! | `GET /audit?limit=` | admin |
 //! | `GET /mcp` (alias `/mcp/info`) | user |
 
@@ -66,6 +67,7 @@ pub fn router() -> Router<AppState> {
         .route("/backups/{id}/verify", post(backups::verify))
         .route("/tokens", get(tokens::list).post(tokens::create))
         .route("/tokens/{id}", axum::routing::delete(tokens::revoke))
+        .route("/auth/logout-all", post(tokens::logout_all))
         .route("/audit", get(misc::audit))
         .route("/mcp", get(misc::mcp_info))
         .route("/mcp/info", get(misc::mcp_info))

@@ -3,6 +3,36 @@
 All notable changes to SiloForge. Versions follow [SemVer](https://semver.org). v2 is a rewrite in Rust; the v1
 history (TypeScript, Docker) is summarised at the end.
 
+## [2.0.2] - 2026-10-14
+
+Completes the open items from the v2 audits. v1 is archived (containers removed, data kept for rollback).
+
+### Added
+- `GSC_CREDENTIALS_JSON` (env or secrets.env, inline JSON or file path) as the fallback Search Console credential for
+  sites without their own; used by the gsc job, the audit and `POST /api/v2/sites/{id}/gsc/sync`. Never logged.
+- `POST /api/v2/auth/logout-all` (revokes all of the caller's sessions).
+- `siloforge vacuum` (compact the database; server must be stopped). New databases use incremental auto-vacuum.
+- Settings → Linking Rules → Targets: money pages, click-depth roots, inbound-link cap. Site setting `anchor_semantic_min`.
+- Server 5xx errors are recorded on the Errors page. `paragraph_hash` in plugin suggestions.
+
+### Changed
+- Plugin site keys are stored hashed (existing keys keep working). bcrypt cost 12 with rehash on login.
+- First-run registration only from localhost. A site with 100 queued jobs gets HTTP 429.
+- Anchors: site-wide capitalisation detects brand words (incl. short ALL-CAPS brands); weak object phrases are
+  penalised; in-paragraph picks below similarity `anchor_semantic_min` (0.15) fall back to a keyword/title anchor.
+  Golden set 109 cases.
+- Keyword rules respect the site's max links per post; plan drops pending suggestions whose pair got linked meanwhile.
+- Dashboard shows "unknown" (not 0) before link health has ever run. Audit "plan ready" notifications show real counts.
+
+### Fixed
+- `/?p=N` plain-permalink posts were treated as the home page. k-means++ draw. `init --force` kept master keys.
+- Secret redaction in Debug output and error messages. Remaining security Lows L-04/05/06/07/09/10/11/14/17 and
+  reliability items #5/#6/#20/#23/#24, B9, B11, G2-9/14/15/16/17; justified non-fixes are documented in docs/testing.
+
+### Operations
+- Keepalive now launches `conhost --headless siloforge.exe ... serve` (no window); the VBS keeper is retired.
+- Hermes gateway route `siloforge` is active: SiloForge notifications reach Telegram.
+
 ## [2.0.1] - 2026-10-14
 
 First maintenance release after the production cutover (v2 live on 127.0.0.1:8600/8601 since 2026-10-14 10:16).

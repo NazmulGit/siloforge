@@ -22,6 +22,74 @@ pub struct Config {
     pub crawl: CrawlCfg,
     pub backup: BackupCfg,
     pub monitor: MonitorCfg,
+    /// Never serialised (secret), see [`GscCfg`].
+    #[serde(skip_serializing)]
+    pub gsc: GscCfg,
+}
+
+/// Install-wide Google Search Console fallback (v1 parity, G2-5): `GSC_CREDENTIALS_JSON` from the
+/// environment or `secrets.env`, used by the gsc job when a site has no per-site credentials.
+/// The value is a service-account JSON object, or a path to a file holding one. It is a secret:
+/// never serialised, and `Debug` only says whether it is set.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GscCfg {
+    #[serde(skip_serializing)]
+    pub credentials_json: String,
+}
+
+/// L-14: `Debug` for config sections that hold secrets prints the serialised form, which skips
+/// every `#[serde(skip_serializing)]` secret field, so `{:?}` can never leak a key.
+macro_rules! redacted_debug {
+    ($t:ty) => {
+        impl std::fmt::Debug for $t {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let shown = serde_json::to_string(self).unwrap_or_default();
+                write!(f, "{} {shown} (secrets redacted)", stringify!($t))
+            }
+        }
+    };
+}
+redacted_debug!(AuthCfg);
+redacted_debug!(EmbedCfg);
+
+impl std::fmt::Debug for GscCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GscCfg")
+            .field(
+                "credentials_json",
+                &(!self.credentials_json.is_empty()).then_some("<redacted>"),
+            )
+            .finish()
+    }
+}
+
+/// Largest accepted `GSC_CREDENTIALS_JSON` (inline or file), bytes.
+pub const MAX_GSC_CREDENTIALS: usize = 64 * 1024;
+
+impl GscCfg {
+    /// The fallback service-account JSON, if configured and well-formed (a JSON object).
+    /// A value that does not start with `{` is read as a file path. Never logs the value.
+    pub fn fallback_credentials(&self) -> Option<String> {
+        let raw = self.credentials_json.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let text = if raw.starts_with('{') {
+            raw.to_string()
+        } else {
+            let meta = std::fs::metadata(raw).ok()?;
+            if !meta.is_file() || meta.len() > MAX_GSC_CREDENTIALS as u64 {
+                return None;
+            }
+            std::fs::read_to_string(raw).ok()?
+        };
+        if text.len() > MAX_GSC_CREDENTIALS {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+        v.is_object().then(|| v.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +102,7 @@ pub struct ServerCfg {
     pub cors_origins: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AuthCfg {
     #[serde(skip_serializing)]
@@ -63,7 +131,7 @@ pub struct ResourcesCfg {
     pub defer_when_cpu_above: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbedCfg {
     /// Ordered rungs: `remote` (OpenAI-compatible, e.g. OpenRouter), `remote2`, `onnx` (ONNX Runtime CPU/DirectML), `local` (candle, pure Rust).
@@ -158,6 +226,7 @@ impl Default for Config {
             crawl: CrawlCfg::default(),
             backup: BackupCfg::default(),
             monitor: MonitorCfg::default(),
+            gsc: GscCfg::default(),
         }
     }
 }
@@ -376,6 +445,9 @@ impl Config {
         if let Some(v) = get("CRAWL_ALLOW_PRIVATE_HOSTS") {
             self.crawl.allow_private_hosts = matches!(v.as_str(), "1" | "true" | "yes");
         }
+        if let Some(v) = get("GSC_CREDENTIALS_JSON") {
+            self.gsc.credentials_json = v;
+        }
         if let Some(v) = get("SILOFORGE_CPU_THREADS").and_then(|v| v.parse().ok()) {
             self.resources.cpu_threads = v;
         }
@@ -492,9 +564,60 @@ mod tests {
     }
 
     #[test]
+    fn gsc_fallback_from_env_file_is_never_serialised_or_debug_printed() {
+        let dir = std::env::temp_dir().join(format!("sf-core-gsc-{}", crate::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let json =
+            r#"{"type":"service_account","client_email":"a@b.iam","private_key":"SECRET-PEM"}"#;
+        std::fs::write(
+            dir.join("secrets.env"),
+            format!(
+                "GSC_CREDENTIALS_JSON='{json}'
+"
+            ),
+        )
+        .unwrap();
+        let c = Config::load(&dir).unwrap();
+        let got = c.gsc.fallback_credentials().unwrap();
+        assert!(got.contains("a@b.iam"));
+        assert!(!serde_json::to_string(&c).unwrap().contains("SECRET-PEM"));
+        assert!(!format!("{c:?}").contains("SECRET-PEM"));
+        assert!(format!("{:?}", c.gsc).contains("<redacted>"));
+        // A path works too; garbage and non-objects are ignored.
+        let f = dir.join("sa.json");
+        std::fs::write(&f, json).unwrap();
+        let by_path = GscCfg {
+            credentials_json: f.display().to_string(),
+        };
+        assert_eq!(by_path.fallback_credentials(), Some(got));
+        for bad in ["", "  ", "{not json", "[1,2]", "D:/definitely/missing.json"] {
+            let g = GscCfg {
+                credentials_json: bad.into(),
+            };
+            assert!(g.fallback_credentials().is_none(), "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn rejects_weak_secret() {
         let mut c = Config::default();
         c.auth.jwt_secret = "dev-secret-do-not-use".into();
         assert!(c.validate_for_serve().is_err());
+    }
+
+    #[test]
+    fn debug_never_prints_secrets() {
+        let mut c = Config::default();
+        c.auth.jwt_secret = "JWT-SECRET-VALUE-123".into();
+        c.auth.encryption_key = "ENC-KEY-VALUE".into();
+        c.auth.admin_password = "ADMIN-PW-VALUE".into();
+        c.embed.remote_key = "sk-or-REMOTE".into();
+        c.embed.remote_key2 = "sk-or-REMOTE2".into();
+        let d = format!("{c:?}");
+        for leak in ["JWT-SECRET", "ENC-KEY", "ADMIN-PW", "sk-or-REMOTE"] {
+            assert!(!d.contains(leak), "{leak} in {d}");
+        }
+        assert!(d.contains("secrets redacted"));
     }
 }

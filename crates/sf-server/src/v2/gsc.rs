@@ -1,6 +1,7 @@
 //! `POST /api/v2/sites/{id}/gsc/sync`: enqueue a Search Console pull (`gsc` job, G2-2).
 //! User (own sites; admin all). Answers `202 {job_run_id, deduplicated}` like the other enqueue
-//! routes; `409` when the site has no Search Console connection.
+//! routes; `409` when the site has no Search Console connection and no install-wide
+//! `GSC_CREDENTIALS_JSON` fallback is configured (G2-5).
 
 use axum::extract::{Path, State};
 use axum::response::Response;
@@ -24,7 +25,7 @@ pub async fn sync(
         .and_then(|g| g.get("connected"))
         .and_then(Value::as_bool)
         == Some(true);
-    if !connected {
+    if !connected && st.cfg.gsc.fallback_credentials().is_none() {
         return Err(ApiError::conflict(
             "Search Console is not connected for this site",
         ));

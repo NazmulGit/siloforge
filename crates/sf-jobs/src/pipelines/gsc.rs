@@ -435,17 +435,13 @@ pub async fn sync_site(ctx: &JobContext, site: &SiteInfo, client: &GscClient) ->
 }
 
 async fn sync_inner(ctx: &JobContext, site: &SiteInfo, client: &GscClient) -> JobResult<Value> {
-    let Some(creds) = site
-        .secrets
-        .gsc_credentials
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-    else {
+    let Some((creds, source)) = credentials_for(ctx, site) else {
         return Err(JobError::fatal(Error::bad(
-            "Search Console is not connected for this site",
+            "Search Console is not connected for this site (no site credentials, GSC_CREDENTIALS_JSON unset)",
         )));
     };
-    let sa = ServiceAccount::parse(creds)?;
+    tracing::debug!(site = %site.id, source, "gsc credentials");
+    let sa = ServiceAccount::parse(&creds)?;
     let props = properties(site);
     if props.is_empty() {
         return Err(JobError::fatal(Error::bad(
@@ -473,7 +469,26 @@ async fn sync_inner(ctx: &JobContext, site: &SiteInfo, client: &GscClient) -> Jo
             Error::upstream("gsc: no usable Search Console property")
         })));
     };
-    store_rows(ctx, site, &property, rows, truncated).await
+    let mut stats = store_rows(ctx, site, &property, rows, truncated).await?;
+    if let Some(o) = stats.as_object_mut() {
+        o.insert("credentials".into(), json!(source));
+    }
+    Ok(stats)
+}
+
+/// Service-account JSON for `site`: the per-site sealed credentials first, then the
+/// install-wide `GSC_CREDENTIALS_JSON` fallback (v1 parity, G2-5). Returns the source
+/// (`"site"` / `"global"`) next to it; the value itself is never logged.
+pub fn credentials_for(ctx: &JobContext, site: &SiteInfo) -> Option<(String, &'static str)> {
+    if let Some(c) = site
+        .secrets
+        .gsc_credentials
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Some((c.to_string(), "site"));
+    }
+    ctx.cfg.gsc.fallback_credentials().map(|c| (c, "global"))
 }
 
 /// Map rows to posts and replace the site's gsc keywords (exposed for tests).
@@ -648,15 +663,10 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
     Ok(stats)
 }
 
-/// Audit hook: when the site has GSC credentials, pull them. A failure is a job warning
+/// Audit hook: when the site (or the install-wide fallback) has GSC credentials, pull them. A failure is a job warning
 /// (`{ok: false, error}`), never an audit failure. `None` when GSC is not configured.
 pub async fn audit_pull(ctx: &JobContext, job: &Job, site: &SiteInfo) -> JobResult<Option<Value>> {
-    let has = site
-        .secrets
-        .gsc_credentials
-        .as_deref()
-        .is_some_and(|s| !s.trim().is_empty());
-    if !has {
+    if credentials_for(ctx, site).is_none() {
         return Ok(None);
     }
     let client = match GscClient::new() {

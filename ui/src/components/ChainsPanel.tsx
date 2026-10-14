@@ -109,11 +109,10 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
         <span className="info-note-text">
           <b>Chat</b> falls back to the environment (<code className="mono">DARIO_MODEL_PRIMARY</code> /{' '}
           <code className="mono">DARIO_MODEL_FALLBACK</code>) when no chat chain is active — leaving this
-          empty breaks nothing. <b>Embed</b> is different: it has no such env fallback here, so an embed
-          chain either uses the models below or the separate <code className="mono">EMBED_PROVIDER</code>{' '}
-          / <code className="mono">EMBED_CHAIN</code> configuration. Every embed rung must return{' '}
-          <b>{indexDim}-d</b> vectors — the live index is that width and mixing widths corrupts it
-          silently.
+          empty breaks nothing. <b>Embed</b> chains are kept for v1 compatibility but are <b>not used</b> by
+          v2: embeddings always come from the server&apos;s <code className="mono">EMBED_CHAIN</code>{' '}
+          configuration (ONNX / remote / local, all all-MiniLM-L6-v2), so every vector stays comparable.
+          Every embed rung saved here must still return <b>{indexDim}-d</b> vectors.
         </span>
       </div>
 

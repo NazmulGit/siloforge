@@ -1,5 +1,5 @@
 {
- "source": "site63.example pilot (D:/tmp/sf-pilot-home), 2026-10-13, cases 1-61; site47.example + site21.example v1 suggestions with unit/spec fragments or trailing adjectives (D:/tmp/sf-test-home, read-only), 2026-10-14, cases 62+; labels by hand",
+ "source": "site67.example pilot (D:/tmp/sf-pilot-home), 2026-10-13, cases 1-61; site48.example + site26.example v1 suggestions with unit/spec fragments or trailing adjectives (D:/tmp/sf-test-home, read-only), 2026-10-14, cases 62+; labels by hand; v2.0.2 cases 97+: brand capitalisation, generic heads, gerund leads and off-topic (low-cosine) phrases from the pilot DB, site26.example site statistics from D:/tmp/sf-test-home (read-only)",
  "case_counts": [
   [
    "a",
@@ -214,6 +214,11 @@
   [
    "ah",
    59,
+   0
+  ],
+  [
+   "aiii",
+   4,
    0
   ],
   [
@@ -4497,6 +4502,11 @@
    32
   ],
   [
+   "nitro",
+   3,
+   0
+  ],
+  [
    "no",
    19,
    1875
@@ -6472,6 +6482,11 @@
    8
   ],
   [
+   "squirt",
+   26,
+   3
+  ],
+  [
    "stability",
    32,
    522
@@ -7987,6 +8002,11 @@
    680
   ],
   [
+   "worx",
+   25,
+   0
+  ],
+  [
    "wrench",
    136,
    343
@@ -9439,7 +9459,7 @@
   },
   {
    "id": 62,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Drill Driver Kits Under $200 in 2026",
    "keywords": [
     "$200",
@@ -9464,7 +9484,7 @@
   },
   {
    "id": 63,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Compact Impact Drivers for 2026 (Power in Your Palm)",
    "keywords": [
     "compact",
@@ -9487,7 +9507,7 @@
   },
   {
    "id": 64,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "What is the Volume of a Water Bottle? 0.5 liters!",
    "keywords": [
     "bottle",
@@ -9506,11 +9526,12 @@
    "acceptable": [
     "water bottle",
     "40 oz water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 65,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Clever Coffee Creamer Bottle Crafts to Perk Up Your Home",
    "keywords": [
     "bottle",
@@ -9531,11 +9552,12 @@
     "creative crafts",
     "painted vases",
     "snowman decorations"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 66,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "40 Oz to Water Bottle: 1.18 Liters of Water!",
    "keywords": [
     "bottle",
@@ -9555,11 +9577,12 @@
     "water bottle size",
     "water bottle",
     "16.9 oz water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 67,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Carry Water Bottle While Walking? 5 Easy Methods!",
    "keywords": [
     "bottle",
@@ -9577,11 +9600,12 @@
    "old_anchor": "water bottle easy",
    "acceptable": [
     "water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 68,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "Where Can I Buy Diet Coke in Glass Bottles? Top 8 Stores!",
    "keywords": [
     "bottles",
@@ -9599,11 +9623,12 @@
    "old_anchor": "glass bottles available",
    "acceptable": [
     "glass bottles"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 69,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "9 Best Water Bottles With Time Markings for 2026 (Stay Hydrated)",
    "keywords": [
     "bottles",
@@ -9623,11 +9648,12 @@
     "Motivational Water Bottle",
     "time markers",
     "leakproof straw lid"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 70,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "Blender Bottle V1 Vs V2: Which is Better!",
    "keywords": [
     "blender",
@@ -9645,11 +9671,12 @@
    "old_anchor": "ideal Blender Bottle",
    "acceptable": [
     "Blender Bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 71,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "Where Can I Buy Glass Milk Bottles? Top 11 Stores!",
    "keywords": [
     "bottles",
@@ -9668,11 +9695,12 @@
    "acceptable": [
     "blue glass bottles",
     "glass bottles"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 72,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "What is a Spray Bottle Called? 10 Names!",
    "keywords": [
     "bottle",
@@ -9695,11 +9723,12 @@
     "continuous misters",
     "aerosol sprayers",
     "foam sprayers"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 73,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "Hot Water Bottle Vs Heat Pack? Which One Better!",
    "keywords": [
     "bottle",
@@ -9719,11 +9748,12 @@
     "hot water bottle",
     "rectangular hot water bottle",
     "traditional rectangular hot water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 74,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Adorable Small Alcohol Bottle Crafts for Tiny Spaces",
    "keywords": [
     "adorable",
@@ -9745,11 +9775,12 @@
     "edgy cut glass bottle crafts",
     "bottle crafts",
     "wine bottle pendant lighting"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 75,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best Bottled Waters for 2026 Without Microplastics (Truly Pure)",
    "keywords": [
     "bottled",
@@ -9767,11 +9798,12 @@
    "old_anchor": "bottled water available",
    "acceptable": [
     "bottled water"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 76,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Waterproof Labels on Glass Bottles? Quick Steps!",
    "keywords": [
     "bottles",
@@ -9792,11 +9824,12 @@
     "vinyl labels",
     "glass surfaces",
     "clear polyester"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 77,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Keep 5 Gallon Water Jugs from Leaking?",
    "keywords": [
     "gallon",
@@ -9815,11 +9848,12 @@
    "acceptable": [
     "5-gallon water jug caps",
     "water jug caps"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 78,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "18 Eco-Friendly Recycled Beer Bottle Crafts You’ll Love",
    "keywords": [
     "beer",
@@ -9839,11 +9873,12 @@
     "beer bottle caps",
     "beer cap garlands",
     "framed wall art"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 79,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "How Many Oz in a Bottle of Water? Sizes & Capacities!",
    "keywords": [
     "bottle",
@@ -9861,11 +9896,12 @@
    "old_anchor": "oz water bottle strikes",
    "acceptable": [
     "water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 80,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "Fastest Time to Drink a Water Bottle: 5.40 Seconds",
    "keywords": [
     "bottle",
@@ -9884,11 +9920,12 @@
    "acceptable": [
     "water bottle",
     "750ml water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 81,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Wash Hot Water Bottle? 10 Easy Steps",
    "keywords": [
     "bottle",
@@ -9907,11 +9944,12 @@
    "acceptable": [
     "plastic water bottle",
     "500ml plastic water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 82,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "What Can I Use Instead of a Spray Bottle: 10 Alternatives!",
    "keywords": [
     "alternatives",
@@ -9929,11 +9967,12 @@
    "old_anchor": "spray bottle nozzles available",
    "acceptable": [
     "spray bottle nozzles"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 83,
-   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "source_title": "site26.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Seal Acrylic Paint on Water Bottle? 6 Easy Steps",
    "keywords": [
     "acrylic",
@@ -9952,11 +9991,12 @@
    "acceptable": [
     "durable water bottle",
     "water bottle"
-   ]
+   ],
+   "site": "site26"
   },
   {
    "id": 84,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Choose a Cordless Drill Driver",
    "keywords": [
     "choose",
@@ -9981,7 +10021,7 @@
   },
   {
    "id": 85,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "Hex Shank Vs Round Shank Compatibility Chart",
    "keywords": [
     "chart",
@@ -10007,7 +10047,7 @@
   },
   {
    "id": 86,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "Drill Bit Shank Types and Compatibility",
    "keywords": [
     "bit",
@@ -10032,7 +10072,7 @@
   },
   {
    "id": 87,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best High Torque Cordless Drill Drivers for 2026",
    "keywords": [
     "cordless",
@@ -10052,7 +10092,7 @@
   },
   {
    "id": 88,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Corded Die Grinders for 2026 (Power You Can Trust)",
    "keywords": [
     "corded",
@@ -10076,7 +10116,7 @@
   },
   {
    "id": 89,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best 8 Inch Bench Grinders for 2026 (Top Workshop Tools)",
    "keywords": [
     "bench",
@@ -10101,7 +10141,7 @@
   },
   {
    "id": 90,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best 12-Inch Sliding Miter Saws for 2026",
    "keywords": [
     "12-inch",
@@ -10127,7 +10167,7 @@
   },
   {
    "id": 91,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best Impact Drivers with Variable Speeds for 2026",
    "keywords": [
     "drivers",
@@ -10151,7 +10191,7 @@
   },
   {
    "id": 92,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best Cordless Jig Saws for 2026 (Power & Precision)",
    "keywords": [
     "cordless",
@@ -10174,7 +10214,7 @@
   },
   {
    "id": 93,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best 3/8 Inch Cordless Impact Wrenches for 2026",
    "keywords": [
     "3/8",
@@ -10197,7 +10237,7 @@
   },
   {
    "id": 94,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Oil-Free Air Compressors for 2026",
    "keywords": [
     "air",
@@ -10222,7 +10262,7 @@
   },
   {
    "id": 95,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Brushless Impact Driver Kits for 2026",
    "keywords": [
     "brushless",
@@ -10247,7 +10287,7 @@
   },
   {
    "id": 96,
-   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "source_title": "site48.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Brushless Impact Driver Kits for 2026",
    "keywords": [
     "brushless",
@@ -10269,6 +10309,2654 @@
     "extra torque",
     "heavy fastening"
    ]
+  },
+  {
+   "source_title": "site67.example pilot (brand mostly capitalised site-wide)",
+   "target_title": "8 Best Dry Chain Lubes for Mountain Bikes in 2026",
+   "keywords": [
+    "dry chain lubes",
+    "chain lube",
+    "dry lube",
+    "wax lube"
+   ],
+   "paragraph": "For dusty summer trails we keep coming back to Squirt Chain Lube. The wax-based dry lube sheds grit, so your drivetrain stays quiet between cleanings.",
+   "old_anchor": "Squirt Chain Lube",
+   "acceptable": [
+    "wax-based dry lube",
+    "dry lube"
+   ],
+   "id": 97
+  },
+  {
+   "source_title": "site67.example pilot (same brand written in lowercase)",
+   "target_title": "8 Best Dry Chain Lubes for Mountain Bikes in 2026",
+   "keywords": [
+    "dry chain lubes",
+    "chain lube",
+    "dry lube",
+    "wax lube"
+   ],
+   "paragraph": "Plenty of riders swear by squirt lube for long gravel days, but any wax lube needs a clean chain before the first coat.",
+   "old_anchor": "squirt lube",
+   "acceptable": [
+    "wax lube",
+    "clean chain"
+   ],
+   "id": 98
+  },
+  {
+   "source_title": "site67.example pilot (4-letter ALL-CAPS brand)",
+   "target_title": "7 Best Electric Dirt Bikes for Kids in 2026",
+   "keywords": [
+    "electric dirt bikes",
+    "dirt bikes for kids",
+    "kids electric dirt bike",
+    "dirt bike"
+   ],
+   "paragraph": "The AIII Lightweight Electric Dirt Bike gives young riders a quiet 36V motor and three speed modes for backyard tracks.",
+   "old_anchor": "AIII Lightweight Electric Dirt Bike",
+   "acceptable": [
+    "Lightweight Electric Dirt Bike",
+    "Electric Dirt Bike"
+   ],
+   "id": 99
+  },
+  {
+   "source_title": "site48.example (4-letter ALL-CAPS brand + product line)",
+   "target_title": "9 Best Cordless Impact Drivers Under $150",
+   "keywords": [
+    "cordless impact drivers",
+    "impact driver",
+    "cordless impact driver"
+   ],
+   "paragraph": "The WORX Nitro Cordless Impact Driver packs 1,700 in-lbs of torque into a compact brushless body that fits tight engine bays.",
+   "old_anchor": "WORX Nitro Cordless Impact Driver",
+   "acceptable": [
+    "Cordless Impact Driver"
+   ],
+   "id": 100
+  },
+  {
+   "source_title": "site26.example (brand + product line)",
+   "site": "site26",
+   "target_title": "15 Creative Glass Bottle Centerpiece Ideas",
+   "keywords": [
+    "bottle centerpiece",
+    "centerpiece ideas",
+    "glass bottle",
+    "centerpieces"
+   ],
+   "paragraph": "Starbucks Frappuccino bottles make charming mini vases. Peel off the labels and fill the bottles with dried flowers for rustic table centerpieces.",
+   "old_anchor": "Starbucks Frappuccino bottles",
+   "acceptable": [
+    "rustic table centerpieces",
+    "table centerpieces",
+    "mini vases"
+   ],
+   "id": 101
+  },
+  {
+   "source_title": "site26.example (generic head noun)",
+   "site": "site26",
+   "target_title": "How to Paint Wine Bottles With Acrylic Paint",
+   "keywords": [
+    "paint wine bottles",
+    "wine bottles",
+    "acrylic paint"
+   ],
+   "paragraph": "Before you start, wash the wine bottles in warm soapy water. Clear glass bottles take acrylic paint more evenly than tinted ones.",
+   "old_anchor": "Clear glass bottles",
+   "acceptable": [
+    "wine bottles",
+    "acrylic paint"
+   ],
+   "id": 102
+  },
+  {
+   "source_title": "site26.example (gerund after an imperative)",
+   "site": "site26",
+   "target_title": "12 Painted Glass Bottle Ideas for Spring",
+   "keywords": [
+    "painted glass bottles",
+    "glass bottle ideas",
+    "glass bottle"
+   ],
+   "paragraph": "Try painting glass bottle vases in pastel colors for a soft spring look on your windowsill.",
+   "old_anchor": "painting glass bottle vases",
+   "acceptable": [
+    "glass bottle vases",
+    "pastel colors"
+   ],
+   "id": 103
+  },
+  {
+   "source_title": "site26.example (generic head noun)",
+   "site": "site26",
+   "target_title": "7 Best Insulated Water Bottles for Hiking",
+   "keywords": [
+    "insulated water bottles",
+    "water bottles for hiking",
+    "hiking water bottle"
+   ],
+   "paragraph": "On long climbs, a vacuum-insulated water bottle keeps ice for a full day, while cheap souvenir bottles warm up within an hour.",
+   "old_anchor": "cheap souvenir bottles",
+   "acceptable": [
+    "vacuum-insulated water bottle",
+    "water bottle"
+   ],
+   "id": 104
+  },
+  {
+   "source_title": "site67.example pilot (off-topic phrase, cosine 0.014)",
+   "target_title": "11 Best Phone Mounts for Bike in 2026 (Top Amazon Picks)",
+   "keywords": [
+    "top amazon picks",
+    "amazon picks",
+    "phone mounts",
+    "top amazon",
+    "aluminum bike phone",
+    "amazon",
+    "bike",
+    "bike phone holder",
+    "bike phone mount",
+    "bike phone mounts"
+   ],
+   "paragraph": "You’ll dominate the open road and trail with polarized clarity that cuts glare and sharpens every detail—ideal for cyclists, runners, and outdoor enthusiasts who demand precision and style. You get HD brown TAC lenses with full gold coating, blocking UV400, reducing eye strain, and boosting contrast. The lightweight TR90 frame fits snug with an adjustable nose pad, while the high-wrap shield gives wide vision and protection. It’s sleek, sporty, and built for medium to large faces. Whether you’re cycling, driving, or hitting the trail, these unisex shades handle it all. Includes case, cloth, and tester. Ranked #46 in Cycling Glasses, they’re a trusted pick for 2026.",
+   "old_anchor": "open road",
+   "acceptable": [],
+   "semantic": {
+    "open road": 0.014
+   },
+   "id": 105
+  },
+  {
+   "source_title": "site67.example pilot (off-topic phrase, cosine 0.046)",
+   "target_title": "9 Best E-Bikes With Pedals for 2026 That Power Every Ride",
+   "keywords": [
+    "560w 24mph ul2849",
+    "adults teens 24mph",
+    "e-bikes",
+    "ebike 560w 24mph",
+    "electric foldable ebike",
+    "f6pro electric bike",
+    "foldable ebike 560w",
+    "frequently asked questions",
+    "hapleby premium bike",
+    "pedals"
+   ],
+   "paragraph": "site67 and its owners shall not be liable for any direct, indirect, incidental, or consequential damages arising from your use of this website or reliance on any information contained herein. Cycling involves inherent risk; always verify product specifications, torque values, and compatibility with a qualified mechanic before relying on any guidance. This site does not provide professional cycling-coach, medical, or safety advice — consult a qualified professional for any health, fitness, or safety questions.",
+   "old_anchor": "safety questions",
+   "acceptable": [],
+   "semantic": {
+    "safety questions": 0.046
+   },
+   "id": 106
+  },
+  {
+   "source_title": "site67.example pilot (off-topic phrase, cosine 0.050)",
+   "target_title": "4 Best Cycling Shoes for 2026 That Pedal Perfection Delivers",
+   "keywords": [
+    "pedal perfection delivers",
+    "cycling shoes",
+    "pedal perfection",
+    "perfection delivers",
+    "altos cycling shoe",
+    "choosing cycling shoes",
+    "cycling",
+    "cycling shoes compatible",
+    "cycling shoes picks",
+    "delivers"
+   ],
+   "paragraph": "You’re going to love the Giro Stylus and Giro Rincon — road bikers rave about them in 2026 for nailing comfort, performance, and durability. The Stylus gives you secure fit, triple straps, and a stiff outsole, while the Rincon delivers quick BOA adjustments and lightweight efficiency. Both offer great ventilation, solid power transfer, and handle long rides with ease. See how they stack up in key features to find your perfect match.",
+   "old_anchor": "perfect match",
+   "acceptable": [],
+   "semantic": {
+    "perfect match": 0.05
+   },
+   "id": 107
+  },
+  {
+   "source_title": "site67.example pilot (off-topic phrase, cosine 0.122)",
+   "target_title": "7 Best Cycling Shoes for 2026 to Conquer Winter Rides",
+   "keywords": [
+    "conquer winter rides",
+    "conquer winter",
+    "cycling shoes",
+    "winter rides",
+    "bicycle shoe toe",
+    "choosing cycling shoes",
+    "clean cycling shoe",
+    "conquer",
+    "cxwxc neoprene waterproof",
+    "cycling"
+   ],
+   "paragraph": "What makes a cycling short perform in the heat of a long ride? It’s the material and how well it breathes. You need lightweight fabric that wicks sweat fast, keeping you dry even when the pace heats up. Look for quick-dry tech—whether from rain or heavy sweating, the shorts should dry fast to avoid discomfort. 4-way stretch material moves with you, reducing friction and chafing over hours. Strategically placed mesh panels boost airflow, helping regulate your temperature. A snug, compressive fit isn’t just for muscle support—it helps pull moisture away from your skin efficiently. Under Armour uses these fabrics so you stay cool, dry, and comfortable. Don’t overlook breathability; it’s key to staying focused on the road ahead, not your gear.",
+   "old_anchor": "long ride",
+   "acceptable": [],
+   "semantic": {
+    "long ride": 0.122
+   },
+   "id": 108
+  },
+  {
+   "source_title": "site67.example pilot (off-topic phrase, cosine 0.102)",
+   "target_title": "12 Best Bike Inner Tubes for 2026 That Ride Smooth & Last Longer",
+   "keywords": [
+    "ride smooth",
+    "26-inch bike tube",
+    "700c bike tubes",
+    "700c heavy duty",
+    "air retention performance",
+    "ar-pro 700c bike",
+    "bell standard 26-inch",
+    "bell standard bicycle",
+    "bike",
+    "bike tubes expire"
+   ],
+   "paragraph": "Looking for a pump that fills wide tires quickly and handles both Schrader and Presta valves without hassle? The Bell Air Attack 350 delivers with its wide barrel design, pushing 567 cm³ of air per stroke to inflate fast. You’ll appreciate the reversible head—no extra tools needed. It hits 100 PSI max, ideal for mountain, cruiser, BMX, or kids’ bikes. It comes with a ball needle and inflation cone for extra uses. Weighing just 1.4 pounds and built with durable cellulose, it’s reliable and compact. With nearly 12,400 reviews and a 4.5-star rating, it’s a trusted pick. Just grab, pump, and ride.",
+   "old_anchor": "Bell Air",
+   "acceptable": [],
+   "semantic": {
+    "bell air": 0.102
+   },
+   "id": 109
   }
- ]
+ ],
+ "sites": {
+  "site26": {
+   "docs": 2621,
+   "df": {
+    "about": 1350,
+    "accents": 220,
+    "accuracy": 109,
+    "achieving": 160,
+    "acrylic": 244,
+    "activities": 417,
+    "adding": 804,
+    "additional": 626,
+    "adhesive": 298,
+    "adhesives": 131,
+    "adjusting": 138,
+    "adorable": 43,
+    "advantages": 262,
+    "aerosol": 31,
+    "affect": 523,
+    "affecting": 166,
+    "alcohol": 213,
+    "alias": 1,
+    "alkaline": 30,
+    "allowing": 775,
+    "alternative": 474,
+    "alternatives": 319,
+    "amazon": 170,
+    "amount": 540,
+    "analyzing": 48,
+    "and": 1743,
+    "antique": 63,
+    "application": 298,
+    "apply": 633,
+    "appropriately": 45,
+    "aquafit": 18,
+    "are": 1728,
+    "around": 988,
+    "arrangements": 146,
+    "art": 485,
+    "asked": 657,
+    "aspects": 149,
+    "assorted": 31,
+    "attach": 409,
+    "attaching": 157,
+    "attempts": 26,
+    "availability": 105,
+    "available": 780,
+    "avoiding": 273,
+    "aware": 185,
+    "away": 637,
+    "backpack": 246,
+    "bacteria": 409,
+    "balance": 431,
+    "bar": 46,
+    "basics": 63,
+    "beer": 118,
+    "before": 1186,
+    "benefits": 672,
+    "best": 1117,
+    "better": 878,
+    "between": 811,
+    "beverage": 323,
+    "beverages": 444,
+    "blender": 34,
+    "blue": 244,
+    "bottle": 1793,
+    "bottled": 218,
+    "bottles": 1671,
+    "brush": 527,
+    "buy": 175,
+    "calculating": 34,
+    "called": 81,
+    "can": 1736,
+    "cap": 811,
+    "capabilities": 102,
+    "capacities": 76,
+    "capacity": 553,
+    "caps": 499,
+    "carry": 638,
+    "cater": 184,
+    "centerpiece": 158,
+    "centerpieces": 176,
+    "charming": 252,
+    "chart": 16,
+    "cheap": 43,
+    "check": 962,
+    "cheer": 40,
+    "choice": 855,
+    "choose": 1268,
+    "choosing": 986,
+    "cleaning": 1028,
+    "clear": 797,
+    "clever": 84,
+    "climbs": 14,
+    "coasters": 45,
+    "coffee": 192,
+    "coffee-loving": 2,
+    "coke": 24,
+    "colors": 654,
+    "comes": 1036,
+    "comforting": 63,
+    "common": 612,
+    "compact": 444,
+    "comparing": 95,
+    "comparison": 118,
+    "compatible": 251,
+    "competitive": 69,
+    "conclusion": 1431,
+    "consider": 1534,
+    "construction": 386,
+    "continuing": 38,
+    "continuous": 148,
+    "convenient": 734,
+    "conversions": 17,
+    "covered": 436,
+    "crafters": 52,
+    "crafting": 407,
+    "crafts": 422,
+    "creamer": 2,
+    "create": 1056,
+    "creative": 580,
+    "customers": 149,
+    "cut": 566,
+    "czerwinski": 1,
+    "daily": 699,
+    "day": 736,
+    "decor": 410,
+    "decorations": 258,
+    "delight": 123,
+    "delivery": 94,
+    "designed": 908,
+    "diet": 43,
+    "different": 1050,
+    "dispenser": 127,
+    "diverse": 230,
+    "dried": 195,
+    "drink": 747,
+    "drinker": 10,
+    "drinking": 675,
+    "durable": 948,
+    "each": 1250,
+    "easy": 1224,
+    "eco-friendly": 892,
+    "edgy": 7,
+    "effectively": 636,
+    "effects": 437,
+    "enjoy": 874,
+    "epoxy": 114,
+    "essential": 1171,
+    "even": 1238,
+    "evenly": 319,
+    "explore": 914,
+    "faq": 657,
+    "fastest": 14,
+    "favorite": 478,
+    "faygo": 3,
+    "feat": 11,
+    "features": 759,
+    "festive": 184,
+    "fill": 830,
+    "find": 1038,
+    "fix": 123,
+    "fixture": 12,
+    "flat": 214,
+    "flattening": 16,
+    "flavors": 255,
+    "flowers": 252,
+    "foam": 145,
+    "for": 1746,
+    "framed": 13,
+    "frappuccino": 5,
+    "from": 1722,
+    "full": 471,
+    "furious": 1,
+    "gallon": 181,
+    "garlands": 63,
+    "give": 607,
+    "glass": 888,
+    "got": 534,
+    "great": 637,
+    "guinness": 8,
+    "harding-davis": 1,
+    "heat": 801,
+    "higher": 242,
+    "hiking": 282,
+    "hold": 799,
+    "holds": 360,
+    "home": 698,
+    "hot": 973,
+    "hour": 169,
+    "hours": 539,
+    "how": 1555,
+    "hydrated": 720,
+    "hydration": 865,
+    "ice": 325,
+    "ideal": 885,
+    "ideas": 397,
+    "important": 930,
+    "including": 735,
+    "individuals": 428,
+    "industrial": 75,
+    "instead": 433,
+    "insulated": 355,
+    "into": 1570,
+    "isaac": 2,
+    "its": 1428,
+    "journeys": 22,
+    "jug": 102,
+    "jugs": 102,
+    "just": 1165,
+    "keep": 1373,
+    "keeps": 502,
+    "label": 416,
+    "labels": 501,
+    "leaking": 172,
+    "leakproof": 185,
+    "lid": 616,
+    "lifestyle": 455,
+    "light": 684,
+    "lighting": 238,
+    "like": 1521,
+    "liters": 111,
+    "long": 849,
+    "longer": 614,
+    "look": 1264,
+    "love": 479,
+    "make": 1543,
+    "making": 1380,
+    "many": 785,
+    "markers": 268,
+    "market": 261,
+    "markings": 113,
+    "materials": 1360,
+    "may": 1122,
+    "melt": 94,
+    "methods": 538,
+    "microplastics": 34,
+    "milk": 112,
+    "mini": 201,
+    "misters": 7,
+    "modern": 479,
+    "more": 1487,
+    "mosaics": 34,
+    "motivational": 100,
+    "names": 139,
+    "needs": 914,
+    "nozzles": 85,
+    "nudge": 15,
+    "off": 702,
+    "offer": 1070,
+    "offers": 827,
+    "ombre": 64,
+    "on-the-go": 391,
+    "one": 1278,
+    "ones": 504,
+    "online": 321,
+    "option": 713,
+    "ordering": 27,
+    "ounces": 330,
+    "pack": 336,
+    "paint": 396,
+    "painted": 205,
+    "painting": 265,
+    "party": 122,
+    "pastel": 51,
+    "peel": 148,
+    "pendant": 42,
+    "perfect": 1068,
+    "perk": 3,
+    "pete": 6,
+    "peter": 2,
+    "plastic": 1176,
+    "polyester": 62,
+    "portable": 411,
+    "preferences": 423,
+    "previous": 108,
+    "process": 893,
+    "providing": 628,
+    "pump": 139,
+    "purchase": 295,
+    "pure": 208,
+    "purposes": 307,
+    "quick": 811,
+    "range": 597,
+    "record": 41,
+    "rectangular": 51,
+    "recycled": 424,
+    "remarkable": 37,
+    "require": 498,
+    "retailers": 90,
+    "rustic": 235,
+    "scenarios": 57,
+    "score": 90,
+    "seal": 787,
+    "seconds": 172,
+    "seeking": 333,
+    "select": 477,
+    "selecting": 592,
+    "selection": 195,
+    "serving": 114,
+    "several": 605,
+    "shape": 707,
+    "significant": 409,
+    "size": 902,
+    "sizes": 739,
+    "small": 1071,
+    "smooth": 797,
+    "snowman": 12,
+    "soapy": 433,
+    "soft": 483,
+    "soothing": 140,
+    "souvenir": 7,
+    "space": 779,
+    "spaces": 275,
+    "specific": 800,
+    "speed": 139,
+    "spout": 304,
+    "spray": 418,
+    "sprayers": 30,
+    "spring": 155,
+    "starbucks": 13,
+    "start": 910,
+    "stay": 966,
+    "staying": 550,
+    "steps": 839,
+    "stores": 202,
+    "strap": 163,
+    "straw": 370,
+    "strikes": 35,
+    "stringing": 15,
+    "strong": 568,
+    "style": 682,
+    "subtopic": 30,
+    "such": 1219,
+    "surfaces": 489,
+    "table": 1431,
+    "take": 1013,
+    "takeya": 22,
+    "temperatures": 385,
+    "than": 876,
+    "that": 1737,
+    "the": 1745,
+    "them": 1472,
+    "there": 1255,
+    "these": 1711,
+    "this": 1678,
+    "throughout": 505,
+    "time": 1434,
+    "tinted": 29,
+    "tiny": 214,
+    "top": 910,
+    "traditional": 398,
+    "transform": 444,
+    "travel-friendly": 60,
+    "trigger": 105,
+    "trips": 186,
+    "tritan": 147,
+    "truly": 396,
+    "try": 677,
+    "turn": 483,
+    "types": 610,
+    "typically": 602,
+    "uncrimped": 3,
+    "unique": 862,
+    "usage": 351,
+    "use": 1688,
+    "vacuum-insulated": 61,
+    "variety": 544,
+    "various": 1015,
+    "vases": 200,
+    "vibe": 199,
+    "vinyl": 134,
+    "volume": 240,
+    "walking": 69,
+    "wall": 209,
+    "walmart": 36,
+    "want": 891,
+    "warm": 873,
+    "warmth": 243,
+    "wash": 570,
+    "water": 1662,
+    "waterproof": 214,
+    "waters": 46,
+    "website": 144,
+    "what": 1240,
+    "when": 1677,
+    "where": 1053,
+    "which": 1206,
+    "while": 1569,
+    "wide": 699,
+    "will": 1322,
+    "windowsill": 33,
+    "wine": 185,
+    "with": 1742,
+    "within": 576,
+    "without": 1331,
+    "workouts": 263,
+    "world": 521,
+    "you": 1701,
+    "youll": 3,
+    "your": 1697,
+    "you’ll": 1106
+   },
+   "case_counts": [
+    [
+     "about",
+     2124,
+     3603
+    ],
+    [
+     "accents",
+     238,
+     604
+    ],
+    [
+     "accuracy",
+     25,
+     181
+    ],
+    [
+     "achieving",
+     37,
+     232
+    ],
+    [
+     "acrylic",
+     144,
+     701
+    ],
+    [
+     "activities",
+     127,
+     1185
+    ],
+    [
+     "adding",
+     133,
+     1999
+    ],
+    [
+     "additional",
+     515,
+     775
+    ],
+    [
+     "adhesive",
+     134,
+     1244
+    ],
+    [
+     "adhesives",
+     41,
+     238
+    ],
+    [
+     "adjusting",
+     28,
+     165
+    ],
+    [
+     "adorable",
+     23,
+     77
+    ],
+    [
+     "advantages",
+     97,
+     425
+    ],
+    [
+     "aerosol",
+     36,
+     82
+    ],
+    [
+     "affect",
+     167,
+     837
+    ],
+    [
+     "affecting",
+     92,
+     206
+    ],
+    [
+     "alcohol",
+     181,
+     823
+    ],
+    [
+     "alias",
+     0,
+     1
+    ],
+    [
+     "alkaline",
+     81,
+     87
+    ],
+    [
+     "allowing",
+     6,
+     1566
+    ],
+    [
+     "alternative",
+     185,
+     1030
+    ],
+    [
+     "alternatives",
+     272,
+     643
+    ],
+    [
+     "amazon",
+     328,
+     17
+    ],
+    [
+     "amount",
+     57,
+     1324
+    ],
+    [
+     "analyzing",
+     12,
+     36
+    ],
+    [
+     "and",
+     7136,
+     136424
+    ],
+    [
+     "antique",
+     25,
+     116
+    ],
+    [
+     "application",
+     164,
+     869
+    ],
+    [
+     "apply",
+     135,
+     1148
+    ],
+    [
+     "appropriately",
+     3,
+     50
+    ],
+    [
+     "aquafit",
+     33,
+     1
+    ],
+    [
+     "are",
+     1693,
+     20325
+    ],
+    [
+     "around",
+     40,
+     2313
+    ],
+    [
+     "arrangements",
+     191,
+     307
+    ],
+    [
+     "art",
+     726,
+     1793
+    ],
+    [
+     "asked",
+     1000,
+     20
+    ],
+    [
+     "aspects",
+     19,
+     193
+    ],
+    [
+     "assorted",
+     25,
+     30
+    ],
+    [
+     "attach",
+     70,
+     519
+    ],
+    [
+     "attaching",
+     65,
+     213
+    ],
+    [
+     "attempts",
+     6,
+     52
+    ],
+    [
+     "availability",
+     51,
+     219
+    ],
+    [
+     "available",
+     249,
+     1432
+    ],
+    [
+     "avoiding",
+     40,
+     261
+    ],
+    [
+     "aware",
+     13,
+     265
+    ],
+    [
+     "away",
+     28,
+     1138
+    ],
+    [
+     "backpack",
+     153,
+     923
+    ],
+    [
+     "bacteria",
+     83,
+     1541
+    ],
+    [
+     "balance",
+     26,
+     693
+    ],
+    [
+     "bar",
+     17,
+     100
+    ],
+    [
+     "basics",
+     53,
+     69
+    ],
+    [
+     "beer",
+     361,
+     719
+    ],
+    [
+     "before",
+     643,
+     3291
+    ],
+    [
+     "benefits",
+     704,
+     1827
+    ],
+    [
+     "best",
+     1580,
+     1989
+    ],
+    [
+     "better",
+     158,
+     1671
+    ],
+    [
+     "between",
+     189,
+     1744
+    ],
+    [
+     "beverage",
+     113,
+     814
+    ],
+    [
+     "beverages",
+     164,
+     1321
+    ],
+    [
+     "blender",
+     785,
+     1062
+    ],
+    [
+     "blue",
+     308,
+     640
+    ],
+    [
+     "bottle",
+     26738,
+     66782
+    ],
+    [
+     "bottled",
+     309,
+     1010
+    ],
+    [
+     "bottles",
+     9439,
+     34433
+    ],
+    [
+     "brush",
+     174,
+     1344
+    ],
+    [
+     "buy",
+     126,
+     250
+    ],
+    [
+     "calculating",
+     20,
+     37
+    ],
+    [
+     "called",
+     11,
+     105
+    ],
+    [
+     "can",
+     1935,
+     34166
+    ],
+    [
+     "cap",
+     1228,
+     5745
+    ],
+    [
+     "capabilities",
+     22,
+     153
+    ],
+    [
+     "capacities",
+     4,
+     95
+    ],
+    [
+     "capacity",
+     593,
+     1682
+    ],
+    [
+     "caps",
+     677,
+     2970
+    ],
+    [
+     "carry",
+     147,
+     2176
+    ],
+    [
+     "cater",
+     1,
+     289
+    ],
+    [
+     "centerpiece",
+     71,
+     369
+    ],
+    [
+     "centerpieces",
+     230,
+     477
+    ],
+    [
+     "charming",
+     33,
+     597
+    ],
+    [
+     "chart",
+     18,
+     21
+    ],
+    [
+     "cheap",
+     3,
+     38
+    ],
+    [
+     "check",
+     132,
+     1947
+    ],
+    [
+     "cheer",
+     8,
+     79
+    ],
+    [
+     "choice",
+     39,
+     2048
+    ],
+    [
+     "choose",
+     231,
+     1712
+    ],
+    [
+     "choosing",
+     728,
+     1319
+    ],
+    [
+     "cleaning",
+     977,
+     5904
+    ],
+    [
+     "clear",
+     231,
+     1773
+    ],
+    [
+     "clever",
+     10,
+     114
+    ],
+    [
+     "climbs",
+     0,
+     20
+    ],
+    [
+     "coasters",
+     68,
+     135
+    ],
+    [
+     "coffee",
+     54,
+     494
+    ],
+    [
+     "coffee-loving",
+     1,
+     2
+    ],
+    [
+     "coke",
+     355,
+     28
+    ],
+    [
+     "colors",
+     150,
+     2123
+    ],
+    [
+     "comes",
+     13,
+     2195
+    ],
+    [
+     "comforting",
+     1,
+     124
+    ],
+    [
+     "common",
+     319,
+     1303
+    ],
+    [
+     "compact",
+     68,
+     882
+    ],
+    [
+     "comparing",
+     22,
+     81
+    ],
+    [
+     "comparison",
+     109,
+     119
+    ],
+    [
+     "compatible",
+     83,
+     322
+    ],
+    [
+     "competitive",
+     4,
+     156
+    ],
+    [
+     "conclusion",
+     59,
+     148
+    ],
+    [
+     "consider",
+     773,
+     3602
+    ],
+    [
+     "construction",
+     52,
+     637
+    ],
+    [
+     "continuing",
+     23,
+     17
+    ],
+    [
+     "continuous",
+     131,
+     367
+    ],
+    [
+     "convenient",
+     55,
+     1978
+    ],
+    [
+     "conversions",
+     9,
+     25
+    ],
+    [
+     "covered",
+     5,
+     951
+    ],
+    [
+     "crafters",
+     3,
+     85
+    ],
+    [
+     "crafting",
+     724,
+     1916
+    ],
+    [
+     "crafts",
+     1077,
+     1514
+    ],
+    [
+     "creamer",
+     7,
+     17
+    ],
+    [
+     "create",
+     204,
+     4433
+    ],
+    [
+     "creative",
+     266,
+     2270
+    ],
+    [
+     "customers",
+     23,
+     601
+    ],
+    [
+     "cut",
+     321,
+     1106
+    ],
+    [
+     "czerwinski",
+     0,
+     3
+    ],
+    [
+     "daily",
+     134,
+     2742
+    ],
+    [
+     "day",
+     193,
+     2633
+    ],
+    [
+     "decor",
+     582,
+     2091
+    ],
+    [
+     "decorations",
+     502,
+     804
+    ],
+    [
+     "delight",
+     40,
+     135
+    ],
+    [
+     "delivery",
+     68,
+     364
+    ],
+    [
+     "designed",
+     20,
+     2466
+    ],
+    [
+     "diet",
+     58,
+     94
+    ],
+    [
+     "different",
+     715,
+     3164
+    ],
+    [
+     "dispenser",
+     259,
+     772
+    ],
+    [
+     "diverse",
+     9,
+     342
+    ],
+    [
+     "dried",
+     24,
+     394
+    ],
+    [
+     "drink",
+     315,
+     2861
+    ],
+    [
+     "drinker",
+     3,
+     12
+    ],
+    [
+     "drinking",
+     400,
+     2117
+    ],
+    [
+     "durable",
+     120,
+     3471
+    ],
+    [
+     "each",
+     118,
+     2945
+    ],
+    [
+     "easy",
+     321,
+     4845
+    ],
+    [
+     "eco-friendly",
+     420,
+     2823
+    ],
+    [
+     "edgy",
+     1,
+     8
+    ],
+    [
+     "effectively",
+     99,
+     1401
+    ],
+    [
+     "effects",
+     181,
+     861
+    ],
+    [
+     "enjoy",
+     35,
+     1852
+    ],
+    [
+     "epoxy",
+     25,
+     238
+    ],
+    [
+     "essential",
+     169,
+     3634
+    ],
+    [
+     "even",
+     96,
+     3557
+    ],
+    [
+     "evenly",
+     12,
+     570
+    ],
+    [
+     "explore",
+     44,
+     1708
+    ],
+    [
+     "faq",
+     39,
+     1
+    ],
+    [
+     "fastest",
+     20,
+     36
+    ],
+    [
+     "favorite",
+     84,
+     907
+    ],
+    [
+     "faygo",
+     67,
+     0
+    ],
+    [
+     "feat",
+     0,
+     33
+    ],
+    [
+     "features",
+     420,
+     2080
+    ],
+    [
+     "festive",
+     121,
+     899
+    ],
+    [
+     "fill",
+     363,
+     1304
+    ],
+    [
+     "find",
+     147,
+     2086
+    ],
+    [
+     "fix",
+     134,
+     247
+    ],
+    [
+     "fixture",
+     1,
+     15
+    ],
+    [
+     "flat",
+     39,
+     393
+    ],
+    [
+     "flattening",
+     9,
+     29
+    ],
+    [
+     "flavors",
+     49,
+     765
+    ],
+    [
+     "flowers",
+     142,
+     608
+    ],
+    [
+     "foam",
+     30,
+     282
+    ],
+    [
+     "for",
+     5849,
+     69966
+    ],
+    [
+     "framed",
+     3,
+     19
+    ],
+    [
+     "frappuccino",
+     50,
+     2
+    ],
+    [
+     "from",
+     1353,
+     14888
+    ],
+    [
+     "full",
+     30,
+     839
+    ],
+    [
+     "furious",
+     0,
+     2
+    ],
+    [
+     "gallon",
+     1347,
+     3445
+    ],
+    [
+     "garlands",
+     72,
+     196
+    ],
+    [
+     "give",
+     29,
+     859
+    ],
+    [
+     "glass",
+     3197,
+     11482
+    ],
+    [
+     "got",
+     21,
+     1214
+    ],
+    [
+     "great",
+     48,
+     1051
+    ],
+    [
+     "guinness",
+     9,
+     7
+    ],
+    [
+     "harding-davis",
+     0,
+     2
+    ],
+    [
+     "heat",
+     409,
+     3608
+    ],
+    [
+     "higher",
+     3,
+     388
+    ],
+    [
+     "hiking",
+     25,
+     679
+    ],
+    [
+     "hold",
+     116,
+     1580
+    ],
+    [
+     "holds",
+     10,
+     748
+    ],
+    [
+     "home",
+     329,
+     2035
+    ],
+    [
+     "hot",
+     2240,
+     7244
+    ],
+    [
+     "hour",
+     9,
+     228
+    ],
+    [
+     "hours",
+     18,
+     2032
+    ],
+    [
+     "how",
+     2056,
+     4361
+    ],
+    [
+     "hydrated",
+     225,
+     3269
+    ],
+    [
+     "hydration",
+     549,
+     4833
+    ],
+    [
+     "ice",
+     342,
+     1703
+    ],
+    [
+     "ideal",
+     91,
+     1729
+    ],
+    [
+     "ideas",
+     538,
+     1276
+    ],
+    [
+     "important",
+     83,
+     3101
+    ],
+    [
+     "including",
+     20,
+     1630
+    ],
+    [
+     "individuals",
+     25,
+     1028
+    ],
+    [
+     "industrial",
+     33,
+     128
+    ],
+    [
+     "instead",
+     82,
+     336
+    ],
+    [
+     "insulated",
+     1158,
+     843
+    ],
+    [
+     "into",
+     540,
+     11643
+    ],
+    [
+     "isaac",
+     1,
+     2
+    ],
+    [
+     "its",
+     225,
+     6270
+    ],
+    [
+     "journeys",
+     0,
+     32
+    ],
+    [
+     "jug",
+     561,
+     2664
+    ],
+    [
+     "jugs",
+     248,
+     1293
+    ],
+    [
+     "just",
+     30,
+     4928
+    ],
+    [
+     "keep",
+     269,
+     5086
+    ],
+    [
+     "keeps",
+     17,
+     2942
+    ],
+    [
+     "label",
+     231,
+     1422
+    ],
+    [
+     "labels",
+     548,
+     2069
+    ],
+    [
+     "leaking",
+     146,
+     356
+    ],
+    [
+     "leakproof",
+     54,
+     702
+    ],
+    [
+     "lid",
+     777,
+     5310
+    ],
+    [
+     "lifestyle",
+     31,
+     930
+    ],
+    [
+     "light",
+     321,
+     1795
+    ],
+    [
+     "lighting",
+     169,
+     495
+    ],
+    [
+     "like",
+     109,
+     7956
+    ],
+    [
+     "liters",
+     90,
+     316
+    ],
+    [
+     "long",
+     361,
+     1743
+    ],
+    [
+     "longer",
+     58,
+     1243
+    ],
+    [
+     "look",
+     162,
+     1981
+    ],
+    [
+     "love",
+     35,
+     2002
+    ],
+    [
+     "make",
+     1116,
+     6153
+    ],
+    [
+     "making",
+     554,
+     4841
+    ],
+    [
+     "many",
+     261,
+     1194
+    ],
+    [
+     "markers",
+     112,
+     898
+    ],
+    [
+     "market",
+     120,
+     680
+    ],
+    [
+     "markings",
+     25,
+     236
+    ],
+    [
+     "materials",
+     842,
+     6544
+    ],
+    [
+     "may",
+     119,
+     5954
+    ],
+    [
+     "melt",
+     20,
+     144
+    ],
+    [
+     "methods",
+     382,
+     1264
+    ],
+    [
+     "microplastics",
+     13,
+     114
+    ],
+    [
+     "milk",
+     154,
+     623
+    ],
+    [
+     "mini",
+     389,
+     586
+    ],
+    [
+     "misters",
+     6,
+     22
+    ],
+    [
+     "modern",
+     285,
+     1204
+    ],
+    [
+     "more",
+     173,
+     6042
+    ],
+    [
+     "mosaics",
+     27,
+     73
+    ],
+    [
+     "motivational",
+     348,
+     215
+    ],
+    [
+     "names",
+     131,
+     353
+    ],
+    [
+     "needs",
+     123,
+     2615
+    ],
+    [
+     "nozzles",
+     24,
+     235
+    ],
+    [
+     "nudge",
+     0,
+     15
+    ],
+    [
+     "off",
+     90,
+     1688
+    ],
+    [
+     "offer",
+     30,
+     2844
+    ],
+    [
+     "offers",
+     20,
+     1589
+    ],
+    [
+     "ombre",
+     38,
+     109
+    ],
+    [
+     "on-the-go",
+     56,
+     682
+    ],
+    [
+     "one",
+     306,
+     3558
+    ],
+    [
+     "ones",
+     17,
+     790
+    ],
+    [
+     "online",
+     87,
+     838
+    ],
+    [
+     "option",
+     43,
+     1540
+    ],
+    [
+     "ordering",
+     23,
+     51
+    ],
+    [
+     "ounces",
+     170,
+     1217
+    ],
+    [
+     "pack",
+     1634,
+     892
+    ],
+    [
+     "paint",
+     721,
+     2950
+    ],
+    [
+     "painted",
+     277,
+     395
+    ],
+    [
+     "painting",
+     155,
+     701
+    ],
+    [
+     "party",
+     115,
+     306
+    ],
+    [
+     "pastel",
+     4,
+     68
+    ],
+    [
+     "peel",
+     19,
+     269
+    ],
+    [
+     "pendant",
+     35,
+     71
+    ],
+    [
+     "perfect",
+     119,
+     4022
+    ],
+    [
+     "perk",
+     1,
+     2
+    ],
+    [
+     "pete",
+     3,
+     4
+    ],
+    [
+     "peter",
+     1,
+     1
+    ],
+    [
+     "plastic",
+     2015,
+     9496
+    ],
+    [
+     "polyester",
+     19,
+     107
+    ],
+    [
+     "portable",
+     156,
+     759
+    ],
+    [
+     "preferences",
+     65,
+     1014
+    ],
+    [
+     "previous",
+     0,
+     119
+    ],
+    [
+     "process",
+     220,
+     3291
+    ],
+    [
+     "providing",
+     15,
+     1194
+    ],
+    [
+     "pump",
+     159,
+     743
+    ],
+    [
+     "purchase",
+     116,
+     588
+    ],
+    [
+     "pure",
+     59,
+     399
+    ],
+    [
+     "purposes",
+     66,
+     514
+    ],
+    [
+     "quick",
+     136,
+     1425
+    ],
+    [
+     "range",
+     223,
+     1180
+    ],
+    [
+     "record",
+     20,
+     95
+    ],
+    [
+     "rectangular",
+     23,
+     114
+    ],
+    [
+     "recycled",
+     249,
+     1124
+    ],
+    [
+     "remarkable",
+     3,
+     54
+    ],
+    [
+     "require",
+     9,
+     815
+    ],
+    [
+     "retailers",
+     84,
+     313
+    ],
+    [
+     "rustic",
+     134,
+     985
+    ],
+    [
+     "scenarios",
+     10,
+     73
+    ],
+    [
+     "score",
+     0,
+     109
+    ],
+    [
+     "seal",
+     236,
+     2904
+    ],
+    [
+     "seconds",
+     3,
+     257
+    ],
+    [
+     "seeking",
+     15,
+     521
+    ],
+    [
+     "select",
+     58,
+     310
+    ],
+    [
+     "selecting",
+     139,
+     1009
+    ],
+    [
+     "selection",
+     62,
+     305
+    ],
+    [
+     "serving",
+     60,
+     279
+    ],
+    [
+     "several",
+     31,
+     957
+    ],
+    [
+     "shape",
+     174,
+     1816
+    ],
+    [
+     "significant",
+     2,
+     745
+    ],
+    [
+     "size",
+     1010,
+     3367
+    ],
+    [
+     "sizes",
+     200,
+     1874
+    ],
+    [
+     "small",
+     275,
+     3013
+    ],
+    [
+     "smooth",
+     83,
+     1794
+    ],
+    [
+     "snowman",
+     7,
+     14
+    ],
+    [
+     "soapy",
+     18,
+     708
+    ],
+    [
+     "soft",
+     77,
+     1076
+    ],
+    [
+     "soothing",
+     18,
+     479
+    ],
+    [
+     "souvenir",
+     0,
+     8
+    ],
+    [
+     "space",
+     106,
+     2941
+    ],
+    [
+     "spaces",
+     62,
+     466
+    ],
+    [
+     "specific",
+     215,
+     1886
+    ],
+    [
+     "speed",
+     29,
+     224
+    ],
+    [
+     "spout",
+     119,
+     1232
+    ],
+    [
+     "spray",
+     3967,
+     8764
+    ],
+    [
+     "sprayers",
+     27,
+     110
+    ],
+    [
+     "spring",
+     192,
+     357
+    ],
+    [
+     "starbucks",
+     179,
+     0
+    ],
+    [
+     "start",
+     106,
+     953
+    ],
+    [
+     "stay",
+     165,
+     3186
+    ],
+    [
+     "staying",
+     142,
+     1072
+    ],
+    [
+     "steps",
+     1178,
+     2535
+    ],
+    [
+     "stores",
+     204,
+     914
+    ],
+    [
+     "strap",
+     122,
+     641
+    ],
+    [
+     "straw",
+     757,
+     3091
+    ],
+    [
+     "strikes",
+     0,
+     39
+    ],
+    [
+     "stringing",
+     4,
+     16
+    ],
+    [
+     "strong",
+     45,
+     986
+    ],
+    [
+     "style",
+     349,
+     1985
+    ],
+    [
+     "subtopic",
+     0,
+     33
+    ],
+    [
+     "such",
+     40,
+     5123
+    ],
+    [
+     "surfaces",
+     128,
+     1249
+    ],
+    [
+     "table",
+     870,
+     1643
+    ],
+    [
+     "take",
+     250,
+     1776
+    ],
+    [
+     "takeya",
+     65,
+     29
+    ],
+    [
+     "temperatures",
+     34,
+     710
+    ],
+    [
+     "than",
+     62,
+     1715
+    ],
+    [
+     "that",
+     499,
+     27927
+    ],
+    [
+     "the",
+     11008,
+     151405
+    ],
+    [
+     "them",
+     117,
+     8474
+    ],
+    [
+     "there",
+     972,
+     2169
+    ],
+    [
+     "these",
+     714,
+     9101
+    ],
+    [
+     "this",
+     164,
+     6091
+    ],
+    [
+     "throughout",
+     51,
+     1340
+    ],
+    [
+     "time",
+     507,
+     5545
+    ],
+    [
+     "tinted",
+     17,
+     35
+    ],
+    [
+     "tiny",
+     41,
+     484
+    ],
+    [
+     "top",
+     953,
+     2664
+    ],
+    [
+     "traditional",
+     81,
+     791
+    ],
+    [
+     "transform",
+     376,
+     1268
+    ],
+    [
+     "travel-friendly",
+     15,
+     77
+    ],
+    [
+     "trigger",
+     61,
+     533
+    ],
+    [
+     "trips",
+     4,
+     268
+    ],
+    [
+     "tritan",
+     774,
+     169
+    ],
+    [
+     "truly",
+     2,
+     589
+    ],
+    [
+     "try",
+     49,
+     925
+    ],
+    [
+     "turn",
+     58,
+     566
+    ],
+    [
+     "types",
+     516,
+     1085
+    ],
+    [
+     "typically",
+     40,
+     1134
+    ],
+    [
+     "uncrimped",
+     0,
+     20
+    ],
+    [
+     "unique",
+     337,
+     3783
+    ],
+    [
+     "usage",
+     142,
+     598
+    ],
+    [
+     "use",
+     2614,
+     11096
+    ],
+    [
+     "vacuum-insulated",
+     10,
+     94
+    ],
+    [
+     "variety",
+     123,
+     973
+    ],
+    [
+     "various",
+     100,
+     2959
+    ],
+    [
+     "vases",
+     333,
+     636
+    ],
+    [
+     "vibe",
+     3,
+     360
+    ],
+    [
+     "vinyl",
+     126,
+     467
+    ],
+    [
+     "volume",
+     138,
+     772
+    ],
+    [
+     "walking",
+     29,
+     132
+    ],
+    [
+     "wall",
+     263,
+     480
+    ],
+    [
+     "walmart",
+     184,
+     54
+    ],
+    [
+     "want",
+     8,
+     2683
+    ],
+    [
+     "warm",
+     155,
+     2857
+    ],
+    [
+     "warmth",
+     29,
+     1239
+    ],
+    [
+     "wash",
+     168,
+     1283
+    ],
+    [
+     "water",
+     27487,
+     68166
+    ],
+    [
+     "waterproof",
+     133,
+     608
+    ],
+    [
+     "waters",
+     30,
+     96
+    ],
+    [
+     "website",
+     87,
+     338
+    ],
+    [
+     "what",
+     398,
+     1296
+    ],
+    [
+     "when",
+     2868,
+     6617
+    ],
+    [
+     "where",
+     119,
+     2203
+    ],
+    [
+     "which",
+     28,
+     3275
+    ],
+    [
+     "while",
+     709,
+     5529
+    ],
+    [
+     "wide",
+     112,
+     1810
+    ],
+    [
+     "will",
+     68,
+     5921
+    ],
+    [
+     "windowsill",
+     0,
+     36
+    ],
+    [
+     "wine",
+     1090,
+     1751
+    ],
+    [
+     "with",
+     3481,
+     47157
+    ],
+    [
+     "within",
+     21,
+     978
+    ],
+    [
+     "without",
+     267,
+     5673
+    ],
+    [
+     "workouts",
+     12,
+     608
+    ],
+    [
+     "world",
+     88,
+     1220
+    ],
+    [
+     "you",
+     1761,
+     34555
+    ],
+    [
+     "youll",
+     3,
+     0
+    ],
+    [
+     "your",
+     2438,
+     61774
+    ],
+    [
+     "you’ll",
+     110,
+     2345
+    ]
+   ]
+  }
+ }
 }

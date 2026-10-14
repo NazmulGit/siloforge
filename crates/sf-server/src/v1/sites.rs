@@ -265,6 +265,8 @@ pub async fn create(
     };
     let id = sf_core::new_id();
     let api_key = sf_core::crypto::new_site_api_key();
+    // L-02: only the hash is stored; the plaintext key is shown once in this response.
+    let stored_key = sf_core::crypto::site_key_stored(&api_key);
     let (id2, uid) = (id.clone(), u.user_id.clone());
     let mode = b.mode.unwrap_or_else(|| "wp_rest".into());
     let site = st
@@ -272,7 +274,7 @@ pub async fn create(
         .write(move |t| {
             t.execute(
                 "INSERT INTO sites(id, domain, wp_url, mode, api_key, user_id, settings) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![id2, domain, wp_url, mode, api_key, uid, settings],
+                params![id2, domain, wp_url, mode, stored_key, uid, settings],
             )
             .map_err(err)?;
             load_site(t, &id2)
@@ -280,6 +282,8 @@ pub async fn create(
         .await
         .map_err(|e| conflict_as(e, "domain already exists"))?
         .ok_or_else(|| ApiError::internal("site vanished"))?;
+    let mut site = site;
+    site.api_key = api_key;
     audit_user(
         &st,
         &u,
@@ -410,6 +414,13 @@ fn validate_setting(key: &str, v: &Value) -> ApiResult<()> {
                 "settings.anchor_semantic must be \"true\" or \"false\"",
             )),
         },
+        // Minimum phrase-target cosine for in-paragraph anchor picks (0 = off; default 0.15).
+        "anchor_semantic_min" => match v.as_f64() {
+            Some(x) if (0.0..=1.0).contains(&x) => Ok(()),
+            _ => Err(ApiError::bad(
+                "settings.anchor_semantic_min must be a number from 0 to 1",
+            )),
+        },
         other => Err(ApiError::bad(format!("unknown settings key: {other}"))),
     }
 }
@@ -512,11 +523,15 @@ pub async fn rotate_key(
 ) -> ApiResult<Json<Value>> {
     guard_user_site(&st, &u, &id).await?;
     let key = sf_core::crypto::new_site_api_key();
+    let stored_key = sf_core::crypto::site_key_stored(&key);
     let id2 = id.clone();
-    let row = st
+    let mut row = st
         .db
         .write(move |t| {
-            t.execute("UPDATE sites SET api_key=?2 WHERE id=?1", params![id2, key])
+            t.execute(
+                "UPDATE sites SET api_key=?2 WHERE id=?1",
+                params![id2, stored_key],
+            )
                 .map_err(err)?;
             t.execute(
                 "INSERT INTO kv(key, value) VALUES(?1, ?2)
@@ -531,6 +546,7 @@ pub async fn rotate_key(
         })
         .await?
         .ok_or_else(|| ApiError::not_found("site not found"))?;
+    row.api_key = key;
     st.auth_cache.clear();
     audit_user(&st, &u, "site.rotate_key", Some(&id), json!({})).await;
     Ok(Json(row.to_json(&st.secret_key, true)))
@@ -663,6 +679,9 @@ mod tests {
         assert!(validate_setting("ai_anchor_refine_timeout_s", &json!(60)).is_ok());
         assert!(validate_setting("anchor_semantic", &json!("false")).is_ok());
         assert!(validate_setting("anchor_semantic", &json!(false)).is_err());
+        assert!(validate_setting("anchor_semantic_min", &json!(0.2)).is_ok());
+        assert!(validate_setting("anchor_semantic_min", &json!(1.5)).is_err());
+        assert!(validate_setting("anchor_semantic_min", &json!("0.2")).is_err());
         assert!(validate_setting("whatever", &Value::Null).is_ok());
     }
 }

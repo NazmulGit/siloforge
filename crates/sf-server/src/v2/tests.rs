@@ -568,3 +568,77 @@ async fn system_notifications_errors_backups() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     c.done();
 }
+
+/// I-02: logout-all ends every session and revokes the caller's API tokens (not other users').
+#[tokio::test(flavor = "multi_thread")]
+async fn logout_all_revokes_sessions_and_tokens() {
+    let c = setup().await;
+    let (_, v) = c
+        .call(
+            "POST",
+            "/api/v2/tokens",
+            &c.u1,
+            Some(json!({"name":"t","scopes":["read"]})),
+        )
+        .await;
+    let api = v["token"].as_str().unwrap().to_string();
+    let (_, v2) = c
+        .call(
+            "POST",
+            "/api/v2/tokens",
+            &c.u2,
+            Some(json!({"name":"t2","scopes":["read"]})),
+        )
+        .await;
+    let other = v2["token"].as_str().unwrap().to_string();
+    // API tokens cannot use it.
+    let (s, _) = c.call("POST", "/api/v2/auth/logout-all", &api, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = c.call("POST", "/api/v2/auth/logout-all", &c.u1, None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["api_tokens_revoked"], 1);
+    let fresh = v["token"].as_str().unwrap().to_string();
+    assert_eq!(
+        c.call("GET", "/api/v2/tokens", &c.u1, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        c.call("GET", "/api/v2/tokens", &api, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        c.call("GET", "/api/v2/tokens", &fresh, None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        c.call("GET", "/api/v2/tokens", &other, None).await.0,
+        StatusCode::OK
+    );
+    // Sessions only: tokens survive.
+    let (_, v) = c
+        .call(
+            "POST",
+            "/api/v2/tokens",
+            &fresh,
+            Some(json!({"name":"keep","scopes":["read"]})),
+        )
+        .await;
+    let keep = v["token"].as_str().unwrap().to_string();
+    let (s, v) = c
+        .call(
+            "POST",
+            "/api/v2/auth/logout-all",
+            &fresh,
+            Some(json!({"revoke_api_tokens": false})),
+        )
+        .await;
+    assert_eq!(
+        (s, v["api_tokens_revoked"].as_i64()),
+        (StatusCode::OK, Some(0))
+    );
+    assert_eq!(
+        c.call("GET", "/api/v2/tokens", &keep, None).await.0,
+        StatusCode::OK
+    );
+    c.done();
+}

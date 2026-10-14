@@ -62,6 +62,13 @@ const AI_FIELDS: Array<{ key: AiKey; label: string; def: number; min: number; ma
   { key: 'ai_anchor_refine_timeout_s', label: 'Time budget (s)', def: 300, min: 5, max: 3600, desc: 'The plan finishes with heuristic anchors when this runs out.' },
 ];
 
+function parseUrls(raw: string): string[] {
+  return raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+}
+
 function toInput(v: number | undefined): string {
   return v === undefined || v === null ? '' : String(v);
 }
@@ -83,6 +90,9 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
   const [aiRefine, setAiRefine] = useState(false);
   const [semanticOff, setSemanticOff] = useState(false);
   const [aiValues, setAiValues] = useState<Record<string, string>>({});
+  const [moneyUrls, setMoneyUrls] = useState('');
+  const [rootUrls, setRootUrls] = useState('');
+  const [inboundCap, setInboundCap] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -103,6 +113,9 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
       setSkipVerify(s.skip_inject_verify === true);
       setAiRefine(s.ai_anchor_refine === true);
       setSemanticOff(s.anchor_semantic_off === true);
+      setMoneyUrls((s.money_page_urls ?? []).join('\n'));
+      setRootUrls((s.root_urls ?? []).join('\n'));
+      setInboundCap(toInput(s.max_new_inbound_per_target ?? undefined));
       setAiValues({
         ai_anchor_refine_max: toInput(s.ai_anchor_refine_max),
         ai_anchor_refine_concurrency: toInput(s.ai_anchor_refine_concurrency),
@@ -144,6 +157,26 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
       }
       if (parsed !== undefined) patch[f.key] = parsed;
     }
+    // G2-14: money pages, click-depth roots and the inbound cap were API-only before.
+    const money = parseUrls(moneyUrls);
+    const roots = parseUrls(rootUrls);
+    const badUrl = [...money, ...roots].find((u) => !/^https?:\/\/\S+$/i.test(u));
+    if (badUrl) {
+      setError(`Not an http(s) URL: ${badUrl}`);
+      return;
+    }
+    if (money.length > 1000 || roots.length > 100) {
+      setError('At most 1000 money pages and 100 root URLs.');
+      return;
+    }
+    patch.money_page_urls = money;
+    patch.root_urls = roots;
+    const cap = parseNum(inboundCap);
+    if (cap === 'invalid' || (cap !== undefined && (cap < 1 || cap > 10000))) {
+      setError('Max new inbound links per target must be a whole number from 1 to 10000 (blank = no cap).');
+      return;
+    }
+    patch.max_new_inbound_per_target = cap ?? null;
     if (topology) patch.silo_topology = topology;
     patch.skip_inject_verify = skipVerify;
     patch.ai_anchor_refine = aiRefine;
@@ -216,6 +249,57 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
             {error}
           </div>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-title">Targets</div>
+        <div className="density-grid">
+          <label className="field">
+            Money pages
+            <textarea
+              className="input"
+              rows={4}
+              value={moneyUrls}
+              placeholder="https://example.com/best-product/ (one URL per line)"
+              onChange={(e) => setMoneyUrls(e.target.value)}
+              data-hint="Pages that matter most commercially. The density cap never drops a suggestion pointing at a money page, and the scorer's money dimension favours them."
+            />
+            <span className="faint" style={{ fontSize: 12 }}>
+              One http(s) URL per line. Links to these pages are kept when the density budget is tight.
+            </span>
+          </label>
+          <label className="field">
+            Click-depth roots
+            <textarea
+              className="input"
+              rows={4}
+              value={rootUrls}
+              placeholder="https://example.com/guides/ (one URL per line)"
+              onChange={(e) => setRootUrls(e.target.value)}
+              data-hint="Pages one click from everywhere (main-menu hubs). Click depth is measured from the home page plus these URLs."
+            />
+            <span className="faint" style={{ fontSize: 12 }}>
+              The home page is always a root. Add menu hubs here; SiloForge cannot see theme menus.
+            </span>
+          </label>
+          <label className="field">
+            Max new inbound links per target
+            <input
+              type="number"
+              min={1}
+              max={10000}
+              step={1}
+              className="input"
+              value={inboundCap}
+              placeholder="no cap"
+              onChange={(e) => setInboundCap(e.target.value)}
+              data-hint="Limits how many new suggestions one plan may point at the same post, so a popular target does not soak up the whole budget."
+            />
+            <span className="faint" style={{ fontSize: 12 }}>
+              Per plan run. Blank = no cap.
+            </span>
+          </label>
+        </div>
       </div>
 
       <div className="card">

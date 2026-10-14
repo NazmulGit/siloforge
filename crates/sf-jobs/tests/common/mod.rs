@@ -431,6 +431,30 @@ fn env_full(tag: &str, embed_delay: Duration, batch: usize, ai_url: Option<Strin
 }
 
 fn env_inner(tag: &str, embedder: Arc<dyn Embedder>, batch: usize, ai_url: Option<String>) -> Env {
+    env_cfg_inner(tag, embedder, batch, ai_url, |_| {})
+}
+
+/// Default env with a config tweak (e.g. the install-wide GSC fallback).
+#[allow(dead_code)]
+pub fn env_cfg(tag: &str, tweak: impl FnOnce(&mut Config)) -> Env {
+    env_cfg_inner(
+        tag,
+        Arc::new(FakeEmbedder {
+            delay: Duration::ZERO,
+        }),
+        16,
+        None,
+        tweak,
+    )
+}
+
+fn env_cfg_inner(
+    tag: &str,
+    embedder: Arc<dyn Embedder>,
+    batch: usize,
+    ai_url: Option<String>,
+    tweak: impl FnOnce(&mut Config),
+) -> Env {
     let dir = test_dir(tag);
     let db = Db::open(&dir.join("t.db")).unwrap();
     let mut cfg = Config {
@@ -438,6 +462,7 @@ fn env_inner(tag: &str, embedder: Arc<dyn Embedder>, batch: usize, ai_url: Optio
         ..Config::default()
     };
     cfg.auth.jwt_secret = "test-secret-0123456789".into();
+    tweak(&mut cfg);
     let cfg = Arc::new(cfg);
     let embed = Arc::new(EmbedChain::new(
         vec![embedder],

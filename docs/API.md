@@ -99,8 +99,11 @@ Site `settings` keys accepted by PATCH (others answer 400 `unknown settings key`
 `money_page_urls`, `allow_private_host` (admin), `skip_inject_verify`, `max_new_inbound_per_target`, `root_urls`, and the
 v2 anchor keys `ai_anchor_refine` (bool, default false), `ai_anchor_refine_max` (0-5000, default 200),
 `ai_anchor_refine_concurrency` (1-16, default 4), `ai_anchor_refine_timeout_s` (5-3600, default 300),
-`anchor_semantic_off` (bool) and `anchor_semantic` (`"true"`/`"false"`). The UI edits the anchor keys under
-Settings -> Linking Rules -> Anchor text.
+`anchor_semantic_off` (bool), `anchor_semantic` (`"true"`/`"false"`) and `anchor_semantic_min` (0-1, default
+0.15: in-paragraph anchor phrases less similar to the target fall back to a keyword/title anchor; 0 = off). The UI edits the anchor keys under
+Settings -> Linking Rules -> Anchor text; `money_page_urls`, `root_urls` and `max_new_inbound_per_target` under
+Settings -> Linking Rules -> Targets. Numeric density keys accept v1's ranges (e.g. 0-1000) but the engine clamps
+them like v1 (`max_links_per_post`/`min_links_per_post`/`max_new_links_per_pass` to 200).
 
 ### Plugin channel
 | Method | Path | Auth | Notes |
@@ -128,7 +131,7 @@ Settings -> Linking Rules -> Anchor text.
 ### Dashboard, reports, jobs
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/dashboard/{site}` | health score, orphans, dead ends, edges by status, clusters, cannibalization (<=20), recent jobs, opportunities, http links, outbound domains, duplication, orphan posts |
+| GET | `/dashboard/{site}` | health score, orphans, dead ends, edges by status, clusters, cannibalization (<=20), recent jobs, opportunities, http links, outbound domains, duplication, orphan posts; v2 adds `link_health_checked_at` (null = link health never ran, so `http_links`/`outbound_domains` are unknown rather than 0) |
 | GET | `/reports/links/{site}` | per post: inbound, outbound, pagerank, click_depth, link_flow_score, duplicate_count |
 | GET | `/reports/graph/{site}` | `?max_nodes(<=750)&max_edges(<=2500)` -> `{nodes, edges, total_nodes, total_edges, node_limit, edge_limit, truncated}` |
 | GET | `/reports/anchors/{site}` | `{total, byType, byAnchor(top 50), warnings}` |
@@ -199,6 +202,21 @@ All routes need a token. "admin" = admin role (and `admin`/`*` scope for API tok
 | GET | `/system/stats` | `{ts, cpu_pct, proc_cpu_pct, mem_used_bytes, mem_total_bytes, proc_rss_bytes, disk_free_bytes, uptime_s, version, queue:{queued, running, failed_24h}}` |
 | GET | `/system/metrics?window=1h\|24h\|7d` | `{window, resolution: raw\|1m\|10m, sample_secs?, samples:[...]}` |
 
+### Sessions
+| Method | Path | Response |
+|---|---|---|
+| POST | `/auth/logout-all` | interactive sessions only (not API tokens): ends every session of the caller (bumps `token_version`) and revokes the caller's API tokens unless the body is `{"revoke_api_tokens": false}` -> `{ok, token, api_tokens_revoked}` (`token` = a fresh session JWT). A password change still keeps API tokens, so agent tokens (Hermes) survive it. |
+
+Other 2.0.2 behaviour: enqueue routes answer `429` once a site has 100 queued jobs; webhook URLs and provider header
+values are masked in responses (send the masked value back to keep the stored one); site plugin keys are stored
+hashed (shown only on create / rotate-key; old plaintext keys are hashed at start and plugins keep working); the first
+registration on a fresh install must come from `http://127.0.0.1:<port>` or `http://localhost:<port>`.
+
+### Search Console (user; own sites, admins all)
+| Method | Path | Response |
+|---|---|---|
+| POST | `/sites/{id}/gsc/sync` | `202 {job_run_id, deduplicated}` (queues a `gsc` job); `409` when the site has no credentials and the install has no `GSC_CREDENTIALS_JSON` fallback. Job stats: `{rows, matched, upserted, removed, property, truncated, credentials: "site"\|"global"}` |
+
 ### Jobs (user; own sites, admins all)
 | Method | Path | Response |
 |---|---|---|
@@ -234,7 +252,7 @@ Kinds and config: `webhook {url, headers?}`, `ntfy {url, token?}`, `telegram {bo
 ### Errors, audit (admin)
 | Method | Path | Response |
 |---|---|---|
-| GET | `/errors` | `{errors:[{fingerprint, source, message, context, count, first_seen, last_seen, resolved_at}]}` |
+| GET | `/errors` | `{errors:[{fingerprint, source, message, context, count, first_seen, last_seen, resolved_at}]}`; sources: `job:<kind>`, `service:<name>`, and `server:<METHOD> <route>` for every 5xx an API handler returned (detail kept server-side; the client only sees `internal error`) |
 | POST | `/errors/{fingerprint}/resolve` | `{resolved: true, fingerprint}` |
 | GET | `/audit?limit=&before_id=` | `{entries:[{id, ts, actor, via, action, target, detail}]}` newest first |
 

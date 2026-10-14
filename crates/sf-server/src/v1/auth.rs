@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
@@ -30,6 +30,29 @@ fn valid_email(email: &str) -> bool {
         && domain
             .char_indices()
             .any(|(i, c)| c == '.' && i > 0 && i + 1 < domain.len())
+}
+
+/// Host header is an IP literal (v4 / `[v6]`) or `localhost`, with an optional port.
+pub(crate) fn bootstrap_host_ok(headers: &HeaderMap) -> bool {
+    let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+    else {
+        // HTTP/1.0 without Host or an in-process call: no rebinding vector.
+        return true;
+    };
+    let host = host.trim().to_ascii_lowercase();
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((v6, _)) => return v6.parse::<std::net::Ipv6Addr>().is_ok(),
+            None => return false,
+        }
+    } else {
+        host.rsplit_once(':')
+            .filter(|(_, p)| p.chars().all(|c| c.is_ascii_digit()))
+            .map_or(host.as_str(), |(h, _)| h)
+    };
+    name == "localhost" || name.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 fn sign_user(st: &AppState, role: &str, id: &str, tv: i64) -> ApiResult<String> {
@@ -65,6 +88,7 @@ pub struct RegisterBody {
 pub async fn register(
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
+    headers: HeaderMap,
     JsonBody(b): JsonBody<RegisterBody>,
 ) -> ApiResult<Response> {
     rate_check(&st, "register", &ip)?;
@@ -77,6 +101,13 @@ pub async fn register(
         .await?;
     if users > 0 && !st.cfg.auth.allow_registration {
         return Err(ApiError::forbidden("registration is disabled"));
+    }
+    // L-17: the first-run bootstrap (becomes admin) only answers a Host that is an IP literal or
+    // `localhost`, so a web page using DNS rebinding cannot claim a fresh install.
+    if users == 0 && !bootstrap_host_ok(&headers) {
+        return Err(ApiError::forbidden(
+            "first-run registration must use http://127.0.0.1:<port> or http://localhost:<port>",
+        ));
     }
     let email = b.email.trim().to_lowercase();
     if !valid_email(&email) {
@@ -183,8 +214,8 @@ pub async fn login(
         .map(|r| r.4.clone())
         .unwrap_or_else(|| crypto::DUMMY_BCRYPT.to_string());
     let pw: String = b.password.chars().take(MAX_PASSWORD).collect();
-    let ok = bcrypt_verify(pw, hash).await;
-    let Some((id, email, name, role, _, tv)) = row.filter(|_| ok) else {
+    let ok = bcrypt_verify(pw.clone(), hash).await;
+    let Some((id, email, name, role, old_hash, tv)) = row.filter(|_| ok) else {
         rate_fail(&st, "login", &ip);
         if let Some(d) = lockout(&st).fail(&account) {
             tracing::warn!(
@@ -195,6 +226,29 @@ pub async fn login(
         return Err(ApiError::unauthorized("invalid email or password"));
     };
     lockout(&st).success(&account);
+    // L-15: upgrade a weaker (v1 cost 10) hash in the background; the session is unaffected.
+    if crypto::password_needs_rehash(&old_hash) {
+        let (st2, uid) = (st.clone(), id.clone());
+        tokio::spawn(async move {
+            let Ok(new_hash) = bcrypt_hash(pw).await else {
+                return;
+            };
+            let res = st2
+                .db
+                .write(move |t| {
+                    t.execute(
+                        "UPDATE users SET password_hash=?2 WHERE id=?1 AND password_hash=?3",
+                        params![uid, new_hash, old_hash],
+                    )
+                    .map_err(err)?;
+                    Ok(())
+                })
+                .await;
+            if let Err(e) = res {
+                tracing::warn!(error = %e, "login: password rehash failed");
+            }
+        });
+    }
     let token = sign_user(&st, &role, &id, tv)?;
     Ok(Json(json!({
         "token": token,
@@ -312,13 +366,14 @@ pub async fn handshake(
         rate_fail(&st, "handshake", &ip);
         return Err(ApiError::unauthorized("invalid api key"));
     }
-    let k2 = key.clone();
+    let hashed = crypto::site_key_stored(&key);
+    let (k2, h2) = (key.clone(), hashed.clone());
     let row = st
         .db
         .read(move |c| {
             c.query_row(
-                "SELECT id, api_key FROM sites WHERE api_key=?1",
-                [&k2],
+                "SELECT id, api_key FROM sites WHERE api_key=?1 OR api_key=?2 LIMIT 1",
+                params![h2, k2],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()
@@ -328,12 +383,31 @@ pub async fn handshake(
     let stored = row
         .as_ref()
         .map(|r| r.1.clone())
-        .unwrap_or_else(|| "sf_00000000000000000000000000000000".to_string());
-    let matches = crypto::constant_time_eq(&stored, &key);
+        .unwrap_or_else(|| crypto::site_key_stored("sf_00000000000000000000000000000000"));
+    let matches = crypto::site_key_matches(&stored, &key);
     let Some((site_id, _)) = row.filter(|_| matches) else {
         rate_fail(&st, "handshake", &ip);
         return Err(ApiError::unauthorized("invalid api key"));
     };
+    // L-02: a legacy plaintext key is hashed in place on first use (same JWT fingerprint).
+    if !crypto::site_key_is_hashed(&stored) {
+        let sid = site_id.clone();
+        let (h3, old) = (hashed.clone(), stored.clone());
+        if let Err(e) = st
+            .db
+            .write(move |t| {
+                t.execute(
+                    "UPDATE sites SET api_key=?2 WHERE id=?1 AND api_key=?3",
+                    params![sid, h3, old],
+                )
+                .map_err(err)?;
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!(error = %e, "handshake: could not hash legacy site key");
+        }
+    }
     let token = crypto::sign_jwt(
         &st.cfg.auth.jwt_secret,
         &crypto::site_claims(&site_id, &stored),
@@ -352,7 +426,35 @@ pub async fn handshake(
 
 #[cfg(test)]
 mod tests {
-    use super::valid_email;
+    use super::{bootstrap_host_ok, valid_email};
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    #[test]
+    fn bootstrap_host_rule() {
+        let h = |v: &str| {
+            let mut m = HeaderMap::new();
+            m.insert(header::HOST, HeaderValue::from_str(v).unwrap());
+            m
+        };
+        for ok in [
+            "127.0.0.1:8600",
+            "localhost:8601",
+            "LOCALHOST",
+            "192.168.1.5",
+            "[::1]:8600",
+        ] {
+            assert!(bootstrap_host_ok(&h(ok)), "{ok}");
+        }
+        for bad in [
+            "evil.example:8600",
+            "rebind.attacker.test",
+            "[nope]",
+            "localhost.evil.com",
+        ] {
+            assert!(!bootstrap_host_ok(&h(bad)), "{bad}");
+        }
+        assert!(bootstrap_host_ok(&HeaderMap::new()));
+    }
 
     #[test]
     fn email_rule_matches_v1_regex() {

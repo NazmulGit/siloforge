@@ -185,9 +185,17 @@ pub fn mask_config(cfg: &Value) -> Value {
                 *v = Value::String(MASK.into());
             }
         }
+        for k in URL_KEYS {
+            if let Some(Value::String(u)) = obj.get_mut(*k) {
+                *u = mask_url(u);
+            }
+        }
     }
     out
 }
+
+/// Config keys holding URLs that can carry a secret (masked by [`mask_url`]).
+pub const URL_KEYS: &[&str] = &["url", "api_base"];
 
 /// Cheap-to-clone handle. Create with [`Notifier::start`] inside a tokio runtime.
 #[derive(Clone)]
@@ -440,12 +448,10 @@ impl Inner {
                 tracing::info!(event = %n.event, level = %n.level, title = %n.title, body = %n.body, "notification");
                 Ok(())
             }
-            "desktop" => {
-                desktop_toast(&n.title, &n.body);
-                Ok(())
-            }
+            "desktop" => desktop_toast(&n.title, &n.body),
             "webhook" => {
                 let url = need(s("url"), "url")?;
+                metadata_guard(url).await?;
                 let mut req = self.http.post(url).json(&payload);
                 if let Some(h) = cfg.get("headers").and_then(Value::as_object) {
                     for (k, v) in h {
@@ -458,6 +464,7 @@ impl Inner {
             }
             "hermes" => {
                 let url = need(s("url"), "url")?;
+                metadata_guard(url).await?;
                 let body = payload.to_string();
                 let mut req = self
                     .http
@@ -476,6 +483,7 @@ impl Inner {
             }
             "ntfy" => {
                 let url = need(s("url"), "url")?;
+                metadata_guard(url).await?;
                 let priority = match n.level.as_str() {
                     "error" => "high",
                     "warn" => "default",
@@ -520,6 +528,7 @@ impl Inner {
                 if let Some(t) = cfg.get("thread_id").filter(|v| !v.is_null()) {
                     body["message_thread_id"] = t.clone();
                 }
+                metadata_guard(base).await?;
                 let url = format!("{}/bot{}/sendMessage", base.trim_end_matches('/'), token);
                 send(self.http.post(url).json(&body)).await
             }
@@ -547,6 +556,53 @@ fn need<'a>(v: &'a str, name: &str) -> std::result::Result<&'a str, Failure> {
         Err(Failure::fatal(format!("config.{name} missing")))
     } else {
         Ok(v)
+    }
+}
+
+/// L-05: never deliver to a cloud-metadata endpoint (IP literal, well-known name, or a name
+/// that resolves to one). Loopback / LAN stay allowed: the Hermes gateway lives on 127.0.0.1.
+async fn metadata_guard(url: &str) -> std::result::Result<(), Failure> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|_| Failure::fatal("config.url is not a valid URL"))?;
+    let host = parsed.host_str().unwrap_or("").to_string();
+    if host.is_empty() {
+        return Err(Failure::fatal("config.url has no host"));
+    }
+    if sf_core::net::is_metadata_host(&host) {
+        return Err(Failure::fatal(
+            "refusing to deliver to a cloud-metadata address",
+        ));
+    }
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let bare = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    if let Ok(addrs) = tokio::net::lookup_host((bare.as_str(), port)).await {
+        for a in addrs {
+            if sf_core::net::is_metadata_ip(a.ip()) {
+                return Err(Failure::fatal(
+                    "refusing to deliver: host resolves to a cloud-metadata address",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// L-05: client view of a secret-bearing URL (Slack/Discord/ntfy tokens live in the path or
+/// query): `scheme://host[:port]/***`. A URL with no path/query is shown as is.
+pub fn mask_url(u: &str) -> String {
+    let Ok(p) = reqwest::Url::parse(u) else {
+        return MASK.to_string();
+    };
+    if (p.path().is_empty() || p.path() == "/") && p.query().is_none() {
+        return u.to_string();
+    }
+    let host = p.host_str().unwrap_or("");
+    match p.port() {
+        Some(port) => format!("{}://{host}:{port}/{MASK}", p.scheme()),
+        None => format!("{}://{host}/{MASK}", p.scheme()),
     }
 }
 
@@ -594,10 +650,11 @@ pub fn hermes_signature(secret: &str, ts: &str, body: &str) -> String {
 }
 
 /// Windows toast through PowerShell's WinRT bridge. Spawned detached; title/body travel via env vars
-/// so they are never interpreted as script. No-op on other platforms.
-fn desktop_toast(title: &str, body: &str) {
+/// so they are never interpreted as script. G2-17: other platforms report a (non-retryable)
+/// failure instead of a fake success.
+fn desktop_toast(title: &str, body: &str) -> std::result::Result<(), Failure> {
     if !cfg!(windows) {
-        return;
+        return Err(Failure::fatal(DESKTOP_UNSUPPORTED));
     }
     const SCRIPT: &str = "$ErrorActionPreference='SilentlyContinue';\
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;\
@@ -625,10 +682,16 @@ $n=[Windows.UI.Notifications.ToastNotification]::new($t);\
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-    if let Err(e) = res {
-        tracing::debug!(error = %e, "desktop toast unavailable");
+    match res {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            tracing::debug!(error = %e, "desktop toast unavailable");
+            Err(Failure::fatal(format!("desktop toast unavailable: {e}")))
+        }
     }
 }
+
+const DESKTOP_UNSUPPORTED: &str = "desktop notifications are only supported on Windows";
 
 // ---------------------------------------------------------------------------------------------
 // Channel CRUD (used by the v2 API).
@@ -683,6 +746,17 @@ fn validate_config(kind: &str, cfg: &Value) -> Result<()> {
     match kind {
         "webhook" | "ntfy" | "hermes" if !url_ok(s("url")) => {
             Err(Error::bad("config.url must be an http(s) URL"))
+        }
+        _ if URL_KEYS.iter().any(|k| {
+            reqwest::Url::parse(s(k))
+                .ok()
+                .and_then(|u| u.host_str().map(sf_core::net::is_metadata_host))
+                .unwrap_or(false)
+        }) =>
+        {
+            Err(Error::bad(
+                "config URL must not point at a cloud-metadata address",
+            ))
         }
         "telegram" if s("bot_token").is_empty() || cfg.get("chat_id").is_none() => Err(Error::bad(
             "telegram needs config.bot_token and config.chat_id",
@@ -809,6 +883,13 @@ pub async fn update_channel(
         for (k, v) in src {
             if v.as_str() == Some(MASK) {
                 continue; // masked secret echoed back: keep the stored value
+            }
+            if URL_KEYS.contains(&k.as_str())
+                && let (Some(new), Some(Value::String(old))) = (v.as_str(), merged.get(k))
+                && new != old.as_str()
+                && new == mask_url(old)
+            {
+                continue; // masked URL echoed back: keep the stored URL
             }
             if v.is_null() {
                 merged.remove(k);
@@ -1185,5 +1266,82 @@ mod tests {
         assert_eq!(unread_count(&db).await.unwrap(), 0);
         db.close();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn webhook_urls_are_masked_and_metadata_refused() {
+        assert_eq!(
+            mask_url("https://hooks.slack.com/services/T0/B0/xyzSECRET"),
+            "https://hooks.slack.com/***"
+        );
+        assert_eq!(
+            mask_url("http://127.0.0.1:8644/webhooks/siloforge?k=SECRET"),
+            "http://127.0.0.1:8644/***"
+        );
+        assert_eq!(mask_url("https://ntfy.sh"), "https://ntfy.sh");
+        let m =
+            mask_config(&json!({"url": "https://discord.com/api/webhooks/1/TOKEN", "secret": "s"}));
+        assert!(!m.to_string().contains("TOKEN") && m["secret"] == "***");
+        for bad in [
+            "http://169.254.169.254/latest/meta-data",
+            "http://[fd00:ec2::254]/",
+            "http://metadata.google.internal/computeMetadata/v1/",
+        ] {
+            assert!(
+                validate_config("webhook", &json!({"url": bad})).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(validate_config("hermes", &json!({"url": "http://127.0.0.1:8644/x"})).is_ok());
+    }
+
+    #[tokio::test]
+    async fn metadata_guard_blocks_at_delivery_and_desktop_is_honest() {
+        assert!(metadata_guard("http://169.254.169.254/").await.is_err());
+        assert!(metadata_guard("http://127.0.0.1:9/").await.is_ok());
+        if !cfg!(windows) {
+            let e = desktop_toast("t", "b").err().map(|f| f.msg);
+            assert_eq!(e.as_deref(), Some(DESKTOP_UNSUPPORTED));
+        }
+    }
+
+    #[tokio::test]
+    async fn masked_url_echo_keeps_stored_url() {
+        let (db, _dir, key) = setup();
+        let ch = create_channel(
+            &db,
+            &key,
+            NewChannel {
+                name: "w".into(),
+                kind: "webhook".into(),
+                config: json!({"url": "https://hooks.example.test/services/SECRET"}),
+                events: Some(vec!["*".into()]),
+                enabled: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        let shown = ch.public_json()["config"]["url"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(shown, "https://hooks.example.test/***");
+        let up = update_channel(
+            &db,
+            &key,
+            &ch.id,
+            ChannelPatch {
+                name: None,
+                config: Some(json!({"url": shown})),
+                events: None,
+                enabled: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            up.config["url"],
+            "https://hooks.example.test/services/SECRET"
+        );
     }
 }

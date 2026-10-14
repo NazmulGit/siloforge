@@ -342,6 +342,48 @@ async fn auth_flow() {
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json["site_id"], h.site_a.as_str());
+    let first_tok = r.json["token"].as_str().unwrap().to_string();
+    // L-02: the key is stored hashed (legacy rows are hashed in place), the plaintext key keeps
+    // working, and tokens from before the hash stay valid (same fingerprint).
+    let stored: String = {
+        let id = h.site_a.clone();
+        h.st.db
+            .read(move |c| {
+                c.query_row("SELECT api_key FROM sites WHERE id=?1", [&id], |r| r.get(0))
+                    .map_err(sf_store::err)
+            })
+            .await
+            .unwrap()
+    };
+    assert!(stored.starts_with("sha256:") && !stored.contains(h.site_a_key.as_str()));
+    let r = h
+        .call(
+            "POST",
+            "/auth/handshake",
+            None,
+            Some(json!({"api_key": h.site_a_key})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        h.get(&format!("/suggestions/{}", h.site_a), &first_tok)
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let r = h
+        .call(
+            "POST",
+            "/auth/handshake",
+            None,
+            Some(json!({"api_key": stored})),
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::UNAUTHORIZED,
+        "the stored hash is not a key"
+    );
     let r = h
         .call(
             "POST",
@@ -1113,6 +1155,13 @@ async fn plugin_channel() {
     assert_eq!(r.json, json!({"received": 3, "upserted": 2, "skipped": 1}));
     let r = h.post("/sync", &site_tok, batch).await;
     assert_eq!(r.json, json!({"received": 3, "upserted": 0, "skipped": 3}));
+    // L-04: posts on a foreign host are skipped, subdomains of the site are accepted.
+    let foreign = json!({"domain": "a.example.com", "posts": [
+        post("https://evil.example.org/x", "<p>planted</p>"),
+        post("https://blog.a.example.com/y", "<p>sub</p>"),
+    ]});
+    let r = h.post("/sync", &site_tok, foreign).await;
+    assert_eq!(r.json, json!({"received": 2, "upserted": 1, "skipped": 1}));
     let (text, wc, meta): (String, i64, String) = {
         let id = h.site_a.clone();
         h.st.db
@@ -1176,7 +1225,29 @@ async fn plugin_channel() {
     assert_eq!(s[0]["edge_id"], h.edges[1].as_str());
     assert_eq!(s[0]["wp_post_id"], 99); // p0 was re-synced above
     assert_eq!(s[0]["paragraph_index"], 2);
+    assert!(s[0].get("paragraph_hash").is_some()); // #5: additive block hash
     assert_eq!(s[0]["replacement_html"], Value::Null);
+    // B9: ?status= is honoured; an unknown value keeps the approved default.
+    let r = h
+        .get(
+            &format!("/suggestions/{}?status=applied", h.site_a),
+            &site_tok,
+        )
+        .await;
+    assert!(
+        r.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["edge_id"] != h.edges[1].as_str())
+    );
+    let r = h
+        .get(
+            &format!("/suggestions/{}?status=bogus", h.site_a),
+            &site_tok,
+        )
+        .await;
+    assert_eq!(r.json.as_array().unwrap().len(), 1);
     assert_eq!(s[0]["insert_module"], "native");
     assert_eq!(
         h.get(&format!("/suggestions/{}", h.site_b), &site_tok)
@@ -1619,6 +1690,44 @@ async fn dashboard_reports_and_exports() {
     assert_eq!(r.json["http_links"], 1);
     assert_eq!(r.json["outbound_domains"], 1);
     assert_eq!(r.json["orphan_posts"][0]["title"], "Post 3");
+    // G5: the fixture was link-health-checked -> a timestamp; never checked -> null
+    // (http_links/outbound_domains are then unknown, not 0)
+    assert!(r.json["link_health_checked_at"].is_string(), "{}", r.json);
+    {
+        let id = sa.clone();
+        h.st.db
+            .write(move |t| {
+                t.execute(
+                    "UPDATE posts SET link_health_checked_at=NULL WHERE site_id=?1",
+                    [&id],
+                )
+                .map_err(sf_store::err)
+            })
+            .await
+            .unwrap();
+    }
+    let r2 = h.get(&format!("/dashboard/{sa}"), &h.user_a).await;
+    assert!(r2.json["link_health_checked_at"].is_null(), "{}", r2.json);
+    {
+        // restore the fixture's timestamps (the breadcrumb report below counts checked posts)
+        let (id, ts) = (
+            sa.clone(),
+            r.json["link_health_checked_at"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+        h.st.db
+            .write(move |t| {
+                t.execute(
+                    "UPDATE posts SET link_health_checked_at=?2 WHERE site_id=?1",
+                    [&id, &ts],
+                )
+                .map_err(sf_store::err)
+            })
+            .await
+            .unwrap();
+    }
     let cw = r.json["cannibalization_warnings"].as_array().unwrap();
     assert_eq!(cw.len(), 1);
     assert_eq!(cw[0]["anchor"], "alpha");
@@ -2097,7 +2206,55 @@ async fn providers_models_chains() {
         );
     }
     let r = h.get(&format!("/providers/{pid}"), &ad).await;
-    assert_eq!(r.json["headers"], json!({"X-A": "b"}));
+    // L-07: header values are masked in responses and sealed at rest.
+    assert_eq!(r.json["headers"], json!({"X-A": "****"}));
+    let stored: String = {
+        let p = pid.clone();
+        h.st.db
+            .read(move |c| {
+                c.query_row(
+                    "SELECT headers FROM model_providers WHERE id=?1",
+                    [&p],
+                    |r| r.get(0),
+                )
+                .map_err(sf_store::err)
+            })
+            .await
+            .unwrap()
+    };
+    assert!(
+        stored.contains("v1:") && !stored.contains("\"b\""),
+        "{stored}"
+    );
+    // Echoing the masked value back keeps the secret; a new value replaces it.
+    h.call(
+        "PATCH",
+        &format!("/providers/{pid}"),
+        Some(&ad),
+        Some(json!({"headers": {"X-A": "****", "X-Long": "Bearer abcdefgh"}})),
+    )
+    .await;
+    let r = h.get(&format!("/providers/{pid}"), &ad).await;
+    assert_eq!(r.json["headers"]["X-Long"], "***********efgh");
+    let stored2: String = {
+        let p = pid.clone();
+        h.st.db
+            .read(move |c| {
+                c.query_row(
+                    "SELECT headers FROM model_providers WHERE id=?1",
+                    [&p],
+                    |r| r.get(0),
+                )
+                .map_err(sf_store::err)
+            })
+            .await
+            .unwrap()
+    };
+    let v: Value = serde_json::from_str(&stored2).unwrap();
+    assert_eq!(
+        sf_core::crypto::open_header_value(&h.st.secret_key, v["X-A"].as_str().unwrap()),
+        "b"
+    );
     assert_eq!(
         h.get(&format!("/providers/{}", sf_core::new_id()), &ad)
             .await
@@ -2451,6 +2608,16 @@ async fn providers_models_chains() {
     assert_eq!(r.json.as_array().unwrap().len(), 1);
     let r = h.get(&format!("/model-chains/{ce}/rungs"), &ad).await;
     assert_eq!(r.json[0]["model_id"], embed_model.as_str());
+    // B11: a chained embed model cannot change its width.
+    let r = h
+        .call(
+            "PATCH",
+            &format!("/models/{embed_model}"),
+            Some(&ad),
+            Some(json!({"dim": 768})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
     // deletes
     assert_eq!(
         h.call(

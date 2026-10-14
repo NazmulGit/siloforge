@@ -47,6 +47,9 @@ fn configure(conn: &Connection, writer: bool) -> rusqlite::Result<()> {
     conn.pragma_update(None, "cache_size", -32_768)?; // 32 MiB per connection
     conn.pragma_update(None, "mmap_size", 268_435_456_i64)?;
     if writer {
+        // G2-9: takes effect on a new, empty database only (existing files keep their mode until
+        // `siloforge vacuum`); makes the daily `PRAGMA incremental_vacuum` return free pages.
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "wal_autocheckpoint", 2000)?;
@@ -312,6 +315,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sf-store-test-{}", sf_core::new_id()));
         let db = Db::open(&dir.join("t.db")).unwrap();
         (db, dir)
+    }
+
+    /// G2-9: a fresh database is created with auto_vacuum=INCREMENTAL.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_database_uses_incremental_auto_vacuum() {
+        let (db, dir) = tmp_db();
+        let mode: i64 = db
+            .read(|c| {
+                c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+                    .map_err(err)
+            })
+            .await
+            .unwrap();
+        assert_eq!(mode, 2);
+        db.close();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -206,7 +206,7 @@ pub async fn resolve(st: &AppState, cred: &str) -> Result<Principal, ApiError> {
                     return Err(ApiError::unauthorized("site no longer exists"));
                 };
                 match claims.tv {
-                    Some(tv) if tv != sf_core::crypto::key_fingerprint(&key) => {
+                    Some(tv) if tv != sf_core::crypto::stored_key_fingerprint(&key) => {
                         return Err(ApiError::unauthorized(
                             "site key was rotated, handshake again",
                         ));

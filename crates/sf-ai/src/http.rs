@@ -29,6 +29,10 @@ pub(crate) fn ip_blocked(ip: IpAddr) -> Option<&'static str> {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return v4_blocked(v4);
             }
+            // L-06: metadata IPv4 embedded in compatible / NAT64 / 6to4 forms.
+            if sf_core::net::is_metadata_ip(ip) {
+                return Some("cloud metadata address");
+            }
             if v6.is_unspecified() {
                 return Some("unspecified address");
             }
@@ -80,7 +84,7 @@ pub(crate) fn check_url(raw: &str) -> Result<url::Url, String> {
         },
         Some(url::Host::Domain(d)) => {
             let d = d.trim_end_matches('.').to_ascii_lowercase();
-            if d == "metadata.google.internal" || d == "metadata" {
+            if sf_core::net::METADATA_HOSTS.contains(&d.as_str()) {
                 Err(format!("blocked provider host {d}: cloud metadata name"))
             } else {
                 Ok(u)
@@ -121,6 +125,8 @@ pub(crate) fn build_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .dns_resolver(Arc::new(GuardedResolver))
         .redirect(reqwest::redirect::Policy::none())
+        // L-06: a system proxy would resolve names itself and bypass GuardedResolver.
+        .no_proxy()
         .connect_timeout(Duration::from_secs(10))
         .pool_idle_timeout(Duration::from_secs(60))
         .user_agent(concat!("SiloForge/", env!("CARGO_PKG_VERSION")))
@@ -266,6 +272,10 @@ mod tests {
         assert!(check_url("http://[::ffff:169.254.1.1]/").is_err());
         assert!(check_url("http://0.0.0.0:80/").is_err());
         assert!(check_url("http://metadata.google.internal/").is_err());
+        // L-06: embedded IPv4 metadata forms (NAT64, 6to4, compatible).
+        assert!(check_url("http://[64:ff9b::a9fe:a9fe]/").is_err());
+        assert!(check_url("http://[2002:a9fe:a9fe::1]/").is_err());
+        assert!(check_url("http://[::a9fe:a9fe]/").is_err());
         assert!(check_url("file:///etc/passwd").is_err());
         assert!(check_url("not a url").is_err());
         // Loopback and private are allowed on purpose (dario, ollama).

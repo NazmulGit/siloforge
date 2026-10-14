@@ -9,7 +9,7 @@ link checks under "Safety" below.
 
 | Item | Value |
 |---|---|
-| WordPress | `app/dev/site63-local` (WP 7.0.1, PHP 8.2, MariaDB 11) on http://127.0.0.1:8391, siteurl `http://site01.example:8391`; 353 published posts + 7 pages (+1 draft page); 11 posts are Gutenberg (block comments), the rest are classic HTML with Amazon comparison tables and review lists; 176 internal links, ~15.4k affiliate links |
+| WordPress | `app/dev/site67-local` (WP 7.0.1, PHP 8.2, MariaDB 11) on http://127.0.0.1:8391, siteurl `http://site01.example:8391`; 353 published posts + 7 pages (+1 draft page); 11 posts are Gutenberg (block comments), the rest are classic HTML with Amazon comparison tables and review lists; 176 internal links, ~15.4k affiliate links |
 | Reset point | `D:\tmp\sf-pilot\wp-before.sql` (mariadb-dump). Restored twice; the md5 of a fresh dump matched the original both times (`6557ef20...`) |
 | WP changes for the test | `WP_ENVIRONMENT_TYPE=local` in wp-config (application passwords are disabled on plain http otherwise), plus one application password for `admin`. Both were removed at the end: the constant was deleted, and the DB restore removed the password |
 | v2 home | `D:\tmp\sf-pilot-home`: fresh `siloforge init`, admin via `user set-password --create`, an API token (`token create --scopes '*'`) for MCP, ORT DirectML 1.24.4 DLLs in `runtime\`, Xenova MiniLM in `models\all-MiniLM-L6-v2\` |
@@ -155,7 +155,7 @@ scheduler. Nothing was written to any site other than the local test WordPress, 
 - MCP has no link-health tool. `restore` does not bring back `runtime/`/`models/` (document it or offer
   `fetch-runtime`/`fetch-model` in the restore output).
 - "compute pool ready" is logged twice at startup (cosmetic).
-- `/tmp/edit.php` (the test helper) remains in the stopped `site63-local-cli-1` container's own filesystem
+- `/tmp/edit.php` (the test helper) remains in the stopped `site67-local-cli-1` container's own filesystem
   (not in a volume, root-owned). Removing the container drops it.
 
 ## Artifacts (D:\tmp\sf-pilot)

@@ -29,9 +29,10 @@ pub use guards::{
     reserved_exact_anchors, type_share,
 };
 pub use pick::{
-    AnchorPick, PhraseScore, PickOptions, PickSource, SEMANTIC_BASE, SEMANTIC_WEIGHT,
-    STRIKING_WEIGHT, TargetProfile, clean_title, find_unblocked, is_fragment_anchor, is_ignored,
-    is_natural_anchor, pick_anchor, pick_anchor_across, score_phrase, top_phrases,
+    AnchorPick, GENERIC_HEAD_PENALTY, MIN_PHRASE_SEMANTIC, PhraseScore, PickOptions, PickSource,
+    SEMANTIC_BASE, SEMANTIC_WEIGHT, STRIKING_WEIGHT, TargetProfile, clean_title, find_unblocked,
+    is_fragment_anchor, is_ignored, is_natural_anchor, pick_anchor, pick_anchor_across,
+    score_phrase, top_phrases,
 };
 
 #[cfg(test)]

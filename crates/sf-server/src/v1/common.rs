@@ -285,6 +285,10 @@ pub async fn enqueue(
         .into_response())
 }
 
+/// L-09: most queued (not yet running) jobs one site may have. Inject/undo jobs with different
+/// `edge_ids` never dedupe, so without a cap one client could queue without bound.
+pub const MAX_QUEUED_PER_SITE: i64 = 100;
+
 pub async fn enqueue_raw(
     st: &AppState,
     actor: &str,
@@ -292,6 +296,26 @@ pub async fn enqueue_raw(
     site_id: &str,
     payload: Value,
 ) -> ApiResult<sf_jobs::Enqueued> {
+    let sid = site_id.to_string();
+    let queued: i64 = st
+        .db
+        .read(move |c| {
+            c.query_row(
+                "SELECT count(*) FROM job_runs WHERE site_id=?1 AND status='queued'",
+                [&sid],
+                |r| r.get(0),
+            )
+            .map_err(err)
+        })
+        .await?;
+    if queued >= MAX_QUEUED_PER_SITE {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "this site already has {queued} queued jobs (max {MAX_QUEUED_PER_SITE}); wait for them to run or cancel some"
+            ),
+        ));
+    }
     let mut job = NewJob::new(kind, Some(site_id), payload).by(actor);
     job.dedupe = Some(true);
     Ok(st.jobs.enqueue(job).await?)
@@ -427,6 +451,37 @@ where
         })
         .await;
     res?
+}
+
+/// L-02: hash every legacy plaintext `sites.api_key` in place (v1 imports, pre-2.0.2 rows).
+/// Idempotent; the JWT fingerprint is unchanged, so plugin sessions keep working.
+pub async fn hash_legacy_site_keys(db: &sf_store::Db) -> sf_core::Result<usize> {
+    db.write(|t| {
+        let rows: Vec<(String, String)> = {
+            let mut q = t
+                .prepare("SELECT id, api_key FROM sites WHERE api_key NOT LIKE 'sha256:%' AND api_key <> ''")
+                .map_err(err)?;
+            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(err)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(err)?
+        };
+        let mut up = t
+            .prepare("UPDATE sites SET api_key=?2 WHERE id=?1 AND api_key=?3")
+            .map_err(err)?;
+        let mut n = 0usize;
+        for (id, key) in rows {
+            n += up
+                .execute(rusqlite::params![
+                    id,
+                    sf_core::crypto::site_key_stored(&key),
+                    key
+                ])
+                .map_err(err)?;
+        }
+        Ok(n)
+    })
+    .await
 }
 
 pub async fn get_site(st: &AppState, id: &str) -> ApiResult<SiteRow> {

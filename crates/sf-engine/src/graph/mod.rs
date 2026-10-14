@@ -79,7 +79,9 @@ fn parse(raw: &str, base: Option<&str>) -> Option<Url> {
 
 /// Site-relative identity key of a URL: path only (scheme/host/port/query/fragment dropped),
 /// trailing slashes stripped (`""` → `"/"`), percent-decoded (raw kept when malformed),
-/// lower-cased. `None` when unparseable. Matches v1 `urlPathKey`.
+/// lower-cased. `None` when unparseable. Matches v1 `urlPathKey`, except (#23) WordPress "plain"
+/// permalinks: on `/` or `/index.php`, a numeric `p`, `page_id` or `attachment_id` query is kept
+/// (`/?p=12`), so `https://x.com/?p=12` is that post and not the home page.
 pub fn url_path_key(raw: &str, base: Option<&str>) -> Option<String> {
     let u = parse(raw, base)?;
     if u.cannot_be_a_base() {
@@ -90,7 +92,20 @@ pub fn url_path_key(raw: &str, base: Option<&str>) -> Option<String> {
         p.push('/');
     }
     let p = decode_uri_component(&p).unwrap_or(p);
-    Some(p.to_lowercase())
+    let p = p.to_lowercase();
+    if p == "/" || p == "/index.php" {
+        for (k, v) in u.query_pairs() {
+            let k = k.to_ascii_lowercase();
+            if matches!(k.as_str(), "p" | "page_id" | "attachment_id")
+                && !v.is_empty()
+                && v.len() <= 20
+                && v.bytes().all(|b| b.is_ascii_digit())
+            {
+                return Some(format!("/?{k}={v}"));
+            }
+        }
+    }
+    Some(p)
 }
 
 /// Host of an absolute URL: lower-cased, `www.` stripped, no port. Matches v1 `urlHostKey`.
@@ -741,6 +756,27 @@ mod tests {
         );
         assert_eq!(url_path_key("not a url", None), None);
         assert_eq!(url_path_key("", None), None);
+        // #23: plain permalinks keep their post id; other queries are still dropped.
+        assert_eq!(
+            url_path_key("https://example.com/?p=12", None).as_deref(),
+            Some("/?p=12")
+        );
+        assert_eq!(
+            url_path_key("http://www.example.com/index.php?utm=x&page_id=7#c", None).as_deref(),
+            Some("/?page_id=7")
+        );
+        assert_eq!(
+            url_path_key("https://example.com/?s=bike", None).as_deref(),
+            Some("/")
+        );
+        assert_eq!(
+            url_path_key("https://example.com/?p=12abc", None).as_deref(),
+            Some("/")
+        );
+        assert_eq!(
+            url_path_key("https://example.com/blog/?p=12", None).as_deref(),
+            Some("/blog")
+        );
         assert_eq!(
             url_host_key("https://WWW.Example.com:8443/x").as_deref(),
             Some("example.com")

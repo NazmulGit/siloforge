@@ -949,6 +949,33 @@ pub fn tag_tokens(toks: &[Token<'_>]) -> Vec<Tag> {
             *tag = Tag::Part;
         }
     }
+    // Gerund objects: "Try [crafting] wine bottle lights", "avoid [washing] glass bottles".
+    for i in 1..toks.len() {
+        let (Some(t), Some(pt)) = (toks.get(i), toks.get(i - 1)) else {
+            continue;
+        };
+        if t.kind != TokenKind::Word || pt.kind != TokenKind::Word {
+            continue;
+        }
+        let (Some(w), Some(pw)) = (lower.get(i), lower.get(i - 1)) else {
+            continue;
+        };
+        let lemma = verb_forms(pw)
+            .into_iter()
+            .any(|(l, f)| f != Form::Ing && has(GERUND_VERBS, &l));
+        if lemma
+            && w.len() > 5
+            && w.ends_with("ing")
+            && !w.contains('-')
+            && !has(ING_NOUNS, w)
+            && tags
+                .get(i)
+                .is_some_and(|g| matches!(g, Tag::Noun | Tag::Adj | Tag::Part))
+            && let Some(tag) = tags.get_mut(i)
+        {
+            *tag = Tag::Verb;
+        }
+    }
     // Regular -ed participles not in the lexicon.
     for (i, t) in toks.iter().enumerate() {
         if t.kind != TokenKind::Word {
@@ -997,6 +1024,24 @@ pub fn suspect_token(raw: &str) -> Option<Suspect> {
     if upper == letters.len() && letters.len() >= 5 && !w.contains('-') {
         return Some(Suspect::Brand);
     }
+    // 4-letter ALL-CAPS: a brand ("AIII", "WORX") unless a known acronym ("MIPS", "HEPA"), the
+    // plural of a 3-letter one ("LEDS", "ATVS") or a shouted common word ("BEST", "FREE").
+    if upper == letters.len() && letters.len() == 4 && w.chars().count() == 4 {
+        let lower = w.to_lowercase();
+        let acronym = has(KNOWN_ACRONYMS_4, &lower)
+            || lower.ends_with('s')
+            || super::stopwords::is_stopword(&lower)
+            || super::stopwords::is_listicle(&lower)
+            || has(VERBS, &lower)
+            || has(HOMOGRAPHS, &lower)
+            || is_adjective(&lower)
+            || has(BAD_HEADS, &lower)
+            || is_unit_word(&lower)
+            || has(COMMON_CAPS_WORDS, &lower);
+        if !acronym {
+            return Some(Suspect::Brand);
+        }
+    }
     // camelCase: a lowercase letter directly followed by an uppercase one ("iPhone", "monTEK")
     let chars: Vec<char> = w.chars().collect();
     if chars
@@ -1007,6 +1052,49 @@ pub fn suspect_token(raw: &str) -> Option<Suspect> {
     }
     None
 }
+
+/// Common 4-letter acronyms and initialisms (lowercase, sorted): never brand suspects.
+static KNOWN_ACRONYMS_4: &[&str] = &[
+    "abec", "ansi", "asap", "astm", "bogo", "cpsc", "dslr", "ebmx", "hdmi", "hdpe", "hepa", "hiit",
+    "html", "hvac", "jpeg", "ldpe", "ltpo", "mips", "msrp", "nasa", "ncaa", "nema", "nvme", "oled",
+    "pete", "pfas", "pfoa", "ptfe", "qled", "rfid", "sata", "ssid", "tpms", "uhmw", "usps", "wifi",
+];
+
+/// Ordinary 4-letter words that show up in ALL CAPS in headings or spec tables (sorted).
+static COMMON_CAPS_WORDS: &[&str] = &[
+    "also", "body", "bolt", "both", "cage", "deal", "each", "even", "fast", "fork", "from", "gear",
+    "here", "into", "kids", "lamp", "lite", "lube", "made", "mini", "mode", "more", "most", "note",
+    "only", "over", "pads", "part", "plus", "pump", "rack", "road", "sale", "seat", "size", "tips",
+    "tire", "tool", "tube", "very", "what", "when", "with", "your",
+];
+
+/// Verbs that take a gerund object ("Try crafting ...", "avoid washing ..."): an -ing word right
+/// after one is a verb, not a modifier (sorted).
+static GERUND_VERBS: &[&str] = &[
+    "avoid",
+    "begin",
+    "consider",
+    "continue",
+    "enjoy",
+    "finish",
+    "imagine",
+    "keep",
+    "love",
+    "practice",
+    "prefer",
+    "quit",
+    "recommend",
+    "start",
+    "stop",
+    "suggest",
+    "try",
+];
+
+/// -ing words that are nouns even after such a verb ("keep lighting simple"; sorted).
+static ING_NOUNS: &[&str] = &[
+    "bedding", "ceiling", "clothing", "flooring", "lighting", "seating", "siding", "spring",
+    "string", "tubing", "wiring",
+];
 
 /// Unit / spec words that are only meaningful after a number ("20 V", "1/2 Inch", "16.9 Oz"):
 /// an anchor never starts on one (sorted).
@@ -1119,6 +1207,10 @@ mod tests {
             UNIT_WORDS,
             BAD_HEADS,
             POSTPOSITIVE,
+            KNOWN_ACRONYMS_4,
+            COMMON_CAPS_WORDS,
+            GERUND_VERBS,
+            ING_NOUNS,
         ] {
             assert!(
                 l.windows(2).all(|w| w[0] < w[1]),
@@ -1126,6 +1218,32 @@ mod tests {
                 l.windows(2).find(|w| w[0] >= w[1])
             );
         }
+    }
+
+    #[test]
+    fn four_letter_caps_brands_and_gerund_objects() {
+        for b in ["AIII", "WORX", "AIII\u{2019}s"] {
+            assert_eq!(suspect_token(b), Some(Suspect::Brand), "{b}");
+        }
+        for a in [
+            "MIPS", "HEPA", "LEDS", "ATVS", "BEST", "FREE", "WITH", "LUBE", "USB", "LED",
+        ] {
+            assert_eq!(suspect_token(a), None, "{a}");
+        }
+        assert_eq!(
+            tag_of("Try crafting wine bottle pendant lighting.", "crafting"),
+            Tag::Verb
+        );
+        assert_eq!(
+            tag_of("Kids love riding mountain trails.", "riding"),
+            Tag::Verb
+        );
+        // not after a gerund-taking verb, or an -ing noun
+        assert_ne!(
+            tag_of("A folding bike fits the trunk.", "folding"),
+            Tag::Verb
+        );
+        assert_eq!(tag_of("Keep lighting simple.", "lighting"), Tag::Noun);
     }
 
     #[test]

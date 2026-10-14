@@ -86,6 +86,10 @@ pub struct NounPhrase {
     /// Sentence index within the text (0-based).
     #[serde(default)]
     pub sentence: u32,
+    /// The head (last word) is a site-wide generic noun ([`SiteTerms::is_generic_head`]:
+    /// "bottles" on a bottle site), so only a modifier the target names makes it specific.
+    #[serde(default)]
+    pub generic_head: bool,
 }
 
 fn edge_stem(word: Option<&str>) -> String {
@@ -274,6 +278,11 @@ pub fn noun_phrases_with(text: &str, terms: Option<&SiteTerms>) -> Vec<NounPhras
                         && !is_suspect.get(p).copied().unwrap_or(false))
                         || COMPOUND_TAILS.contains(&norm_word(ta.text).as_str())
                 });
+                let generic_head = terms.is_some_and(|ts| {
+                    edge_stems
+                        .get(1)
+                        .is_some_and(|h| !h.is_empty() && ts.is_generic_head(h))
+                });
                 out.push(NounPhrase {
                     text: surface.to_string(),
                     start: ta.start,
@@ -287,6 +296,7 @@ pub fn noun_phrases_with(text: &str, terms: Option<&SiteTerms>) -> Vec<NounPhras
                     split_modifier,
                     lead_evaluative: pos::is_evaluative(&norm_word(ta.text)),
                     sentence: sent.get(a).copied().unwrap_or(0),
+                    generic_head,
                 });
                 per_run += 1;
                 if out.len() >= MAX_PHRASES {
@@ -497,7 +507,7 @@ mod tests {
         );
     }
 
-    /// Hermes acceptance 2026-10-14 (site47.example): "V kits perfect", "inch cordless Impact
+    /// Hermes acceptance 2026-10-14 (site48.example): "V kits perfect", "inch cordless Impact
     /// Wrenches". A unit or lone letter never starts a phrase, a phrase never starts inside a
     /// glued spec, and the last word is a content noun.
     #[test]

@@ -204,19 +204,32 @@ fn row(page: &str, q: &str, impressions: f64, clicks: f64, pos: f64) -> Value {
 
 /// A site `example.test` with posts /alpha/ and /beta/ and sealed GSC credentials.
 async fn seed(e: &Env, token_uri: &str) -> String {
-    let id = sf_core::new_id();
-    let creds = json!({
+    seed_with(e, Some(sa_json(token_uri))).await
+}
+
+fn sa_json(token_uri: &str) -> String {
+    json!({
         "type": "service_account", "client_email": EMAIL,
         "private_key": TEST_PRIVATE_KEY_PEM, "token_uri": token_uri,
     })
-    .to_string();
+    .to_string()
+}
+
+/// Like `seed`, but the site's own credentials are optional (None = not connected).
+async fn seed_with(e: &Env, creds: Option<String>) -> String {
+    let id = sf_core::new_id();
+    let connected = creds.is_some();
     let secrets = SiteSecrets {
-        gsc_credentials: Some(creds),
+        gsc_credentials: creds,
         ..SiteSecrets::default()
     }
     .seal(&e.ctx.secret_key)
     .unwrap();
-    let settings = json!({"gsc": {"connected": true, "client_email": EMAIL}}).to_string();
+    let settings = if connected {
+        json!({"gsc": {"connected": true, "client_email": EMAIL}}).to_string()
+    } else {
+        json!({}).to_string()
+    };
     let i = id.clone();
     e.db.write(move |t| {
         t.execute(
@@ -388,6 +401,67 @@ async fn gsc_pull_pages_maps_and_replaces_keywords() {
         .await,
         1
     );
+}
+
+/// G2-5: a site without its own credentials uses the install-wide `GSC_CREDENTIALS_JSON`;
+/// per-site credentials win when both exist; neither = not connected. Never leaks the key.
+#[tokio::test]
+async fn gsc_falls_back_to_install_wide_credentials() {
+    let rows = vec![row(
+        "https://example.test/alpha/",
+        "bike lock",
+        100.0,
+        5.0,
+        6.5,
+    )];
+    let (base, st) = start_stub(rows, Mode::Ok).await;
+    let global = sa_json(&format!("{base}/token"));
+    let e = env_cfg("gsc-global", |c| c.gsc.credentials_json = global.clone());
+    let sid = seed_with(&e, None).await;
+    let site = load_site(&e.ctx, &sid).await.unwrap();
+    let (_, source) = sf_jobs::pipelines::gsc::credentials_for(&e.ctx, &site).unwrap();
+    assert_eq!(source, "global");
+    let stats = sf_jobs::pipelines::gsc::sync_site(&e.ctx, &site, &client(&base, 3, 1 << 20))
+        .await
+        .unwrap();
+    assert_eq!(stats["credentials"], "global");
+    assert_eq!(stats["upserted"], 1);
+    assert!(!stats.to_string().contains("PRIVATE KEY"));
+    {
+        let s = st.lock();
+        assert!(s.assertion_errors.is_empty(), "{:?}", s.assertion_errors);
+        assert_eq!(s.token_calls, 1);
+    }
+    assert_eq!(gsc_rows(&e, &sid).await.len(), 1);
+    // The settings stamp only touches sites that have a gsc object: none is invented.
+    let gsc_obj = q_rows(
+        &e.db,
+        "SELECT json_type(settings,'$.gsc') FROM sites WHERE id=?1",
+        vec![sid.clone()],
+    )
+    .await;
+    assert!(gsc_obj[0][0].is_null());
+
+    // Per-site credentials take precedence over a (broken) global value.
+    let e2 = env_cfg("gsc-precedence", |c| {
+        c.gsc.credentials_json = r#"{"client_email":"x"}"#.into();
+    });
+    let sid2 = seed_with(&e2, Some(sa_json(&format!("{base}/token")))).await;
+    let site2 = load_site(&e2.ctx, &sid2).await.unwrap();
+    let stats = sf_jobs::pipelines::gsc::sync_site(&e2.ctx, &site2, &client(&base, 3, 1 << 20))
+        .await
+        .unwrap();
+    assert_eq!(stats["credentials"], "site");
+
+    // Neither: a clear fatal error, and the audit hook skips GSC entirely.
+    let e3 = env("gsc-none");
+    let sid3 = seed_with(&e3, None).await;
+    let site3 = load_site(&e3.ctx, &sid3).await.unwrap();
+    assert!(sf_jobs::pipelines::gsc::credentials_for(&e3.ctx, &site3).is_none());
+    let err = sf_jobs::pipelines::gsc::sync_site(&e3.ctx, &site3, &client(&base, 3, 1 << 20))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("GSC_CREDENTIALS_JSON"), "{err}");
 }
 
 #[tokio::test]

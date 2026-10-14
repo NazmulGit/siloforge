@@ -23,7 +23,8 @@ which uses brute force at this size anyway (`indexed_vectors_count 0`).
    Timestamps are RFC 3339 TEXT in UTC.
 3. **Vectors: f32 little-endian BLOBs** on posts and paragraphs. Search is brute-force dot product over
    the site's vectors, loaded on demand into a per-site in-memory cache with LRU eviction and a RAM budget.
-   The biggest site (112k paragraphs) is 172 MB at f32. An int8-quantised cache variant keeps that at 43 MB.
+   The biggest site (112k paragraphs) is 172 MB at f32. An int8-quantised cache variant would keep that at 43 MB (implemented in
+   `sf_engine::vector`, not wired: f32 fits the default budget, G2-10).
    No Qdrant.
 4. **Queue: a `jobs` table** (the existing `job_runs` table, extended). Its guarantees:
    - a per-site mutex for mutating kinds;

@@ -159,6 +159,20 @@ pub async fn plan_site(
     for (s, t, status, origin) in &skip_rows {
         skip.add_edge(s, t, status, origin);
     }
+    // #6: a pending suggestion whose pair got linked meanwhile (by an editor, the plugin or an
+    // applied duplicate) is not rescored but deleted: approving it would add a second link.
+    let linked = linked_pairs(&skip_rows);
+    let (existing, stale_linked): (Vec<Cand>, Vec<Cand>) = existing
+        .into_iter()
+        .partition(|c| !linked.contains(&(c.source.clone(), c.target.clone())));
+    let stale_linked: Vec<String> = stale_linked.into_iter().filter_map(|c| c.edge_id).collect();
+    if !stale_linked.is_empty() {
+        job.info(format!(
+            "{} pending suggestion(s) dropped: their pair is already linked",
+            stale_linked.len()
+        ))
+        .await;
+    }
     let clusters = load_clusters(ctx, &site.id, &posts).await?;
     let topo_set = build_topology_candidates(&topo, &clusters, &pagerank, &skip);
     let mut skipped = topo_set.skipped;
@@ -274,7 +288,7 @@ pub async fn plan_site(
     let capped = apply_density(dens_in, &dctx, &limits);
     let kept_ids: HashSet<String> = capped.kept.into_iter().map(|c| c.id).collect();
     let mut kept: Vec<Cand> = Vec::new();
-    let mut drop_existing: Vec<String> = Vec::new();
+    let mut drop_existing: Vec<String> = stale_linked;
     for (i, c) in cands.into_iter().enumerate() {
         let key = c.edge_id.clone().unwrap_or_else(|| format!("~new{i:09}"));
         if kept_ids.contains(&key) {
@@ -498,6 +512,10 @@ fn anchor_run_options(job: &Job, site: &SiteInfo, vectors: &Arc<SiteVectors>) ->
         semantic: site.setting_str("anchor_semantic").as_deref() != Some("false")
             && !site.setting_bool("anchor_semantic_off"),
         ai,
+        min_semantic: site
+            .setting_f64("anchor_semantic_min")
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(0.0, 1.0) as f32),
     }
 }
 
@@ -568,7 +586,7 @@ fn add_skips(a: &mut SkipStats, b: &SkipStats) {
     a.pending += b.pending;
 }
 
-fn density_settings(site: &SiteInfo) -> DensitySettings {
+pub(crate) fn density_settings(site: &SiteInfo) -> DensitySettings {
     DensitySettings {
         max_links_per_post: site.setting_f64("max_links_per_post"),
         min_links_per_post: site.setting_f64("min_links_per_post"),
@@ -643,6 +661,16 @@ async fn load_posts(ctx: &JobContext, site: &SiteInfo) -> JobResult<Vec<PostInfo
 }
 
 type EdgeRow = (String, String, String, String);
+
+/// (source, target) pairs that are live or about to be: discovered links, applied or approved.
+fn linked_pairs(rows: &[EdgeRow]) -> HashSet<(String, String)> {
+    rows.iter()
+        .filter(|(_, _, status, origin)| {
+            origin == "existing" || matches!(status.as_str(), "applied" | "approved")
+        })
+        .map(|(s, t, _, _)| (s.clone(), t.clone()))
+        .collect()
+}
 
 /// Existing suggested plan/archive edges (to rescore) + every edge row for the skip sets.
 async fn load_edges(ctx: &JobContext, site_id: &str) -> JobResult<(Vec<Cand>, Vec<EdgeRow>)> {
@@ -889,7 +917,12 @@ async fn cluster_site(
                     .unwrap_or_default()
             })
             .collect();
-        let res = kmeans(&wide, &KmeansParams::new(k, seed)).map_err(|e| format!("{e:?}"))?;
+        // #24: the fixed k-means++ draw (an unresolved draw picks the last row with a non-zero
+        // distance, never a duplicate centroid at index 0). Identical output whenever v1's draw
+        // resolved, which is every run without float residue.
+        let mut params = KmeansParams::new(k, seed);
+        params.legacy_draw_fallback = false;
+        let res = kmeans(&wide, &params).map_err(|e| format!("{e:?}"))?;
         let mut out = Vec::new();
         for (ci, centroid) in res.centroids.iter().enumerate() {
             let idx: Vec<usize> = res
@@ -936,7 +969,7 @@ async fn cluster_site(
 
 /// Replace the site's auto clusters. An auto cluster whose member set is unchanged keeps its id
 /// (label/pillar refreshed) and its posts are not touched: every `posts` UPDATE rewrites the whole
-/// row (content + embedding, ~40 KB on site21), and the old delete-all (FK SET NULL) +
+/// row (content + embedding, ~40 KB on site26), and the old delete-all (FK SET NULL) +
 /// re-assign rewrote every post twice per plan. k-means is seeded, so a re-plan of an unchanged
 /// site now writes no post rows here.
 fn write_clusters(

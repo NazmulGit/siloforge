@@ -279,3 +279,75 @@ pub async fn revoke(
     .await;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
+
+#[derive(Deserialize, Default)]
+pub struct LogoutAllBody {
+    /// Also revoke every API token of the user (default true). `false` ends sessions only.
+    #[serde(default)]
+    revoke_api_tokens: Option<bool>,
+}
+
+/// I-02: `POST /api/v2/auth/logout-all` ends every session of the caller (bumps
+/// `users.token_version`) and, unless `revoke_api_tokens: false`, revokes all of the caller's API
+/// tokens. Interactive sessions only. Answers `{ok, token, api_tokens_revoked}` with a fresh
+/// session token for the caller. A password change does NOT revoke API tokens (they are separate,
+/// individually revocable credentials, e.g. the Hermes MCP token): use this endpoint for that.
+pub async fn logout_all(
+    State(st): State<AppState>,
+    u: User,
+    crate::v1::common::JsonBody(body): crate::v1::common::JsonBody<LogoutAllBody>,
+) -> ApiResult<Json<Value>> {
+    if u.token.is_some() {
+        return Err(ApiError::forbidden(
+            "API tokens cannot log out everywhere; use an interactive session",
+        ));
+    }
+    let revoke_tokens = body.revoke_api_tokens.unwrap_or(true);
+    let uid = u.user_id.clone();
+    let (role, tv, revoked) = st
+        .db
+        .write(move |t| {
+            t.execute(
+                "UPDATE users SET token_version=token_version+1 WHERE id=?1",
+                [&uid],
+            )
+            .map_err(err)?;
+            let revoked = if revoke_tokens {
+                t.execute(
+                    "UPDATE api_tokens SET revoked_at=?2 WHERE user_id=?1 AND revoked_at IS NULL",
+                    params![uid, sf_core::now_rfc3339()],
+                )
+                .map_err(err)?
+            } else {
+                0
+            };
+            let (role, tv) = t
+                .query_row(
+                    "SELECT role, token_version FROM users WHERE id=?1",
+                    [&uid],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(err)?
+                .ok_or_else(|| sf_core::Error::not_found("user not found"))?;
+            Ok((role, tv, revoked))
+        })
+        .await?;
+    st.auth_cache.clear();
+    audit(
+        &st,
+        &u.actor(),
+        u.via(),
+        "auth.logout_all",
+        Some(&u.user_id),
+        json!({ "api_tokens_revoked": revoked }),
+    )
+    .await;
+    let token = sf_core::crypto::sign_jwt(
+        &st.cfg.auth.jwt_secret,
+        &sf_core::crypto::user_claims(&role, &u.user_id, tv),
+    )?;
+    Ok(Json(
+        json!({ "ok": true, "token": token, "api_tokens_revoked": revoked }),
+    ))
+}

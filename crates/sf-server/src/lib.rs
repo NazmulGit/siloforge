@@ -22,6 +22,23 @@ pub use state::AppState;
 
 /// Builds the full application router. `extra` lets the binary mount more routes (e.g. `/mcp`).
 pub fn router(state: AppState, extra: Option<Router<AppState>>) -> Router {
+    // L-02 / L-07: hash legacy site keys and seal provider headers once per start (background).
+    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        let st = state.clone();
+        rt.spawn(async move {
+            match v1::common::hash_legacy_site_keys(&st.db).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(sites = n, "hashed legacy plaintext site api keys"),
+                Err(e) => tracing::warn!(error = %e, "could not hash legacy site api keys"),
+            }
+            // L-07: same for provider custom header values.
+            match v1::providers::seal_legacy_provider_headers(&st).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(providers = n, "sealed plaintext provider header values"),
+                Err(e) => tracing::warn!(error = %e, "could not seal provider header values"),
+            }
+        });
+    }
     let body_limit = state.cfg.server.body_limit_mb.saturating_mul(1024 * 1024);
     let mut app = Router::new()
         .route("/health", get(health))
@@ -42,6 +59,10 @@ pub fn router(state: AppState, extra: Option<Router<AppState>>) -> Router {
     app.layer(CompressionLayer::new())
         .layer(axum::middleware::from_fn(ui::security_headers))
         .layer(axum::middleware::from_fn(error::request_log))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            error::track_errors,
+        ))
         .with_state(state)
 }
 

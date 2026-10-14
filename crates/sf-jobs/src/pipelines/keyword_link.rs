@@ -1,8 +1,9 @@
 //! `keyword_link`: keyword rules → `sf_engine::linker` → suggested edges with
 //! `origin='keyword_linker'` (v1 semantics: `composite_score = 0.5`, `score_breakdown =
 //! {"keyword_rule": true}`, anchor = rule keyword). Word-boundary matching, blocked spans and
-//! existing (source, target) pairs of any live/pending/rejected status are respected.
-//! Stats: `{created}`.
+//! existing (source, target) pairs of any live/pending/rejected status are respected, and each
+//! source post gets at most the site's `max_links_per_post` keyword suggestions per run.
+//! Stats: `{created, max_per_source}`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -186,10 +187,14 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
         }
     }
     job.progress("link", 60.0).await;
+    // #20: keyword rules no longer bypass the site's density budget entirely: at most
+    // `max_links_per_post` keyword suggestions per source post per run (resolved like plan).
+    let limits = sf_engine::density::resolve_limits(&super::plan::density_settings(&site));
+    let max_per_source = Some(limits.max_per_post);
     let opts = LinkerOptions {
         existing_pairs: pairs,
         used_paragraphs: used,
-        max_per_source: None,
+        max_per_source,
     };
     let edges = compute(move || run_keyword_linker(&posts, &rules, &ignore, &opts)).await?;
     let sid = site.id.clone();
@@ -226,5 +231,7 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
         .await?;
     job.info(format!("keyword linker created {created} suggestions"))
         .await;
-    Ok(json!({"created": created, "progress": {"phase": "done", "pct": 100}}))
+    Ok(
+        json!({"created": created, "max_per_source": max_per_source, "progress": {"phase": "done", "pct": 100}}),
+    )
 }

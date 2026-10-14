@@ -8,8 +8,8 @@ Paths below are the default install on this PC. Adjust `<Root>` / `<home>` for o
 | Binary | `<Root>\current\siloforge.exe` (`current` = junction to `app\<version>\`) |
 | Data home `<home>` (`SILOFORGE_HOME`) | `<Root>\data`: `siloforge.db` (+ `-wal`, `-shm`), `siloforge.toml`, `secrets.env`, `logs\`, `models\`, `runtime\`, `siloforge.pid` |
 | Backups | `D:\Backups\SiloForge\v2` (production install; `backup.dir` in `siloforge.toml`), else `<home>\backups` |
-| v1 final dump | `D:\Backups\SiloForge\v1-final-<ts>.dump` (written by the cutover) |
-| Autostart | Scheduled Task `siloforge-keepalive` -> `wscript <Root>\keeper\siloforge-keepalive.vbs` |
+| v1 archive (dump, images, restore guide) | `D:\Backups\SiloForge\v1-archive\` (`RESTORE-v1.md`); v1 source `D:\Code\SiloForge-Suite\_archive\v1` |
+| Autostart | Scheduled Task `siloforge-keepalive` (every 5 min) -> `conhost.exe --headless "<Root>\app\siloforge.exe" --home <Root>\data serve` |
 | Install / cutover logs | `<Root>\logs\` (`install-history.log`, `cutover-<ts>.log`, `rollback-<ts>.log`) |
 | Ports | `127.0.0.1:8600` and `127.0.0.1:8601` (both serve API + UI + `/mcp`) |
 
@@ -20,9 +20,20 @@ In the examples, `sf` means `& 'D:\Final_Apps\SiloForge\current\siloforge.exe'` 
 
 ## 1. Start, stop, restart
 
-The keepalive task runs at logon and every 5 minutes. Its hidden keeper exits at once if port 8600 is already
-listening, otherwise it starts `siloforge.exe serve` with `SILOFORGE_HOME` set. So "start" means "run the task".
+The keepalive task runs every 5 minutes and starts `siloforge.exe serve` headless (no window) through
+`conhost --headless`. If SiloForge is already running, the new launch exits at once because the running process
+holds an exclusive lock on `data\siloforge.lock`. So "start" means "run the task". (The earlier wscript/VBS keeper
+was retired on 2026-10-14: `WScript.Shell.Run` hangs on this PC, see the `powershell-startup-hang` skill.)
 
+From cmd/bash (works even when PowerShell is affected by that hang):
+```bat
+schtasks /run /tn siloforge-keepalive                          :: start now (no-op if running)
+schtasks /change /tn siloforge-keepalive /disable              :: stop: disable first ...
+taskkill /F /PID <pid from D:\Final_Apps\SiloForge\data\siloforge.pid>   :: ... then kill by PID, never /IM
+schtasks /change /tn siloforge-keepalive /enable & schtasks /run /tn siloforge-keepalive   :: start again
+```
+
+PowerShell equivalent (start PowerShell with ALLUSERSPROFILE and SYSTEMDRIVE cleared on this PC):
 ```powershell
 Start-ScheduledTask siloforge-keepalive                       # start now (no-op if running)
 # stop: disable first, or the task brings it back within 5 min
@@ -70,6 +81,15 @@ Kinds: `crawl`, `plan`, `inject`, `undo`, `keyword_link`, `link_health`, `audit`
 - List: `GET /api/v2/jobs?status=running|queued|failed&kind=&site_id=&limit=`; per site: `GET /api/v1/jobs/{site}`.
 - Schedules (cron + IANA time zone) per site and kind: UI -> site -> Schedules, `/api/v1/schedules/{site}`.
   The scheduler ticks every 60 s. A `link_health` schedule can carry `{"internal_only": true}`.
+- Search Console (`gsc` job, also a step of every `audit`): per-site credentials (Settings -> Search Console) win;
+  a site without them uses the install-wide `GSC_CREDENTIALS_JSON` from the environment or `secrets.env`
+  (service-account JSON inline, or a path to the JSON file; v1 parity). The value is never logged, serialised or
+  returned; job stats say `"credentials": "site" | "global"`. With the global fallback every audit tries GSC for
+  every site: a site the service account cannot read only logs a warning.
+- Keyword rules (`keyword_link`) create at most the site's `max_links_per_post` suggestions per source post per run.
+- Database: the daily `maintenance` job prunes, runs `PRAGMA optimize` + `incremental_vacuum` and checkpoints the WAL.
+  New databases use `auto_vacuum=INCREMENTAL`; a database created before 2.0.2 shrinks only after a one-off
+  `sf vacuum` (server stopped, needs free disk about the DB size, ~1-2 min per GB).
 
 ## 4. Backups and restore
 
@@ -162,7 +182,12 @@ fall back to the CPU session automatically.
 |---|---|---|
 | `bind 127.0.0.1:8600 ... is v1 or another instance still running?` | v1 containers still hold the port, or a second instance | `docker ps` (stop `siloforge_api`/`siloforge_ui`), or find the other `siloforge.exe` |
 | `restore` refuses: server running | `<home>\siloforge.pid` names a live process | stop the server; after a crash a stale pid file is harmless (only a live pid blocks), `--force` overrides |
-| `JWT_SECRET must be set` at start | home has no `secrets.env` | `sf init` (or `install.ps1`) |
+| Enqueue answers 429 | the site already has 100 queued jobs (L-09) | wait for the queue to drain or cancel stale jobs (`GET /api/v2/jobs?status=queued&site_id=`) |
+| Fresh install: registration refused | first-user registration only from `127.0.0.1` / `localhost` (L-17, DNS-rebinding guard) | open the UI as `http://127.0.0.1:8601`, or `sf user set-password <email> --create` |
+| Lost a session / token leaked | | `POST /api/v2/auth/logout-all` (ends all sessions; revokes your API tokens unless `{"revoke_api_tokens": false}`) |
+| `JWT_SECRET must be set` at start | home has no `secrets.env` | `sf init` (or `install.ps1`). `sf init --force` on an existing home re-imports but keeps `JWT_SECRET`, `SILOFORGE_ENCRYPTION_KEY`, the backup passphrase and every other existing line |
+| `siloforge.db` never shrinks | database created before 2.0.2 (`auto_vacuum=NONE`) | stop the server, `sf vacuum`, start it again |
+| GSC sync answers 409 "not connected" | no per-site credentials and no `GSC_CREDENTIALS_JSON` | connect the site in Settings -> Search Console, or set `GSC_CREDENTIALS_JSON` in `secrets.env` and restart |
 | Task runs but nothing listens | keeper fails before `serve` | run `sf serve` in a console to see the error; check `<home>\logs` |
 | Port forbidden (WinError 10013) | Hyper-V reserved a port range over 8600 | `netsh int ipv4 show excludedportrange tcp`; keep the dynamic range at 49152+ (hub-pc-migration skill) |
 | `doctor`: embeddings FAIL, no onnxruntime.dll | runtime missing | `sf fetch-runtime` (or copy the DLLs into `<home>\runtime`) |

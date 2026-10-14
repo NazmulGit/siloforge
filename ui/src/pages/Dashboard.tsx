@@ -251,6 +251,9 @@ export function DashboardPage() {
 
   if (!siteId) return <EmptyState title="No site selected" hint="Pick a site from the selector above." />;
 
+  // G5: null = link health never ran (unknown, not 0); undefined = older server.
+  const lhUnknown = data != null && data.link_health_checked_at === null;
+
   return (
     <div>
       <div className="page-head">
@@ -352,15 +355,21 @@ export function DashboardPage() {
             </button>
             <StatCard
               label="HTTP Links"
-              value={data.http_links}
-              tone={data.http_links > 0 ? 'bad' : 'good'}
-              sub={data.http_links > 0 ? 'links not using HTTPS' : 'all links secure'}
+              value={lhUnknown ? '—' : data.http_links}
+              tone={lhUnknown ? undefined : data.http_links > 0 ? 'bad' : 'good'}
+              sub={
+                lhUnknown
+                  ? 'run Link Health to check'
+                  : data.http_links > 0
+                    ? 'links not using HTTPS'
+                    : 'all links secure'
+              }
               hint="Internal links still pointing at insecure http:// URLs instead of https://."
             />
             <StatCard
               label="Outbound Domains"
-              value={data.outbound_domains}
-              sub="distinct external domains"
+              value={lhUnknown ? '—' : data.outbound_domains}
+              sub={lhUnknown ? 'run Link Health to check' : 'distinct external domains'}
               hint="Number of distinct external domains your content links out to."
             />
             <StatCard

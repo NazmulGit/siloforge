@@ -36,7 +36,7 @@ enum Cmd {
         /// Import secrets/settings from a v1 .env (JWT_SECRET, ADMIN_*, OPENROUTER_*, DARIO_*), keeping v1 tokens valid.
         #[arg(long)]
         from_v1_env: Option<PathBuf>,
-        /// Overwrite an existing secrets.env.
+        /// Rewrite an existing secrets.env (re-import); JWT_SECRET, SILOFORGE_ENCRYPTION_KEY and the backup passphrase are kept.
         #[arg(long)]
         force: bool,
     },
@@ -73,6 +73,8 @@ enum Cmd {
     },
     /// Check configuration, database, embeddings runtime, ports and disk.
     Doctor,
+    /// Compact the database offline (server stopped) and enable incremental auto-vacuum.
+    Vacuum,
     /// Download ONNX Runtime (DirectML build on Windows) into <home>/runtime.
     FetchRuntime {
         /// CPU-only runtime (smaller, no GPU).
@@ -203,6 +205,7 @@ fn main() -> std::process::ExitCode {
             Cmd::Serve => serve::run(home).await,
             Cmd::Mcp => cmds::mcp().await,
             Cmd::Init { from_v1_env, force } => cmds::init(&home, from_v1_env.as_deref(), force),
+            Cmd::Vacuum => cmds::vacuum(&home),
             Cmd::Backup { cmd } => match cmd {
                 BackupCmd::Create {
                     kind,

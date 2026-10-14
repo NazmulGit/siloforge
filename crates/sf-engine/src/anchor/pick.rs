@@ -37,6 +37,15 @@ pub const BLOCKED_SENTENCE_PENALTY: f64 = 6.0;
 pub const SENTENCE_POSITION_PENALTY: f64 = 0.5;
 /// Cost of a salesy lead adjective ("serious stopping power").
 pub const EVALUATIVE_LEAD_PENALTY: f64 = 4.0;
+/// Cost of a site-wide generic head noun whose modifiers the target does not name
+/// ("Starbucks glass bottles" -> a bottle-crafts post on a bottle site).
+pub const GENERIC_HEAD_PENALTY: f64 = 12.0;
+/// Minimum cosine(phrase, target post) for an in-paragraph phrase pick (v2.0.2). Below it a
+/// phrase that the target does not fully name is off-topic ("open road" -> phone mounts, cos
+/// 0.01 on the pilot), and the pick falls back to a target keyword / title found in the
+/// paragraph, else the cleaned title (not in paragraph, so the insert step writes a sentence).
+/// The pilot's 5th percentile was 0.28. Site setting `anchor_semantic_min` overrides it.
+pub const MIN_PHRASE_SEMANTIC: f32 = 0.15;
 /// Inner function words a natural anchor may contain ("Bike Mounts for Phones").
 const INNER_FUNCTION_WORDS: &[&str] = &["a", "an", "and", "for", "in", "of", "on", "the", "with"];
 
@@ -200,6 +209,19 @@ pub fn score_phrase(phrase: &NounPhrase, target: &TargetProfile) -> Option<Phras
         0.0
     };
     let generic_penalty = 5.0 * (content - descriptive) as f64;
+    // "Starbucks glass bottles" on a bottle site: the head is in most posts, so the phrase is
+    // only specific when a modifier is a target word
+    let head = phrase.edge_stems.get(1).map(String::as_str).unwrap_or("");
+    let head_penalty = if phrase.generic_head
+        && !phrase
+            .stems
+            .iter()
+            .any(|st| st.as_str() != head && target.weight(st) > 0.0)
+    {
+        GENERIC_HEAD_PENALTY
+    } else {
+        0.0
+    };
     let edge_penalty: f64 = phrase
         .edge_stems
         .iter()
@@ -214,7 +236,8 @@ pub fn score_phrase(phrase: &NounPhrase, target: &TargetProfile) -> Option<Phras
     let score = 20.0 * overlap_desc + 3.0 * overlap_all + 2.0 * descriptive as f64 + length_score
         - generic_penalty
         - edge_penalty
-        - lead_penalty;
+        - lead_penalty
+        - head_penalty;
     Some(PhraseScore {
         score,
         overlap_desc,
@@ -350,6 +373,10 @@ pub struct PickOptions {
     /// the map get no semantic adjustment.
     #[serde(default)]
     pub semantic: HashMap<String, f32>,
+    /// In-paragraph phrases with a known cosine below this (and not fully named by the target)
+    /// are skipped; 0 disables. [`PickOptions::new`] sets [`MIN_PHRASE_SEMANTIC`].
+    #[serde(default)]
+    pub min_semantic: f32,
 }
 
 impl PickOptions {
@@ -357,6 +384,7 @@ impl PickOptions {
         Self {
             min_words: MIN_ANCHOR_WORDS,
             max_words: MAX_ANCHOR_WORDS,
+            min_semantic: MIN_PHRASE_SEMANTIC,
             ..Self::default()
         }
     }
@@ -512,6 +540,9 @@ pub fn pick_anchor(para: &ParagraphNlp, target: &TargetProfile, opts: &PickOptio
         if let Some(&c) = opts.semantic.get(&lower)
             && c.is_finite()
         {
+            if opts.min_semantic > 0.0 && c < opts.min_semantic && !named_by_target(ph, target) {
+                continue;
+            }
             score += SEMANTIC_WEIGHT * (f64::from(c) - SEMANTIC_BASE);
         }
         scored.push((score, ph));
@@ -625,6 +656,23 @@ pub fn pick_anchor(para: &ParagraphNlp, target: &TargetProfile, opts: &PickOptio
             .filter(|a| *a != clean)
             .collect(),
     }
+}
+
+/// Every descriptive word of the phrase is a target word ("Commuter Bike Helmets" for a
+/// commuter-helmet post): the semantic floor never drops such a phrase (short phrases embed
+/// poorly against a whole post: the pilot's exact titles scored 0.17-0.2).
+fn named_by_target(ph: &NounPhrase, target: &TargetProfile) -> bool {
+    let mut any = false;
+    for (tok, st) in ph.tokens.iter().zip(&ph.stems) {
+        if is_listicle_token(tok, st) {
+            continue;
+        }
+        if target.weight(st) <= 0.0 {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 /// "Best Drill Kits", "Top Picks": a listicle lead reads as a heading (same rule as
@@ -891,6 +939,7 @@ mod tests {
             split_modifier: false,
             lead_evaluative: false,
             sentence: 0,
+            generic_head: false,
         }
     }
 
@@ -938,7 +987,7 @@ mod tests {
         assert_eq!(clean_title("", 6), "");
     }
 
-    /// Pilot 2026-10-13 (site63 titles): no year holes, parentheses or dangling stop words.
+    /// Pilot 2026-10-13 (site67 titles): no year holes, parentheses or dangling stop words.
     #[test]
     fn clean_title_pilot_regressions() {
         let cases = [
@@ -1151,7 +1200,7 @@ mod tests {
         assert_ne!(alt.anchor, "steel bike lock");
     }
 
-    /// v2.0.1: unit / spec fragments and trailing adjectives (Hermes acceptance, site47.example).
+    /// v2.0.1: unit / spec fragments and trailing adjectives (Hermes acceptance, site48.example).
     #[test]
     fn fragments_are_never_natural_or_picked() {
         let t = TargetProfile::new(
@@ -1242,6 +1291,89 @@ mod tests {
         assert_eq!(
             clean_title("9 Best 32 Oz Water Bottles With Straw for 2026", 6),
             "32 Oz Water Bottles With Straw"
+        );
+    }
+
+    #[test]
+    fn semantic_floor_falls_back_to_keyword_then_title() {
+        let t = TargetProfile::new(
+            "11 Best Phone Mounts for Bike in 2026",
+            &kws(&["road bike phone mount", "phone mounts"]),
+            &[],
+        );
+        let p = ParagraphNlp::new("You will dominate the open road with these shades.", &[]);
+        let mut o = PickOptions::new();
+        assert_eq!(pick_anchor(&p, &t, &o).anchor, "open road", "lexical pick");
+        o.semantic.insert("open road".into(), 0.01);
+        // off-topic and no keyword in the paragraph -> cleaned title, not native
+        let fb = pick_anchor(&p, &t, &o);
+        assert_eq!(fb.source, PickSource::CleanTitle, "{fb:?}");
+        assert!(!fb.in_paragraph);
+        assert_eq!(fb.anchor, "Phone Mounts for Bike");
+        // floor 0 disables it; a cosine at the floor passes
+        let mut off = o.clone();
+        off.min_semantic = 0.0;
+        assert_eq!(pick_anchor(&p, &t, &off).anchor, "open road");
+        let mut at = o.clone();
+        at.semantic.insert("open road".into(), MIN_PHRASE_SEMANTIC);
+        assert_eq!(pick_anchor(&p, &t, &at).anchor, "open road");
+        // a keyword in the paragraph is the fallback
+        let p2 = ParagraphNlp::new(
+            "You will dominate the open road with these shades and phone mounts.",
+            &[],
+        );
+        let mut o2 = PickOptions::new();
+        for ph in &p2.phrases {
+            o2.semantic.insert(ph.text.to_lowercase(), 0.01);
+        }
+        let k = pick_anchor(&p2, &t, &o2);
+        assert!(k.in_paragraph, "{k:?}");
+        assert_eq!(k.anchor, "phone mounts");
+        // a phrase the target fully names is never dropped by the floor
+        let t3 = TargetProfile::new("Road Shades Guide", &kws(&["road shades"]), &[]);
+        let p3 = ParagraphNlp::new("The open road calls, so grab road shades now.", &[]);
+        let mut o3 = PickOptions::new();
+        for ph in &p3.phrases {
+            o3.semantic.insert(ph.text.to_lowercase(), 0.01);
+        }
+        let k3 = pick_anchor(&p3, &t3, &o3);
+        assert_eq!(k3.anchor, "road shades", "{k3:?}");
+        assert_eq!(k3.source, PickSource::Phrase);
+    }
+
+    #[test]
+    fn generic_head_needs_a_named_modifier() {
+        let terms = SiteTerms::from_counts(
+            100,
+            [("bottl".to_string(), 80u32)].into_iter().collect(),
+            &[],
+        );
+        let t = TargetProfile::new(
+            "How to Paint Wine Bottles With Acrylic Paint",
+            &kws(&["wine bottles", "acrylic paint"]),
+            &[],
+        );
+        let p = ParagraphNlp::with_terms(
+            "Clear glass bottles take paint evenly. Always rinse the wine bottles.",
+            &[],
+            Some(&terms),
+        );
+        let get = |s: &str| p.phrases.iter().find(|x| x.text == s);
+        let glass = get("Clear glass bottles").map(|x| x.generic_head);
+        assert_eq!(glass, Some(true));
+        let (Some(g), Some(w)) = (get("Clear glass bottles"), get("wine bottles")) else {
+            panic!("phrases {:?}", p.phrases);
+        };
+        let (Some(gs), Some(ws)) = (score_phrase(g, &t), score_phrase(w, &t)) else {
+            panic!("unscored");
+        };
+        assert!(
+            ws.score > gs.score + GENERIC_HEAD_PENALTY / 2.0,
+            "{ws:?} {gs:?}"
+        );
+        assert_eq!(
+            pick_anchor(&p, &t, &PickOptions::new()).anchor,
+            "wine bottles"
         );
     }
 }

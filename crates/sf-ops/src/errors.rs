@@ -22,6 +22,36 @@ static HEX_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"(?i)\b(?:0x)?[0-9a-f]{12,}\b").ok());
 static NUM_RE: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\d+(?:\.\d+)?").ok());
 
+/// L-14: secret-looking substrings scrubbed from stored error messages and contexts.
+static SECRET_RES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
+    [
+        (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", "$1 <redacted>"),
+        (r"\bsfk_[0-9a-f]{8,}", "sfk_<redacted>"),
+        (r"\bsf_[0-9a-f]{16,}", "sf_<redacted>"),
+        (r"\bsk-[A-Za-z0-9_-]{8,}", "sk-<redacted>"),
+        (r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+", "<jwt>"),
+        (
+            r#"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|app_password|private_key)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+"#,
+            "$1$2<redacted>",
+        ),
+        (r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@", "$1<redacted>@"),
+        (r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)", "<private key>"),
+    ]
+    .into_iter()
+    .filter_map(|(p, r)| Regex::new(p).ok().map(|re| (re, r)))
+    .collect()
+});
+
+/// Removes credentials (bearer tokens, `sfk_`/`sf_` keys, JWTs, `password=...`, URL user info,
+/// PEM private keys) from a message before it is stored or shown.
+pub fn scrub(message: &str) -> String {
+    let mut s = message.to_string();
+    for (re, rep) in SECRET_RES.iter() {
+        s = re.replace_all(&s, *rep).into_owned();
+    }
+    s
+}
+
 /// Normalizes a message for fingerprinting (ids, hex and numbers become placeholders).
 pub fn normalize(message: &str) -> String {
     let mut s: String = message.chars().take(MAX_MESSAGE).collect();
@@ -56,6 +86,9 @@ impl ErrorTracker {
 
     /// Records one occurrence; returns the fingerprint. A resolved error that happens again is reopened.
     pub async fn record(&self, source: &str, message: &str, context: Value) -> Result<String> {
+        let message = &scrub(message);
+        let ctx_text = scrub(&context.to_string());
+        let context: Value = serde_json::from_str(&ctx_text).unwrap_or(Value::String(ctx_text));
         let fp = fingerprint(source, message);
         let (fp2, source, message) = (
             fp.clone(),
@@ -156,6 +189,51 @@ impl ErrorTracker {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn scrub_removes_credentials() {
+        let m = "auth failed: Authorization: Bearer abcdefghijklmnop token sfk_0123456789abcdef0123                  key sf_0123456789abcdef0123456789abcdef password=hunter22 url https://bob:pw@wp.test/x                  jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc sk-live-SECRET-1234                  {\"api_key\": \"zzz-secret\"} -----BEGIN PRIVATE KEY-----
+MIIE
+-----END PRIVATE KEY-----";
+        let s = scrub(m);
+        for leak in [
+            "abcdefghijklmnop",
+            "0123456789abcdef0123",
+            "hunter22",
+            "bob:pw",
+            "eyJhbGci",
+            "SECRET-1234",
+            "zzz-secret",
+            "MIIE",
+        ] {
+            assert!(!s.contains(leak), "{leak} leaked: {s}");
+        }
+        assert!(s.contains("auth failed"));
+        assert_eq!(
+            scrub("post 12 failed: HTTP 500"),
+            "post 12 failed: HTTP 500"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_stores_scrubbed_message_and_context() {
+        let dir = std::env::temp_dir().join(format!("sf-ops-scrub-{}", sf_core::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir.join("t.db")).unwrap();
+        let t = ErrorTracker::new(db.clone());
+        t.record(
+            "http",
+            "upstream said password=letmein1",
+            json!({"url": "http://u:p4ss@h/x"}),
+        )
+        .await
+        .unwrap();
+        let rows = t.list(None, 10).await.unwrap();
+        let txt = serde_json::to_string(&rows).unwrap();
+        assert!(!txt.contains("letmein1") && !txt.contains("p4ss"), "{txt}");
+        db.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn normalization_groups_variants() {

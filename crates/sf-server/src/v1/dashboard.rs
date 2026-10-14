@@ -180,6 +180,15 @@ pub async fn get(
             "SELECT count(*) FROM link_health WHERE site_id=?1 AND lower(href) LIKE 'http://%'",
             &[sid],
         )?;
+        // G5: `http_links` / `outbound_domains` come from link_health; tell "0" from "never
+        // checked" (additive field, null until the first link-health run).
+        let link_health_checked_at: Option<String> = c
+            .query_row(
+                "SELECT max(link_health_checked_at) FROM posts WHERE site_id=?1",
+                [sid],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
         let (score, avg) = health_score(posts, orphans, dead_ends, live);
         Ok(Some(json!({
             "site": site.to_json(&key, false),
@@ -193,6 +202,7 @@ pub async fn get(
             "recent_jobs": recent_jobs,
             "opportunities": opportunities,
             "http_links": http_links,
+            "link_health_checked_at": link_health_checked_at,
             "link_duplication": duplication,
             "orphan_posts": orphan_posts,
         })))

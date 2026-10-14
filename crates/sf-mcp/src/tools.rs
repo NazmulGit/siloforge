@@ -42,6 +42,17 @@ const MAX_STR: usize = 4096;
 const MAX_IDS: usize = 10_000;
 const WAIT_MAX_SECS: u64 = 900;
 const PIPELINE_MAX_SECS: u64 = 1800;
+/// L-11: long-held waits (wait_for_job / run_pipeline) allowed at once per process.
+pub const MAX_LONG_WAITS: usize = 8;
+static LONG_WAITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_LONG_WAITS);
+
+fn long_wait_permit() -> ToolResult<tokio::sync::SemaphorePermit<'static>> {
+    LONG_WAITS.try_acquire().map_err(|_| {
+        ToolError::new(format!(
+            "too many concurrent long waits (max {MAX_LONG_WAITS}); poll siloforge_job_status instead or retry shortly"
+        ))
+    })
+}
 const APPROVAL_GATE: &str = "Nothing is written to WordPress until edges are approved (siloforge_decide_edge / siloforge_bulk_decide) and siloforge_bulk_inject is called.";
 
 fn site_only() -> Value {
@@ -687,6 +698,7 @@ pub async fn call(
         }
         "siloforge_wait_for_job" => {
             let id = a.id_req("job_id")?;
+            let _permit = long_wait_permit()?;
             let timeout = a
                 .int_opt("timeout_secs", 1, WAIT_MAX_SECS as i64)?
                 .unwrap_or(600);
@@ -695,7 +707,10 @@ pub async fn call(
             let w = wait_job(api, &id, deadline, poll_dur(api, poll), ct).await?;
             Out::Summary(w.to_json())
         }
-        "siloforge_run_pipeline" => run_pipeline(api, &a, ct).await?,
+        "siloforge_run_pipeline" => {
+            let _permit = long_wait_permit()?;
+            run_pipeline(api, &a, ct).await?
+        }
         "siloforge_create_backup" => {
             let b = body(vec![("note", a.str_opt("note")?.map(Value::String))]);
             Out::Json(api.post("/api/v2/backups", b).await?)
@@ -1057,4 +1072,20 @@ async fn run_pipeline(api: &Api, a: &Args<'_>, ct: &CancellationToken) -> ToolRe
         "written_to_wordpress": false,
         "next": next,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_waits_are_bounded() {
+        let held: Vec<_> = (0..MAX_LONG_WAITS)
+            .filter_map(|_| long_wait_permit().ok())
+            .collect();
+        assert_eq!(held.len(), MAX_LONG_WAITS);
+        assert!(long_wait_permit().is_err());
+        drop(held);
+        assert!(long_wait_permit().is_ok());
+    }
 }

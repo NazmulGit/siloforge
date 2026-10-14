@@ -22,6 +22,14 @@ pub const IDF_FLOOR: f64 = 0.35;
 pub const PROPER_MIN_CAPS: u32 = 2;
 /// ... and in lowercase at most this often.
 pub const PROPER_MAX_LOWER: u32 = 2;
+/// A brand that editors also type in lowercase now and then ("Squirt" 26x vs "squirt" 3x): seen
+/// capitalised mid-sentence at least this often ...
+pub const PROPER_RATIO_MIN_CAPS: u32 = 8;
+/// ... and at least this many times more often capitalised than lowercase.
+pub const PROPER_RATIO: u32 = 8;
+/// A head noun in at least this share of a site's posts is generic there ("bottles" on a bottle
+/// site): an anchor needs a modifier the target names ("wine bottles", not "glass bottles").
+pub const GENERIC_HEAD_DF: f64 = 0.5;
 
 /// Per-word capitalisation counts while building.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,9 +126,13 @@ impl TermsBuilder {
 }
 
 fn is_proper_counts(word: &str, c: CaseCounts) -> bool {
-    c.caps >= PROPER_MIN_CAPS
+    let strict = c.caps >= PROPER_MIN_CAPS
         && c.lower <= PROPER_MAX_LOWER
-        && c.caps >= c.lower.saturating_mul(10)
+        && c.caps >= c.lower.saturating_mul(10);
+    // mostly-capitalised words (site-wide statistics, not per paragraph): the brand is caught
+    // even where a paragraph writes it in lowercase
+    let ratio = c.caps >= PROPER_RATIO_MIN_CAPS && c.caps >= c.lower.saturating_mul(PROPER_RATIO);
+    (strict || ratio)
         && word.chars().any(char::is_alphabetic)
         // (short ALL-CAPS acronyms such as LED/MIPS/USB also land here; the phrase marker skips
         // them by their surface spelling)
@@ -171,6 +183,21 @@ impl SiteTerms {
         (IDF_FLOOR + (1.0 - IDF_FLOOR) * idf / max).clamp(IDF_FLOOR, 1.0)
     }
 
+    /// Share of the site's posts that contain this stem; `None` on small sites (fewer than
+    /// [`MIN_DOCS_FOR_IDF`] posts), where the share is noise.
+    pub fn df_share(&self, stem: &str) -> Option<f64> {
+        if self.docs < MIN_DOCS_FOR_IDF {
+            return None;
+        }
+        let df = f64::from(self.df.get(stem).copied().unwrap_or(0));
+        Some((df / f64::from(self.docs)).clamp(0.0, 1.0))
+    }
+
+    /// True when a head noun with this stem is generic on the site (see [`GENERIC_HEAD_DF`]).
+    pub fn is_generic_head(&self, stem: &str) -> bool {
+        self.df_share(stem).is_some_and(|s| s >= GENERIC_HEAD_DF)
+    }
+
     /// True when the lowercase word (possessive stripped) is a site-wide proper noun.
     pub fn is_proper(&self, word_lower: &str) -> bool {
         self.proper
@@ -217,6 +244,35 @@ mod tests {
             b.finish()
         };
         assert_eq!(small.idf_factor("bike"), 1.0);
+    }
+
+    #[test]
+    fn mostly_capitalised_brands_and_generic_heads() {
+        let t = SiteTerms::from_counts(
+            100,
+            [("bottl".to_string(), 70u32), ("wine".to_string(), 7)]
+                .into_iter()
+                .collect(),
+            &[
+                ("squirt".into(), 26, 3),
+                ("bell".into(), 313, 176),
+                ("pro".into(), 275, 125),
+                ("rare".into(), 7, 0),
+                ("lube".into(), 177, 234),
+            ],
+        );
+        assert!(t.is_proper("squirt"), "26 caps vs 3 lowercase");
+        assert!(t.is_proper("rare"));
+        for w in ["bell", "pro", "lube"] {
+            assert!(!t.is_proper(w), "{w}");
+        }
+        assert!(t.is_generic_head("bottl"));
+        assert!(!t.is_generic_head("wine"));
+        assert!(!t.is_generic_head("unseen"));
+        let small =
+            SiteTerms::from_counts(5, [("bottl".to_string(), 5u32)].into_iter().collect(), &[]);
+        assert_eq!(small.df_share("bottl"), None);
+        assert!(!small.is_generic_head("bottl"));
     }
 
     #[test]

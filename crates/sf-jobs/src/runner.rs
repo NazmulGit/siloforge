@@ -458,16 +458,32 @@ async fn fail(ctx: &Arc<JobContext>, job: &Job, msg: &str, retryable: bool, reso
     }
 }
 
+/// Stats of the plan inside a job: the job's own stats for `plan`, the `plan` stage's stats for
+/// `audit` (G2-15: audits used to report `candidates: 0` because they read the top level).
+pub(crate) fn plan_stats<'a>(kind: &JobKind, stats: &'a Value) -> &'a Value {
+    match kind {
+        JobKind::Audit => stats
+            .get("stages")
+            .and_then(Value::as_array)
+            .and_then(|a| a.iter().find(|s| s["stage"] == "plan"))
+            .and_then(|s| s.get("stats"))
+            .unwrap_or(&Value::Null),
+        _ => stats,
+    }
+}
+
 fn notify_done(ctx: &JobContext, job: &Job, stats: &Value) {
     let Some(n) = &ctx.notifier else { return };
     let num = |k: &str| stats.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let plan = plan_stats(&job.kind, stats);
+    let pnum = |k: &str| plan.get(k).and_then(Value::as_i64).unwrap_or(0);
     let site = job.site_id.as_deref();
     let summary = match job.kind {
         JobKind::Crawl => format!("{} upserted, {} unchanged", num("upserted"), num("skipped")),
-        JobKind::Plan => format!(
+        JobKind::Plan | JobKind::Audit => format!(
             "{} new suggestions, {} scored",
-            num("candidates"),
-            num("scored")
+            pnum("candidates"),
+            pnum("scored")
         ),
         JobKind::Inject => format!(
             "{} applied, {} failed, {} marked",
@@ -498,7 +514,7 @@ fn notify_done(ctx: &JobContext, job: &Job, stats: &Value) {
                 Notification::new(events::PLAN_READY, "SiloForge plan ready", summary)
                     .site(site)
                     .job(Some(&job.id))
-                    .data(json!({"candidates": num("candidates")})),
+                    .data(json!({"candidates": pnum("candidates")})),
             );
         }
         JobKind::Inject => {
@@ -510,5 +526,24 @@ fn notify_done(ctx: &JobContext, job: &Job, stats: &Value) {
             );
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// G2-15: the audit's plan.ready notification carries the plan stage's real counts.
+    #[test]
+    fn plan_stats_reads_the_audit_plan_stage() {
+        let audit = json!({"stages": [
+            {"stage": "crawl", "ok": true, "stats": {"candidates": 99}},
+            {"stage": "plan", "ok": true, "stats": {"candidates": 7, "scored": 40}},
+        ]});
+        assert_eq!(plan_stats(&JobKind::Audit, &audit)["candidates"], 7);
+        let plan = json!({"candidates": 3});
+        assert_eq!(plan_stats(&JobKind::Plan, &plan)["candidates"], 3);
+        assert!(plan_stats(&JobKind::Audit, &json!({})).is_null());
     }
 }

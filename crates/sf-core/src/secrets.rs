@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 use crate::crypto::{decrypt_secret, encrypt_secret};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SiteSecrets {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wp_user: Option<String>,
@@ -16,6 +16,18 @@ pub struct SiteSecrets {
     /// GSC service-account JSON (as a string).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gsc_credentials: Option<String>,
+}
+
+/// L-14: never print credential values (only whether they are set, plus the WP user name).
+impl std::fmt::Debug for SiteSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let set = |o: &Option<String>| o.as_ref().map(|_| "<redacted>");
+        f.debug_struct("SiteSecrets")
+            .field("wp_user", &self.wp_user)
+            .field("wp_app_password", &set(&self.wp_app_password))
+            .field("gsc_credentials", &set(&self.gsc_credentials))
+            .finish()
+    }
 }
 
 impl SiteSecrets {
@@ -95,5 +107,7 @@ mod tests {
         assert!(!blob.contains("abcd"));
         assert_eq!(SiteSecrets::load(&key, &blob).unwrap(), s);
         assert_eq!(SiteSecrets::default().seal(&key).unwrap(), "");
+        let dbg = format!("{s:?}");
+        assert!(!dbg.contains("abcd efgh") && !dbg.contains("\"x\"") && dbg.contains("bob"));
     }
 }

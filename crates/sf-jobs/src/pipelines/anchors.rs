@@ -119,6 +119,8 @@ pub struct AnchorRunOptions {
     pub semantic: bool,
     /// AI refinement (None = off).
     pub ai: Option<AiRefineOptions>,
+    /// Semantic floor for in-paragraph phrase picks (None = `MIN_PHRASE_SEMANTIC`, 0 = off).
+    pub min_semantic: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +388,11 @@ pub async fn generate(
             ai_keys.clone(),
         );
         let vectors = run.vectors.clone().filter(|_| semantic_on);
+        let min_sem = run
+            .min_semantic
+            .filter(|v| v.is_finite())
+            .unwrap_or(sf_engine::anchor::MIN_PHRASE_SEMANTIC)
+            .clamp(0.0, 1.0);
         let st = std::mem::take(&mut state);
         let (st, out, ids, ai) = compute(move || {
             pick_batch(
@@ -397,6 +404,7 @@ pub async fn generate(
                 &phrase_vecs,
                 vectors.as_deref(),
                 &keys,
+                min_sem,
             )
         })
         .await?;
@@ -610,6 +618,7 @@ fn pick_batch(
     phrase_vecs: &HashMap<String, Arc<[f32]>>,
     vectors: Option<&SiteVectors>,
     ai_keys: &HashSet<usize>,
+    min_semantic: f32,
 ) -> (PoolState, Vec<Picked>, ParaIds, Vec<AiItem>) {
     let mut out = Vec::new();
     let mut all_ids: ParaIds = HashMap::new();
@@ -658,6 +667,7 @@ fn pick_batch(
             let used = st.used_in_source.entry(source.clone()).or_default().clone();
             let (reserved, own_exact) = st.take_reserved(&inp.target);
             let mut opts = base_options(ignore, source_kw.clone());
+            opts.min_semantic = min_semantic;
             opts.used_in_source = used;
             opts.reserved_exact = reserved;
             opts.target_anchor_counts = st

@@ -78,9 +78,13 @@ pub(crate) fn to_rung(raw: RawRow, key: &[u8; 32], chain_id: Option<&str>) -> Ru
             Err(_) => KeyState::Undecryptable,
         }
     };
-    let headers = serde_json::from_str(&raw.headers)
+    // L-07: header values are sealed at rest; legacy plaintext values pass through.
+    let headers: Vec<(String, String)> = serde_json::from_str(&raw.headers)
         .map(|v| headers_from_json(&v))
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (k, sf_core::crypto::open_header_value(key, &v)))
+        .collect();
     Rung {
         position: raw.position,
         base_url: normalize_base_url(&kind, &raw.base_url),

@@ -72,8 +72,7 @@ contract is unchanged, so the v1 UI, the MCP tool names and the SiloForge Connec
 
 ### 7. Database
 - SQLite in WAL mode: one writer thread, a pool of readers, batched transactions.
-- Vectors as f32 BLOBs, searched by SIMD brute force over a per-site cache (LRU within `vector_cache_mb`),
-  int8 candidate search with exact re-rank.
+- Vectors as f32 BLOBs, searched by exact SIMD brute force over a per-site cache (LRU within `vector_cache_mb`).
 - Indexes per access path, retention jobs, `ANALYZE`/optimize, v1-compatible text ordering (collation).
 
 ### 8. Testing
@@ -175,7 +174,8 @@ Secrets live in `<home>\secrets.env` or the process environment, never in the TO
 Environment / `secrets.env`: `JWT_SECRET`, `SILOFORGE_ENCRYPTION_KEY`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (seeds the first
 admin when there are no users), `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_T2`, `OPENROUTER_URL`, `EMBED_REMOTE_MODEL`,
 `EMBED_CHAIN`, `DARIO_URL`, `DARIO_MODEL_PRIMARY`, `DARIO_MODEL_FALLBACK`, `CRAWL_ALLOW_PRIVATE_HOSTS`,
-`SILOFORGE_BINDS`, `SILOFORGE_CPU_THREADS`, `SILOFORGE_BACKUP_PASSPHRASE`, `SILOFORGE_LOG` (tracing filter).
+`SILOFORGE_BINDS`, `SILOFORGE_CPU_THREADS`, `SILOFORGE_BACKUP_PASSPHRASE`, `SILOFORGE_LOG` (tracing filter),
+`GSC_CREDENTIALS_JSON` (install-wide Search Console service account, used for sites without their own credentials).
 The v1 names are honoured, so a v1 `.env` can be imported with `siloforge init --from-v1-env`.
 
 ---
@@ -186,7 +186,7 @@ The v1 names are honoured, so a v1 `.env` can be imported with `siloforge init -
 siloforge [--home <dir>] <command>        # home: --home, else $SILOFORGE_HOME, else <exe dir>\data
   serve                                   run API + UI + MCP over HTTP + jobs + scheduler + monitor + backups
   mcp                                     MCP over stdio (needs SILOFORGE_API_URL + SILOFORGE_TOKEN of a running server)
-  init [--from-v1-env <.env>] [--force]   create siloforge.toml + secrets.env (generated secrets)
+  init [--from-v1-env <.env>] [--force]   create siloforge.toml + secrets.env (--force keeps existing master keys)
   backup create [--kind full|db|config] [--passphrase ..] [--note ..] [--include-secrets]
   backup list | backup verify <file>
   restore <file> [--passphrase ..] [--force]
@@ -198,6 +198,7 @@ siloforge [--home <dir>] <command>        # home: --home, else $SILOFORGE_HOME, 
   user set-password <email> --password <p> | env SILOFORGE_NEW_PASSWORD [--create]
   user list
   doctor                                  config, DB integrity, embeddings self-test, ports, disk
+  vacuum                                  offline VACUUM + incremental auto-vacuum (server stopped)
   fetch-runtime [--cpu] | fetch-model     download ONNX Runtime / the model (SHA-256 pinned)
   version
 ```
@@ -224,7 +225,7 @@ migrated copy of the production data. The machine was busy with other work durin
 about ±30 %; the order of magnitude is solid, exact ratios are not. Sources:
 [docs/testing/performance.md](docs/testing/performance.md), [docs/testing/contract-diff.md](docs/testing/contract-diff.md).
 
-Plan pipeline, largest site (site21.example: 2,621 posts, 112,706 paragraphs):
+Plan pipeline, largest site (site26.example: 2,621 posts, 112,706 paragraphs):
 
 | Run | v1 | v2 |
 |---|---|---|
@@ -239,7 +240,7 @@ CPU with 6 threads 204 texts/s; cosine vs the stored v1 vectors 0.999999+ for pa
 REST API (203 requests over 66 endpoint templates and 4 sites): **0 real contract mismatches**. After the read-path
 pass (covering indexes, concurrent reads), every heavy read on the largest site is at or below v1 (curl p50, ms):
 
-| Endpoint (site21.example) | v1 | v2 |
+| Endpoint (site26.example) | v1 | v2 |
 |---|---|---|
 | `/reports/link-health?limit=250` | 43.0 | 27.2 |
 | `/reports/link-health?format=csv` (46k rows) | 1037.9 | 203.4 |

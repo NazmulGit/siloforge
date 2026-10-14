@@ -13,7 +13,7 @@ Lower crates never depend on upper ones.
 |---|---|
 | `sf-core` | Config (TOML + `secrets.env` + env, v1 names honoured), errors, ids (UUID), time, enums with `Unknown(String)`, crypto: HS256 JWT, bcrypt, AES-256-GCM `v1:` blobs (v1-compatible), API token hashing, per-site secrets |
 | `sf-store` | SQLite schema (`migrations/0001..`), `Db` = one writer thread + reader pool, `Db::read` / `Db::write` hop off the async runtime, row -> JSON helpers |
-| `sf-engine` | Pure algorithms, no IO: HTML tokenizer/splitter, NLP (keywords, stems, intent, noun phrases), anchors and guards, block-aware insertion/removal + verify, LLM output validation, keyword linker, graph metrics, k-means, silo topologies, 11-dim scorer, density, vector search (SIMD, int8), site metrics, the rayon pool |
+| `sf-engine` | Pure algorithms, no IO: HTML tokenizer/splitter, NLP (keywords, stems, intent, noun phrases), anchors and guards, block-aware insertion/removal + verify, LLM output validation, keyword linker, graph metrics, k-means, silo topologies, 11-dim scorer, density, vector search (SIMD f32; int8 helpers unused), site metrics, the rayon pool |
 | `sf-embed` | `Embedder` trait and `EmbedChain`: remote (OpenAI-compatible) -> ONNX Runtime (DirectML / CPU, loaded dynamically) -> candle (optional feature); runtime/model downloads with pinned SHA-256 |
 | `sf-ai` | LLM providers (OpenAI-compatible, OpenRouter, Anthropic, Gemini, Ollama, custom), chains site -> global -> env, retries, circuit breaker, deadlines, call log, probes |
 | `sf-crawl` | HTTP client (rustls, body caps, per-host politeness, 429/503 backoff), SSRF guard, WP REST crawler (`context=edit`), sitemap + robots, link-health checker, WP writer with optimistic concurrency, live verify |
@@ -89,7 +89,7 @@ outside tests, no `unsafe` (except a documented model mmap in `sf-embed`), deter
   reads), `0004_token_parent`, `0005_reliability`. Migrations run at start; a binary refuses a newer schema.
 - Text ordering for v1 routes uses the custom collation `V1`, which reproduces Postgres `en_US.UTF-8` order.
 - Vectors are f32 little-endian BLOBs on posts and paragraphs (384-d). Search loads a site's vectors into a cache
-  (LRU within `vector_cache_mb`; ~1.6 KB per paragraph), int8-quantised candidate search with exact f32 re-rank.
+  (LRU within `vector_cache_mb`; ~1.6 KB per paragraph), exact f32 SIMD brute force (int8 helpers exist, unused).
   No ANN index is needed at this size (largest site 112k paragraphs = 173 MB f32).
 - Secrets at rest: `sites.secrets_enc` (WP application password, GSC credentials), provider keys, notification
   channel configs are AES-256-GCM sealed with a key derived from `SILOFORGE_ENCRYPTION_KEY`.

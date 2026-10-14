@@ -81,6 +81,24 @@ pub async fn sync(
         }
     }
     let received = b.posts.len();
+    // L-04: only posts on the site's own hosts (domain, its subdomains, wp_url host).
+    let site = super::common::get_site(&st, &site_id).await?;
+    let hosts = site_hosts(&site.domain, site.wp_url.as_deref());
+    let mut offsite = 0usize;
+    let posts: Vec<SyncPost> = b
+        .posts
+        .into_iter()
+        .filter(|p| {
+            let ok = !is_http_url(&p.url) || host_allowed(&hosts, &p.url);
+            if !ok {
+                offsite += 1;
+            }
+            ok
+        })
+        .collect();
+    if offsite > 0 {
+        tracing::warn!(site = %site_id, offsite, "sync: skipped posts whose URL is not on the site's host");
+    }
     let sid = site_id.clone();
     let (upserted, skipped) = st
         .db
@@ -106,7 +124,7 @@ pub async fn sync(
                 )
                 .map_err(err)?;
             let (mut upserted, mut skipped) = (0usize, 0usize);
-            for p in b.posts {
+            for p in posts {
                 if !is_http_url(&p.url) {
                     skipped += 1;
                     continue;
@@ -152,7 +170,7 @@ pub async fn sync(
                 params![sid, now],
             )
             .map_err(err)?;
-            Ok((upserted, skipped))
+            Ok((upserted, skipped + offsite))
         })
         .await?;
     audit_principal(
@@ -160,12 +178,53 @@ pub async fn sync(
         &who,
         "sync",
         Some(&site_id),
-        json!({ "received": received, "upserted": upserted }),
+        json!({ "received": received, "upserted": upserted, "offsite": offsite }),
     )
     .await;
     Ok(Json(
         json!({ "received": received, "upserted": upserted, "skipped": skipped }),
     ))
+}
+
+/// Lower-case hosts (without `www.`) a site's posts may live on.
+fn site_hosts(domain: &str, wp_url: Option<&str>) -> Vec<String> {
+    let mut v = Vec::new();
+    let d = domain.trim().to_lowercase();
+    let d = d
+        .strip_prefix("https://")
+        .or_else(|| d.strip_prefix("http://"))
+        .unwrap_or(&d)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_string();
+    if !d.is_empty() {
+        v.push(d);
+    }
+    if let Some(h) = wp_url.and_then(url_host)
+        && !v.contains(&h)
+    {
+        v.push(h);
+    }
+    v
+}
+
+fn url_host(raw: &str) -> Option<String> {
+    let u = url::Url::parse(raw).ok()?;
+    let h = u.host_str()?.to_lowercase();
+    let h = h.trim_start_matches("www.").to_string();
+    (!h.is_empty()).then_some(h)
+}
+
+/// Exact host, or a subdomain of a site host.
+fn host_allowed(hosts: &[String], url: &str) -> bool {
+    let Some(h) = url_host(url) else {
+        return false;
+    };
+    hosts
+        .iter()
+        .any(|s| h == *s || h.strip_suffix(s.as_str()).is_some_and(|p| p.ends_with('.')))
 }
 
 /// Approved edges for the plugin. Paged (`?limit` default/max 5000, `?offset`) instead of unbounded.
@@ -178,24 +237,29 @@ pub async fn suggestions(
     guard_site(&st, &who, &site_id).await?;
     let limit = int_param(&q, "limit", 5000, 1, 5000);
     let offset = int_param(&q, "offset", 0, 0, i64::MAX / 2);
+    // B9: `?status=` (v1 documented it but ignored it). Unknown values keep the default.
+    let status = match str_param(&q, "status") {
+        Some(v @ ("approved" | "applied" | "failed" | "reverted")) => v.to_string(),
+        _ => "approved".to_string(),
+    };
     let rows = st
         .db
         .read(move |c| {
             let mut stmt = c
                 .prepare(
-                    "SELECT e.id, sp.wp_post_id, tp.url, e.anchor, g.idx, e.insert_module
+                    "SELECT e.id, sp.wp_post_id, tp.url, e.anchor, g.idx, e.insert_module, g.hash
                        FROM link_edges e
                        JOIN posts sp ON sp.id = e.source_post_id
                        JOIN posts tp ON tp.id = e.target_post_id
                        LEFT JOIN paragraphs g ON g.id = e.paragraph_id
-                      WHERE e.site_id=?1 AND e.status='approved' AND sp.wp_post_id IS NOT NULL
+                      WHERE e.site_id=?1 AND e.status=?4 AND sp.wp_post_id IS NOT NULL
                         AND (tp.url LIKE 'http://%' OR tp.url LIKE 'https://%')
                       ORDER BY e.created_at ASC, e.id ASC
                       LIMIT ?2 OFFSET ?3",
                 )
                 .map_err(err)?;
             let rows = stmt
-                .query_map(params![site_id, limit, offset], |r| {
+                .query_map(params![site_id, limit, offset, status], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, i64>(1)?,
@@ -203,6 +267,7 @@ pub async fn suggestions(
                         r.get::<_, String>(3)?,
                         r.get::<_, Option<i64>>(4)?,
                         r.get::<_, Option<String>>(5)?,
+                        r.get::<_, Option<String>>(6)?,
                     ))
                 })
                 .map_err(err)?
@@ -214,13 +279,15 @@ pub async fn suggestions(
     let out: Vec<Value> = rows
         .into_iter()
         .filter(|r| is_http_url(&r.2))
-        .map(|(edge_id, wp, url, anchor, idx, module)| {
+        .map(|(edge_id, wp, url, anchor, idx, module, phash)| {
             json!({
                 "edge_id": edge_id,
                 "wp_post_id": wp,
                 "target_url": url,
                 "anchor": anchor,
                 "paragraph_index": idx,
+                // #5 (additive): the block's content hash, so a plugin can verify it before splicing.
+                "paragraph_hash": phash,
                 "replacement_html": Value::Null,
                 "insert_module": module.unwrap_or_else(|| "native".into()),
             })
@@ -365,4 +432,34 @@ pub async fn revert_ack(
     )
     .await;
     Ok(Json(row))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{host_allowed, site_hosts};
+
+    #[test]
+    fn sync_hosts_are_site_bound() {
+        let h = site_hosts(
+            "https://www.Example.com/",
+            Some("https://wp.other-host.net/blog"),
+        );
+        assert_eq!(h, vec!["example.com", "wp.other-host.net"]);
+        for ok in [
+            "https://example.com/a/",
+            "http://www.example.com/b",
+            "https://shop.example.com/c",
+            "https://wp.other-host.net/blog/x",
+        ] {
+            assert!(host_allowed(&h, ok), "{ok}");
+        }
+        for bad in [
+            "https://evil.com/a",
+            "https://notexample.com/",
+            "https://example.com.evil.io/",
+            "not a url",
+        ] {
+            assert!(!host_allowed(&h, bad), "{bad}");
+        }
+    }
 }

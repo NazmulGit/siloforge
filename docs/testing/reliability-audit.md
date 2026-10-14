@@ -217,7 +217,7 @@ Experiment: `D:\tmp\sf-rel\fk_bench.py` (stdlib sqlite3, in-memory). Test logs: 
 | G2-2 | Fixed: `gsc` job + audit step (service-account JWT RS256 via jsonwebtoken, searchAnalytics paging) writes keywords(source='gsc'); `POST /api/v2/sites/{id}/gsc/sync`. Tests in `sf-jobs/tests/gsc.rs` (stub Google). |
 | G2-3 | Fixed: scheduler queues `maintenance` daily (`monitor.maintenance_cron`); retention now prunes job_runs (keep newest `job_runs_keep_per_site` per site+kind), unused snapshots, resolved errors; notifications/audit periods configurable (G2-18); site_metrics_history kept. Tests `scheduler_queues_daily_maintenance`, `prunes_job_runs_snapshots_and_errors`. |
 | G2-4 | Fixed: CorsLayer when `server.cors_origins` is non-empty. Test `cors_layer_follows_config`. |
-| G2-5 | Open: `GSC_CREDENTIALS_JSON` still unused (per-site credentials are the supported path). |
+| G2-5 | Fixed in v2.0.2, see §7. |
 | G2-6 | Fixed: PATCH accepts `max_new_inbound_per_target`, `root_urls`, `ai_anchor_refine`, `ai_anchor_refine_{max,concurrency,timeout_s}`, `anchor_semantic`, `anchor_semantic_off` with validation. Test `settings_whitelist`. |
 | G2-7 / A6 | Fixed: mcp-info lists the MCP tool catalogue, no `--home`, `client_config` has `SILOFORGE_API_URL`. |
 | A1 | Fixed: `api_url` is the origin; the MCP client also strips a trailing `/api`. Test `api_url_with_api_suffix_is_normalised`. |
@@ -232,4 +232,45 @@ Experiment: `D:\tmp\sf-rel\fk_bench.py` (stdlib sqlite3, in-memory). Test logs: 
 | A11 | Fixed. MCP `ANCHOR_TYPES` includes `naked` and `cta` (server accepts all seven). |
 | A12 | Fixed. `siloforge_create_backup` documents `{id, status, kind, encrypted, secrets_included}`; `siloforge_list_notifications` lists the real events. |
 | A13 | Fixed. 05-ui-audit.md §5 carries a "superseded" note pointing to API.md; 04-integrations.md marks the `/api/jobs` and `/test` paths as Hermes / Mission Control routes. |
-| Other G2-* | G2-5 still open (`GSC_CREDENTIALS_JSON` unused). |
+| Other G2-* | G2-5 and G2-9..G2-17 resolved in §7 (v2.0.2). |
+
+## 7. Resolution (2026-10-14, v2.0.2 pass)
+
+Every item that §2, §3 or §6 left open, partial or mitigated. "Justified" = deliberately not changed, with the reason.
+
+| ID | Resolution |
+|---|---|
+| G2-5 / G4 | Fixed. `GSC_CREDENTIALS_JSON` (env or `secrets.env`; inline service-account JSON or a path to it, max 64 KB) is `Config.gsc` (`GscCfg`: never serialised, `Debug` prints `<redacted>`). `pipelines::gsc::credentials_for`: per-site sealed credentials first, then the install-wide fallback (v1 `pullGsc` parity); the gsc job and the audit step use it, stats say `credentials: "site"\|"global"`, the value is never logged. `POST /api/v2/sites/{id}/gsc/sync` accepts a site without its own connection when the fallback exists. Tests `config::tests::gsc_fallback_from_env_file_is_never_serialised_or_debug_printed`, `gsc::gsc_falls_back_to_install_wide_credentials`. |
+| #2 lost updates | Fixed as far as WordPress allows: R9 (snapshot undo refuses after an editor change) and R4 (journal + re-read) are fixed; the remaining GET-compare-POST window is R10. |
+| R10 | Justified (mitigated). WordPress REST has no conditional write (no `If-Match`/ETag on `POST /wp/v2/posts/{id}`), so the read-compare-write window (milliseconds, re-checked by `modified_gmt` right before the PUT) cannot be closed from the client side. The returned `content.raw` is compared with what was sent and any difference is a job warning; snapshot undo refuses to clobber later edits (R9). Closing it fully needs a plugin-side compare-and-swap endpoint. |
+| #6 re-plan re-suggests | Fixed. A pending plan/archive suggestion whose (source, target) pair became linked (discovered link, applied or approved edge) is deleted by the next plan instead of being rescored (`plan.rs` `linked_pairs`); reverted and failed pairs may be suggested again on purpose (an undo or a failed write is not a rejection; rejected pairs are never re-suggested). Test: `jobs::plan_suggests_valid_unique_edges_and_respects_rejections` (a hand-made link drops the pending suggestion). |
+| #8 click depth | Fixed for the configurable part: `settings.root_urls` is accepted (G2-6) and now editable in the UI (Linking Rules -> Targets). Nav roots from theme menus: see #40. |
+| #15 placement units, #16 tier availability | Justified (v1 parity). The scorer reproduces v1's placement units and tier-availability rule exactly; the golden scorer fixtures and the contract diff are built on that behaviour, and changing the weights would silently re-rank every site's backlog. Recorded as engine-spec parity items, not v2 bugs. |
+| #20 keyword linker | Fixed for density: keyword rules pass `max_per_source = max_links_per_post` (site density limits, resolved like plan) to the linker (`keyword_link.rs`, stats `max_per_source`). Scoring stays v1's fixed 0.5: a keyword rule is an explicit operator instruction, not a candidate to rank. Assertion in `jobs::keyword_link_link_health_and_audit`. |
+| #21 GSC | Fixed by G2-2 (pull) + G2-5 (install-wide credentials). |
+| #23 `/?p=` -> home | Fixed. `url_path_key` keeps a numeric `p` / `page_id` / `attachment_id` query on `/` or `/index.php` (`/?p=12`), so plain-permalink posts are no longer the home page; every other query is still dropped. Cases in `graph::tests`. |
+| #24 k-means++ fallback | Fixed. Plan clustering uses `legacy_draw_fallback = false` (an unresolved draw picks the last row with a non-zero distance instead of row 0). Output is identical whenever the draw resolves, i.e. every run without float residue. |
+| #34 link_health re-parse | Justified. link_health re-fetches and re-checks every URL each run anyway (status codes change); extracting links from the stored body is a few ms per post. Caching extracted links would need a new table plus invalidation for little gain. |
+| #37 unbounded growth, P8 | Fixed by R13 + G2-3 (snapshots, job_runs, errors pruned; `site_metrics_history` kept on purpose: it is the trend history). |
+| #40 nav provenance | Justified. WordPress REST returns post content only; theme menus are rendered HTML that differs per theme and builder, and REST mode never fetches rendered pages (raw content only). Operators set menu hubs as `root_urls` (Linking Rules -> Targets); breadcrumbs are detected by G2-1. |
+| #41 / G1 embed chains | Justified. Embeddings must stay all-MiniLM-L6-v2 384-d (migrated v1 vectors and every site index depend on it); the config chain (onnx -> remote -> local, same model, self-test cos 1.0) is the only production path. Settings -> Models embed chains are kept for v1 data compatibility and the UI now says they are not used (`ChainsPanel.tsx`). |
+| #42 mixed-rung vectors | Justified. All rungs are the same model with the same 256-token window (doctor self-test compares rungs); per-vector provenance would add a column to 100k-row tables for no behavioural difference. |
+| #44 inbound cap | Fixed by G2-6 (PATCH accepts it) + UI (Linking Rules -> Targets). |
+| G3 plugin-rendered links | Justified. The server only sees `content.raw`; a link the plugin renders at view time never exists there, so precise undo cannot remove it. The plugin channel owns those edges (`revert-ack`, L-03). |
+| G5 dashboard 0 vs unknown | Fixed. `/dashboard/{site}` gains the additive field `link_health_checked_at` (null until the first link-health run); the Dashboard shows "—" + "run Link Health to check" for HTTP Links / Outbound Domains instead of a misleading 0. Test in `v1_routes::dashboard_reports_and_exports`. |
+| P3 CSV in memory | Justified. Exports are bounded by one site's rows (largest link-health export ~200k rows, tens of MB), requested by an owner/admin; streaming would change the v1 response framing for little gain. |
+| P4 correlated counts | Fixed by indexes (0003/0005); measured in performance.md. |
+| G2-9 | Fixed. New databases are created with `auto_vacuum=INCREMENTAL` (writer connection, before migrations), so the daily `PRAGMA incremental_vacuum` returns free pages; existing databases convert with the new offline command `siloforge vacuum` (takes the instance lock, refuses while a server runs). Tests `sf_store::tests::new_database_uses_incremental_auto_vacuum`, `cmds::tests::vacuum_enables_incremental_auto_vacuum_and_respects_the_lock`. |
+| G2-10 | Fixed (docs). The int8 helpers are not used in production (f32 search fits the RAM budget); PLAN.md, ADR 0001, ARCHITECTURE.md and README no longer claim int8 candidate search. |
+| G2-11 | Fixed. `init --force` on an existing home keeps `JWT_SECRET`, `SILOFORGE_ENCRYPTION_KEY` and `SILOFORGE_BACKUP_PASSPHRASE` (never overridden by a v1 import) and every other existing line unless the import sets it. Test `cmds::tests::init_force_keeps_master_keys_and_other_lines`. |
+| G2-12 | Fixed (docs). PLAN.md now says NLP is memoised per plan run, not persisted by paragraph hash. |
+| G2-13 | Justified (v1 contract). v1's validator accepted 0..1000 and v1's engine clamped to 200 too; answering 400 for 201..1000 would change a v1 status code. The clamp is documented in API.md. |
+| G2-14 | Fixed. Linking Rules -> Targets edits `money_page_urls`, `root_urls` and `max_new_inbound_per_target` (validated client-side with the server's ranges). |
+| G2-15 | Fixed. `plan.ready` after an audit reports the plan stage's real `candidates` / `scored` (`runner::plan_stats`) instead of 0. Test `runner::tests::plan_stats_reads_the_audit_plan_stage`. |
+| G2-16 | Fixed. Every 5xx an API handler returns is recorded in the error tracker as `server:<METHOD> <route>` with the internal detail (the client still sees only `internal error`): `ApiError.detail` -> `InternalDetail` response extension -> `error::track_errors` middleware. Test `error::tests::server_errors_reach_the_error_tracker`. |
+| B9 | Fixed. `GET /suggestions/{site}?status=` honours approved/applied/failed/reverted; unknown values fall back to approved (v1 default). Test `v1_routes::plugin_channel`. (`?duplicates=1` on `/reports/links` stays ignored: A9, the UI no longer sends it.) |
+| #5 plugin path | Fixed (server side). `/suggestions` adds `paragraph_hash` (paragraphs.hash) next to `paragraph_index` (additive). Verifying it before splicing in the PHP plugin (`..\connect`) is a plugin follow-up outside this repo. |
+| G6 `replacement_html` null | Justified. Rephrase/context rewrites need the LLM plus live `content.raw`, which only the WP-REST push path has; plugin mode keeps `replacement_html: null` (v1 behaviour) and inserts natively. Use WP-REST mode for the LLM modules. |
+| B11 | Fixed. `PATCH /models/{id}` cannot change `dim` away from 384 while the model is a rung of an embed chain (400). Test `providers_models_chains`. |
+| G2-17 | Fixed. The desktop channel fails on non-Windows ("desktop notifications are only supported on Windows"). Test `metadata_guard_blocks_at_delivery_and_desktop_is_honest`. |
+| S2, S5, S6, S9, S13 | See security-audit.md (L-02 fixed, L-16 justified, L-17 fixed, L-06 fixed, L-12 justified). |

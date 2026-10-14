@@ -41,9 +41,10 @@ sf-ops: monitor (sysinfo) · notifier (webhook/ntfy/telegram/hermes/desktop) · 
 
 ### Performance design (requirements 1.x)
 - **CPU:** a single rayon pool sized by `resources.cpu_threads` (default = logical/4, about physical/2). Jobs run at
-  BELOW_NORMAL priority. The scheduler can defer heavy jobs while the machine is busy. Per-edge NLP is cached by paragraph hash.
-- **RAM:** stream posts and paragraphs per batch, no whole-site arrays of HTML. Vector cache LRU with a MB budget. int8 quantised
-  candidate search (exact f32 re-rank of the top-k).
+  BELOW_NORMAL priority. The scheduler can defer heavy jobs while the machine is busy. Per-edge NLP is memoised per plan run
+  (per paragraph, not persisted; G2-12).
+- **RAM:** stream posts and paragraphs per batch, no whole-site arrays of HTML. Vector cache LRU with a MB budget. Exact f32
+  SIMD search (an int8 variant exists in `sf_engine::vector` but is not used: f32 fits the budget; G2-10).
 - **Incremental:** chunk only posts whose `content_hash` changed (`posts.chunked_hash`), embed only rows without a vector,
   keep paragraph ids stable via the hash.
 - **GPU:** optional `onnx` rung uses ONNX Runtime DirectML (AMD/NVIDIA/Intel on Windows); auto-detected, falls back to CPU.
@@ -58,7 +59,7 @@ sf-ops: monitor (sysinfo) · notifier (webhook/ntfy/telegram/hermes/desktop) · 
 | 5 Backup/migration | sf-ops backup (zip: db snapshot + config + secrets, optional passphrase), restore, `migrate from-postgres`, portable home |
 | 6 Monitoring | sf-ops monitor, job_logs, errors table, notifications, `/api/v2/system/*`, UI System page |
 | 7 Database | SQLite schema (sf-store), indexes per access path, batched writes, ANALYZE/optimize job, retention |
-| 8 Testing | unit + golden + hostile input, integration test against a stub WP, load test on the site21 copy (112k paragraphs), MCP smoke, Hermes run |
+| 8 Testing | unit + golden + hostile input, integration test against a stub WP, load test on the site26 copy (112k paragraphs), MCP smoke, Hermes run |
 
 ## 5. Work packets
 Phase 1 (lead, done): workspace, sf-core, sf-store schema, AGENTS.md, PLAN, ADR.

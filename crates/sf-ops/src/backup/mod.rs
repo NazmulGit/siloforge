@@ -401,6 +401,36 @@ fn read_manifest(z: &mut zip::ZipArchive<std::fs::File>) -> Result<Manifest> {
     Ok(m)
 }
 
+/// L-10: hard caps on restored sizes (a crafted archive must not fill the disk).
+const MAX_SMALL_FILE: u64 = 1 << 20; // siloforge.toml / secrets.env
+const MAX_DB_FILE: u64 = 256 << 30; // 256 GiB
+/// Deflate cannot expand more than ~1032:1; anything claiming more is a bomb.
+const MAX_INFLATE_RATIO: u64 = 1100;
+
+fn check_entry_size(name: &str, manifest: u64, zip_size: u64, compressed: u64) -> Result<()> {
+    let cap = if name == DB_FILE {
+        MAX_DB_FILE
+    } else {
+        MAX_SMALL_FILE
+    };
+    if manifest > cap {
+        return Err(Error::bad(format!(
+            "{name}: {manifest} bytes is over the restore limit ({cap})"
+        )));
+    }
+    if manifest != zip_size {
+        return Err(Error::bad(format!(
+            "{name}: manifest size {manifest} does not match the archive entry ({zip_size})"
+        )));
+    }
+    if manifest > compressed.saturating_mul(MAX_INFLATE_RATIO).max(4096) {
+        return Err(Error::bad(format!(
+            "{name}: implausible compression ratio (zip bomb?)"
+        )));
+    }
+    Ok(())
+}
+
 /// Copies one zip entry to `out`, checking size and sha256 against the manifest.
 fn extract_checked<W: Write>(
     z: &mut zip::ZipArchive<std::fs::File>,
@@ -411,6 +441,7 @@ fn extract_checked<W: Write>(
     let mut f = z
         .by_name(name)
         .map_err(|_| Error::bad(format!("backup is missing {name}")))?;
+    check_entry_size(name, want.size, f.size(), f.compressed_size())?;
     let mut hw = HashWriter {
         inner: out,
         hasher: Sha256::new(),
@@ -1175,5 +1206,15 @@ mod tests {
         assert!(next_run("nope").is_err());
         db.close();
         let _ = std::fs::remove_dir_all(&cfg.home);
+    }
+
+    #[test]
+    fn restore_entry_size_caps() {
+        assert!(check_entry_size(DB_FILE, 10_000, 10_000, 2_000).is_ok());
+        assert!(check_entry_size(CONFIG_FILE, 300, 300, 200).is_ok());
+        assert!(check_entry_size(SECRETS_FILE, 2 << 20, 2 << 20, 1 << 20).is_err());
+        assert!(check_entry_size(DB_FILE, MAX_DB_FILE + 1, MAX_DB_FILE + 1, MAX_DB_FILE).is_err());
+        assert!(check_entry_size(DB_FILE, 10_000, 9_999, 5_000).is_err());
+        assert!(check_entry_size(DB_FILE, 1 << 30, 1 << 30, 1_000).is_err());
     }
 }

@@ -78,7 +78,12 @@ export interface SiteSettings {
   max_new_links_per_pass?: number;
   /** Outbound-link count above which a page is flagged as link-overloaded (checklist D4). */
   link_overload_threshold?: number;
+  /** Money pages: never dropped by the density cap as link targets (http(s) URLs, max 1000). */
   money_page_urls?: string[];
+  /** v2: extra click-depth roots besides the home page, e.g. hub pages in the main menu (max 100). */
+  root_urls?: string[];
+  /** v2: cap of NEW inbound suggestions per target post per plan (1–10000; null = no cap). */
+  max_new_inbound_per_target?: number | null;
   /** Skip the post-injection live verify. Off by default — the T8 SOP calls it mandatory. */
   skip_inject_verify?: boolean;
   /** v2: let the AI refine the top plan anchors (validated; heuristic fallback). Default off. */
@@ -238,6 +243,8 @@ export interface DashboardData {
   opportunities: number;
   http_links: number;
   outbound_domains: number;
+  /** null = link health never ran: http_links / outbound_domains are unknown, not 0 (G5). */
+  link_health_checked_at?: string | null;
   link_duplication: number;
   orphan_posts: OrphanPost[];
 }

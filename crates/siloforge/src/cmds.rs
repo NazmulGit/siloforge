@@ -77,11 +77,23 @@ pub fn init(home: &Path, from_v1_env: Option<&Path>, force: bool) -> Result<()> 
     let secrets_path = home.join("secrets.env");
     if secrets_path.exists() && !force {
         println!(
-            "{} exists (use --force to regenerate)",
+            "{} exists (use --force to re-import; existing master keys are kept)",
             secrets_path.display()
         );
         return Ok(());
     }
+    // G2-11: `--force` keeps the existing master keys (JWT_SECRET, SILOFORGE_ENCRYPTION_KEY,
+    // the backup passphrase) and every other existing line: regenerating them would log every
+    // user out and make the sealed secrets in an existing DB undecryptable. Imported v1 values
+    // only fill or override the non-master keys.
+    let existing: Vec<(String, String)> = if secrets_path.exists() {
+        sf_core::config::parse_env_file(&std::fs::read_to_string(&secrets_path)?)
+            .into_iter()
+            .filter(|(_, v)| !v.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut lines: Vec<(String, String)> = Vec::new();
     if let Some(p) = from_v1_env {
         let text = std::fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?;
@@ -106,14 +118,22 @@ pub fn init(home: &Path, from_v1_env: Option<&Path>, force: bool) -> Result<()> 
         }
         println!("imported {} settings from {}", lines.len(), p.display());
     }
+    let kept = merge_existing_secrets(&mut lines, existing);
+    if kept > 0 {
+        println!(
+            "kept {kept} existing value(s) from secrets.env (master keys are never regenerated)"
+        );
+    }
     if !lines.iter().any(|(k, _)| k == "JWT_SECRET") {
         lines.push(("JWT_SECRET".into(), sf_core::crypto::random_hex(32)));
     }
     // A dedicated key for stored secrets (v1 coupled it to JWT_SECRET; v2 decouples them).
-    lines.push((
-        "SILOFORGE_ENCRYPTION_KEY".into(),
-        sf_core::crypto::random_hex(32),
-    ));
+    if !lines.iter().any(|(k, _)| k == "SILOFORGE_ENCRYPTION_KEY") {
+        lines.push((
+            "SILOFORGE_ENCRYPTION_KEY".into(),
+            sf_core::crypto::random_hex(32),
+        ));
+    }
     // M-02: backups (incl. scheduled ones) are encrypted by default with a generated passphrase.
     if !lines.iter().any(|(k, _)| k == BACKUP_PASSPHRASE_KEY) {
         lines.push((
@@ -140,6 +160,39 @@ pub fn init(home: &Path, from_v1_env: Option<&Path>, force: bool) -> Result<()> 
     );
     println!("next: `siloforge migrate from-postgres` (optional), then `siloforge serve`");
     Ok(())
+}
+
+/// Keys an existing `secrets.env` always keeps on `init --force` (never overridden by an import).
+const MASTER_KEYS: [&str; 3] = [
+    "JWT_SECRET",
+    "SILOFORGE_ENCRYPTION_KEY",
+    BACKUP_PASSPHRASE_KEY,
+];
+
+/// Merge an existing `secrets.env` into freshly imported `lines`: master keys from `existing`
+/// win, other existing keys are kept unless the import set them. Returns how many were kept.
+fn merge_existing_secrets(
+    lines: &mut Vec<(String, String)>,
+    existing: Vec<(String, String)>,
+) -> usize {
+    let mut kept = 0;
+    for (k, v) in existing {
+        let pos = lines.iter().position(|(a, _)| *a == k);
+        match pos {
+            Some(i) if MASTER_KEYS.contains(&k.as_str()) => {
+                if let Some(slot) = lines.get_mut(i) {
+                    slot.1 = v;
+                    kept += 1;
+                }
+            }
+            Some(_) => {}
+            None => {
+                lines.push((k, v));
+                kept += 1;
+            }
+        }
+    }
+    kept
 }
 
 pub async fn backup_create(
@@ -206,6 +259,41 @@ pub fn backup_verify(file: &Path, passphrase: Option<String>) -> Result<()> {
         m.files.len()
     );
     Ok(())
+}
+
+/// G2-9: one-off offline `VACUUM` that also switches an existing database to
+/// `auto_vacuum=INCREMENTAL` (new databases get it at creation), so the daily maintenance
+/// `PRAGMA incremental_vacuum` actually returns free pages to the OS. Refuses while a server
+/// (or any other SiloForge process) holds the data directory. Needs about the DB size in free disk.
+pub fn vacuum(home: &Path) -> Result<()> {
+    let _guard = sf_ops::instance::InstanceGuard::acquire(home)
+        .map_err(|e| anyhow::anyhow!("{e}; stop the server first"))?;
+    let path = home.join("siloforge.db");
+    if !path.exists() {
+        bail!("{} does not exist", path.display());
+    }
+    let before = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let (mode_before, mode_after) = vacuum_file(&path)?;
+    let after = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "vacuumed {}: {} MB -> {} MB, auto_vacuum {} -> {}",
+        path.display(),
+        before / 1_048_576,
+        after / 1_048_576,
+        mode_before,
+        mode_after
+    );
+    Ok(())
+}
+
+fn vacuum_file(path: &Path) -> Result<(i64, i64)> {
+    let c = rusqlite::Connection::open(path)?;
+    c.busy_timeout(std::time::Duration::from_secs(10))?;
+    let before: i64 = c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+    c.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;")?;
+    let after: i64 = c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+    let _ = c.pragma_update(None, "wal_checkpoint", "TRUNCATE");
+    Ok((before, after))
 }
 
 pub fn restore(home: &Path, file: &Path, passphrase: Option<String>, force: bool) -> Result<()> {
@@ -638,6 +726,72 @@ mod tests {
                 .as_deref()
                 .or(Some(pass.as_str()))
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// G2-9: `vacuum` converts an existing auto_vacuum=NONE database and refuses while locked.
+    #[test]
+    fn vacuum_enables_incremental_auto_vacuum_and_respects_the_lock() {
+        let home = std::env::temp_dir().join(format!("sf-vacuum-{}", sf_core::new_id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let path = home.join("siloforge.db");
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch("PRAGMA auto_vacuum=NONE; CREATE TABLE t(x); INSERT INTO t VALUES(1);")
+                .unwrap();
+        }
+        {
+            let _held = sf_ops::instance::InstanceGuard::acquire(&home).unwrap();
+            assert!(vacuum(&home).is_err());
+        }
+        vacuum(&home).unwrap();
+        let c = rusqlite::Connection::open(&path).unwrap();
+        let mode: i64 = c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, 2);
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        drop(c);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// G2-11: `init --force` never regenerates the master keys of an existing home.
+    #[test]
+    fn init_force_keeps_master_keys_and_other_lines() {
+        let home = std::env::temp_dir().join(format!("sf-init-force-{}", sf_core::new_id()));
+        init(&home, None, false).unwrap();
+        let path = home.join("secrets.env");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(
+            "DARIO_MODEL_PRIMARY=keep-me
+EMBED_CHAIN=onnx
+",
+        );
+        std::fs::write(&path, &text).unwrap();
+        let before = sf_core::config::parse_env_file(&text);
+        let v1 = home.join("v1.env");
+        std::fs::write(
+            &v1,
+            "JWT_SECRET=v1-secret-should-not-win-000
+EMBED_CHAIN=remote
+",
+        )
+        .unwrap();
+        init(&home, Some(&v1), true).unwrap();
+        let after = sf_core::config::parse_env_file(&std::fs::read_to_string(&path).unwrap());
+        let get = |env: &[(String, String)], k: &str| {
+            env.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone())
+        };
+        for k in MASTER_KEYS {
+            assert_eq!(get(&after, k), get(&before, k), "{k}");
+            assert_eq!(after.iter().filter(|(a, _)| a == k).count(), 1, "{k}");
+        }
+        assert_eq!(
+            get(&after, "DARIO_MODEL_PRIMARY").as_deref(),
+            Some("keep-me")
+        );
+        assert_eq!(get(&after, "EMBED_CHAIN").as_deref(), Some("remote"));
         let _ = std::fs::remove_dir_all(&home);
     }
 }

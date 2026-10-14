@@ -29,7 +29,7 @@ Legend: [x] done · [~] in progress (agent) · [ ] open. Details: docs/PLAN.md. 
 - [x] Migrate v1 data into a test home; verify counts + embedding samples
 - [x] Side-by-side run on 8610/8611; JSON diff vs v1 for UI + MCP endpoints
 - [x] Pilot one site end to end (crawl → plan → approve → inject on a test WP → verify → undo)
-- [x] Perf: CPU/RAM v1 vs v2 on site21 (112k paragraphs) plan; report
+- [x] Perf: CPU/RAM v1 vs v2 on site26 (112k paragraphs) plan; report
 - [x] Linking accuracy test (golden set + spot checks)
 - [x] Security/code audit by review agents; fix findings
 - [x] Cutover to 8600/8601; v1 containers stopped (kept for rollback); autostart task
@@ -37,7 +37,7 @@ Legend: [x] done · [~] in progress (agent) · [ ] open. Details: docs/PLAN.md. 
 - [x] Hermes: ap13 MCP → siloforge.exe with API token (remove plaintext admin password); skill update
 - [ ] Hermes gateway webhook route for SiloForge notifications (needs gateway restart)
 - [x] Run a SiloForge task through Hermes end to end
-- [ ] Update Backup Hub, Model Control, Mission Control, teli scripts (docker exec psql users) — see follow-ups
+- [x] Update Backup Hub, Model Control, Mission Control, teli scripts (docker exec psql users) — docs/INTEGRATIONS-v2.md
 - [x] Docs: README, CHANGELOG, KB, skill `siloforge-dev`, release v2.0.0 zip
 - [x] GitHub: new public repo (MIT), secret scan, push
 
@@ -45,5 +45,13 @@ Legend: [x] done · [~] in progress (agent) · [ ] open. Details: docs/PLAN.md. 
 - [ ] Reboot PC (Defender/AMSI frozen since 2026-10-13 22:43) → keepalive VBS/Startup entry take over; then delete task `siloforge-direct`
 - [x] Anchor misses like "V kits perfect" (model-number fragments) — tighten noun-phrase filter (+ pending v1 fragment anchors re-picked on the next plan)
 - [x] UI controls for `ai_anchor_refine`; R11 embedding CPU budget; R14/R16/R21/R22; A3–A13 doc mismatches
-- [ ] Backup Hub / Model Control / Mission Control: repoint SiloForge entries to v2 (v1 pg container still runs; hooks dump stale v1 data)
-- [ ] Retire v1 containers + volumes after a stable week (rollback: scripts/rollback-to-v1.ps1, dump D:\Backups\SiloForge\v1-final-*.dump)
+- [x] Backup Hub / Model Control / Mission Control: repoint SiloForge entries to v2 (integrations agent, docs/INTEGRATIONS-v2.md)
+- [x] Retire v1 containers + volumes (archived to D:\Backups\SiloForge\v1-archive; rollback: scripts/rollback-to-v1.ps1)
+
+## v2.0.2 (code; the ops items above stay open: reboot test, Hermes gateway restart)
+- [x] G2-5 `GSC_CREDENTIALS_JSON` install-wide fallback for the gsc job (v1 parity, never logged)
+- [x] Security Low/Info items: fixed or justified in docs/testing/security-audit.md (Resolution column)
+- [x] Reliability open/partial items: fixed or justified in docs/testing/reliability-audit.md section 7
+- [x] Anchor quality: site-wide brand capitalisation, min target similarity for in-paragraph picks, generic head nouns (anchor-quality.md)
+- [x] UI: Linking Rules -> Targets (money pages, root URLs, inbound cap); dashboard "unknown" link-health cards
+- [x] CLI `siloforge vacuum` (incremental auto-vacuum for pre-2.0.2 databases)

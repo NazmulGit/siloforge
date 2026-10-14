@@ -4,8 +4,10 @@
 
 .DESCRIPTION
   1. Disables + stops the v2 scheduled task and stops siloforge.exe processes running from <Root>.
-  2. `docker start` siloforge_pg, siloforge_redis, siloforge_qdrant (if stopped), then siloforge_api,
-     siloforge_ui, siloforge-worker-1, siloforge-worker-2 (the containers cutover-from-v1.ps1 only stopped).
+  2. v1 was ARCHIVED on 2026-10-14: containers removed, named volumes kept (siloforge_pgdata, siloforge_qdrantdata,
+     siloforge_modelcache), images saved in D:\Backups\SiloForge\v1-archive, source in
+     D:\Code\SiloForge-Suite\_archive\v1\app. This step loads the images (if missing) and runs
+     `docker compose up -d --no-build` from the archived app folder, which re-attaches the kept volumes (full v1 data).
   3. Waits for the v1 /health on :8600 (v1's /health has no "version" field; v2's has).
   4. Restores integration config files from their `.bak-pre-sf2` copies when present (Hermes ap13 config.yaml,
      Mission Control services.json, Backup Hub config.json, Model Control inventory.js / localroutes.js).
@@ -81,12 +83,20 @@ if ($PSCmdlet.ShouldProcess("v2 ($TaskName + siloforge.exe under $Root)", 'disab
 }
 
 # 2. start v1 -----------------------------------------------------------------------------------
-if ($PSCmdlet.ShouldProcess(($V1Order -join ', '), 'docker start')) {
-    foreach ($c in $V1Order) {
-        $r = Docker @('start', $c)
-        if ($r[0] -ne 0) { Log ("docker start $c FAILED: " + (($r[1] | Select-Object -Last 1))) 'Red' } else { Log "started $c" }
-        if ($c -eq 'siloforge_qdrant') { Start-Sleep -Seconds 3 }   # api/workers need pg/redis/qdrant first
+$ArchiveDir = 'D:\Backups\SiloForge\v1-archive'
+$V1App = 'D:\Code\SiloForge-Suite\_archive\v1\app'
+if ($PSCmdlet.ShouldProcess('v1 stack (archived)', 'docker load + compose up')) {
+    $have = Docker @('image', 'inspect', 'siloforge-api:latest')
+    if ($have[0] -ne 0) {
+        $tar = Join-Path $ArchiveDir 'v1-images-siloforge-api-worker-ui.tar.gz'
+        Log "loading v1 images from $tar"
+        & cmd.exe /c ("docker load -i `"" + $tar + "`"") 2>&1 | ForEach-Object { Log "$_" }
     }
+    Push-Location $V1App
+    try {
+        $r = Docker @('compose', '-p', 'siloforge', 'up', '-d', '--no-build')
+        if ($r[0] -ne 0) { Log ("docker compose up FAILED: " + (($r[1] | Select-Object -Last 3) -join ' | ')) 'Red' } else { Log 'v1 stack started from archive' }
+    } finally { Pop-Location }
 }
 
 # 3. health -------------------------------------------------------------------------------------

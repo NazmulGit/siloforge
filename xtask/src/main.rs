@@ -1,6 +1,7 @@
 //! Project automation. `cargo xtask <ci|ui|release|clean-target>`.
 //!
-//! * `ci`       fmt check + clippy -D warnings + tests (the one verify command).
+//! * `ci`       fmt check + clippy -D warnings + tests (the one verify command), then
+//!   `cargo audit` when cargo-audit is installed (I-05; `SILOFORGE_SKIP_AUDIT=1` skips).
 //! * `ui`       build the React UI into `ui/dist` (embedded by `siloforge-server`).
 //! * `release`  ui + `cargo build --release --locked` + zip + SHA256 into `dist/<version>/`.
 
@@ -63,7 +64,30 @@ fn ci() -> Result<(), String> {
         "-D",
         "warnings",
     ]))?;
-    run(cargo().args(["test", "--workspace", "--locked", "-q"]))
+    run(cargo().args(["test", "--workspace", "--locked", "-q"]))?;
+    audit()
+}
+
+/// I-05: RustSec advisory check. Optional tool (not installed by xtask): when `cargo audit` is
+/// missing this prints how to get it and passes; when present, a vulnerable dependency fails CI.
+fn audit() -> Result<(), String> {
+    if std::env::var("SILOFORGE_SKIP_AUDIT").is_ok_and(|v| v == "1") {
+        eprintln!("> cargo audit skipped (SILOFORGE_SKIP_AUDIT=1)");
+        return Ok(());
+    }
+    let present = cargo()
+        .args(["audit", "--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !present {
+        eprintln!(
+            "> cargo audit not installed: skipped (install with `cargo install cargo-audit --locked --root D:/Programs/cargo-tools`)"
+        );
+        return Ok(());
+    }
+    run(cargo().args(["audit"]))
 }
 
 fn npm() -> Command {

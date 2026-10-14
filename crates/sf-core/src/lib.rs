@@ -4,6 +4,7 @@
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod net;
 pub mod secrets;
 pub mod types;
 
