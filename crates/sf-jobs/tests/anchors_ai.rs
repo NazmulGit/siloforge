@@ -355,3 +355,51 @@ async fn post_vectors_reuse_the_sites_token_cap() {
     let cos: f32 = v.iter().zip(&want).map(|(a, b)| a * b).sum();
     assert!(cos > 0.9999, "cos {cos}");
 }
+
+/// v2.0.1: pending suggestions whose anchor is a spec fragment (v1 split "20V" into "20" + "V")
+/// get a fresh anchor on the next plan; natural anchors are kept as they are.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fragment_anchors_of_pending_suggestions_are_repicked() {
+    let e = env("frag");
+    let site = setup(&e, json!({})).await;
+    run_job(&e, JobKind::Plan, &site, json!({"topology": "reverse"})).await;
+    let rows = q_rows(
+        &e.db,
+        "SELECT id, anchor FROM link_edges WHERE site_id=?1 AND status='suggested' AND origin='plan'
+         ORDER BY id LIMIT 2",
+        vec![site.clone()],
+    )
+    .await;
+    assert_eq!(rows.len(), 2, "need two suggestions");
+    let (bad_id, keep_id, keep_anchor) = (s(&rows[0][0]), s(&rows[1][0]), s(&rows[1][1]));
+    exec(
+        &e.db,
+        "UPDATE link_edges SET anchor='V kits perfect' WHERE id=?1",
+        vec![bad_id.clone()],
+    )
+    .await;
+    run_job(&e, JobKind::Plan, &site, json!({"topology": "reverse"})).await;
+    let after = q_rows(
+        &e.db,
+        "SELECT anchor FROM link_edges WHERE id=?1",
+        vec![bad_id.clone()],
+    )
+    .await;
+    // re-anchored, or dropped when the paragraph offers nothing natural
+    if let Some(r) = after.first() {
+        let a = s(&r[0]);
+        assert_ne!(a, "V kits perfect");
+        assert!(!sf_engine::anchor::is_fragment_anchor(&a), "{a}");
+    }
+    let kept = q_rows(
+        &e.db,
+        "SELECT anchor FROM link_edges WHERE id=?1",
+        vec![keep_id],
+    )
+    .await;
+    assert_eq!(
+        s(&kept[0][0]),
+        keep_anchor,
+        "natural anchors are not re-picked"
+    );
+}

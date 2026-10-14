@@ -79,12 +79,16 @@ export interface ErrorRow {
 
 // ---- jobs ----
 
-/** `job_runs.resources`: sampled while the job runs. */
+/** `job_runs.resources`: the whole process, sampled while the job runs (R22). */
 export interface JobResources {
   peak_rss_mb?: number;
   avg_cpu_pct?: number;
   cpu_secs?: number;
   wall_ms?: number;
+  /** Always "process": figures include any job that ran at the same time. */
+  scope?: string;
+  /** Most jobs metered at once during this job (this one included). */
+  concurrent_jobs_max?: number;
 }
 
 /** GET /api/v2/jobs row: a v1 JobRun plus v2 columns. */
@@ -190,14 +194,23 @@ export interface BackupRow {
   /** 'ok' | 'running' | 'failed' … (missing = ok). */
   status?: string;
   note: string;
+  /** SHA-256 of the archive file ('' while running). */
   sha256?: string;
-  schema_version?: number;
 }
 
+/** `POST /api/v2/backups/{id}/verify`: the archive manifest on success. */
 export interface BackupVerifyResult {
   ok: boolean;
   error?: string | null;
-  sha256?: string;
+  manifest?: {
+    format?: number;
+    app_version?: string;
+    schema_version?: number;
+    created_at?: string;
+    kind?: string;
+    secrets_excluded?: boolean;
+    [k: string]: unknown;
+  };
 }
 
 // ---- API tokens ----

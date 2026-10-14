@@ -14,7 +14,7 @@ default = ["onnx"]
 # ONNX Runtime via `ort` load-dynamic (onnxruntime.dll found at runtime; CPU EP + DirectML EP).
 onnx = ["dep:ort", "dep:tokenizers"]
 # Pure-Rust fallback (no DLL), ~15 texts/s on CPU.
-candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:rayon"]
 
 [dependencies]
 sf-core.workspace = true
@@ -28,6 +28,9 @@ chrono.workspace = true
 sha2.workspace = true
 hex.workspace = true
 zip.workspace = true
+# R11: below-normal inference threads (same pin as sf-jobs)
+thread-priority = "=3.1.1"
+rayon = { workspace = true, optional = true }
 
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "directml", "api-24"], optional = true }
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }

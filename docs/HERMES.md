@@ -67,12 +67,12 @@ passwords, tokens) are stripped from every result, and long lists are shortened 
 | `siloforge_list_clusters` | site | Silo clusters: label, source, members, pillar |
 | `siloforge_add_site` | domain, wp_url?, mode? | Registers a site (the plugin `api_key` is NOT returned; copy it from the UI if needed) |
 | `siloforge_crawl_site` | site | Enqueues a crawl (read-only towards WordPress) |
-| `siloforge_plan_site` | site, topology? (reverse/serial/priority/circle/bidirectional), archive? | Enqueues a plan: produces **suggested** edges only |
+| `siloforge_plan_site` | site, topology? (reverse/serial/priority/circle/bidirectional), archive?, ai_refine? | Enqueues a plan: produces **suggested** edges only. `ai_refine` turns AI anchor refinement on/off for this run (default: the site setting `ai_anchor_refine`) |
 | `siloforge_decide_edge` | edge_id, decision (approved/rejected) | Approve or reject one edge |
 | `siloforge_bulk_decide` | edge_ids[], decision | Approve or reject many edges |
 | `siloforge_bulk_inject` | site, edge_ids? | **Writes to the live site.** Injects approved edges via WP REST (snapshot first); returns a job |
 | `siloforge_bulk_undo` | site, edge_ids? | **Writes to the live site.** Reverts applied edges; returns a job |
-| `siloforge_edit_anchor` | edge_id, anchor, anchor_type? | Changes the anchor of a non-applied edge |
+| `siloforge_edit_anchor` | edge_id, anchor, anchor_type? (exact/partial/branded/generic/lsi/naked/cta) | Changes the anchor of a non-applied edge |
 | `siloforge_add_keyword_rule` | site, keyword, target_url, anchor_type?, max_links? (1-100) | Keyword linker rule |
 | `siloforge_run_keyword_linker` | site | Runs all active rules -> suggested edges (still need approval) |
 | `siloforge_add_ignore_keyword` | site, phrase | Phrase never used as an anchor |
@@ -81,14 +81,14 @@ passwords, tokens) are stripped from every result, and long lists are shortened 
 ### v2 tools (8)
 | Tool | Params | What it does |
 |---|---|---|
-| `siloforge_system_status` | | Version, uptime, CPU/RAM, database, queued/running jobs (admin details when the token allows) |
+| `siloforge_system_status` | | Version, uptime, queued/running jobs from `/health`; CPU/RAM/database details only with an `admin`-scoped token (otherwise `system_error` says 403) |
 | `siloforge_job_status` | job_id | One job: kind, status (queued/running/done/failed/cancelled), stats, error, timestamps |
 | `siloforge_job_logs` | job_id, after?, limit? (<=1000) | Log lines (seq, ts, level, msg); pass the last seq as `after` to tail |
 | `siloforge_cancel_job` | job_id | Cancels a queued/running job; a running inject stops at its next checkpoint (applied links stay; use undo) |
 | `siloforge_wait_for_job` | job_id, timeout_secs? (600, max 900), poll_secs? (5) | Blocks until done/failed/cancelled or timeout; returns final status + stats |
-| `siloforge_run_pipeline` | site, topology?, archive?, skip_crawl?, timeout_secs? (900, max 1800) | Crawl -> wait -> plan -> wait; returns per-step stats, job ids, number of suggestions. **Never injects** |
-| `siloforge_create_backup` | note? | Starts a full backup (admin scope) |
-| `siloforge_list_notifications` | limit? (<=200), unread_only? | Recent notifications, newest first (admin scope) |
+| `siloforge_run_pipeline` | site, topology?, archive?, ai_refine?, skip_crawl?, timeout_secs? (900, max 1800) | Crawl -> wait -> plan -> wait; returns per-step stats, job ids, number of suggestions. **Never injects** |
+| `siloforge_create_backup` | note? | Starts a full backup (admin scope); returns `{id, status:"running", kind, encrypted, secrets_included}` |
+| `siloforge_list_notifications` | limit? (<=200), unread_only? | Recent notifications, newest first (admin scope). Events: job.done, job.failed, plan.ready, inject.done, backup.done, backup.failed, system.alert |
 
 Error contract: a failed call returns `isError: true` with `SILOFORGE <METHOD> <path> -> <status>: <error>`.
 

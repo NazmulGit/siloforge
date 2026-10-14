@@ -455,6 +455,8 @@ impl JobQueue {
     /// v1 J3): a row whose cancel was requested becomes `cancelled`; an idempotent kind (crawl,
     /// link_health, embed, gsc, maintenance) with attempts left is re-queued with a short backoff
     /// (R15: a crawl interrupted by a reboot is retried); everything else is `failed`.
+    /// `stale_secs = 0` (boot) reaps every running row: a heartbeat written in the same millisecond
+    /// still counts as stale (`<=`), which also keeps the reaper test deterministic.
     pub async fn reap_stale(&self, stale_secs: i64) -> Result<usize> {
         let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(stale_secs))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -463,7 +465,7 @@ impl JobQueue {
         self.db
             .write(move |t| {
                 let now = sf_core::now_rfc3339();
-                let stale = "status='running' AND (heartbeat_at IS NULL OR heartbeat_at < ?1)";
+                let stale = "status='running' AND (heartbeat_at IS NULL OR heartbeat_at <= ?1)";
                 let mut n = t
                     .execute(
                         &format!(

@@ -266,10 +266,11 @@ static VERBS: &[&str] = &[
 
 /// Noun/verb homographs: nouns by default, verbs in verb contexts (sorted).
 static HOMOGRAPHS: &[&str] = &[
-    "block", "brake", "build", "charge", "check", "clamp", "clip", "cover", "cushion", "cut",
-    "design", "drive", "feature", "fit", "fold", "grip", "handle", "light", "lock", "match",
+    "balance", "block", "brake", "build", "charge", "check", "clamp", "clip", "cover", "cushion",
+    "cut", "design", "drive", "feature", "fit", "fold", "grip", "handle", "light", "lock", "match",
     "measure", "mount", "pack", "pair", "park", "pedal", "power", "pump", "rest", "ride", "roll",
-    "select", "set", "shift", "stand", "start", "stop", "store", "support", "test", "turn", "work",
+    "select", "set", "shift", "stand", "start", "stop", "store", "strike", "support", "test",
+    "turn", "work",
 ];
 
 /// Irregular past / participle forms (always verbs; sorted).
@@ -537,6 +538,17 @@ static ADJECTIVES: &[&str] = &[
     "wide",
     "worth",
     "wrong",
+];
+
+/// Adjectives that follow the noun they describe ("bottles available", "kits perfect for";
+/// sorted).
+static POSTPOSITIVE: &[&str] = &[
+    "available",
+    "compatible",
+    "ideal",
+    "perfect",
+    "ready",
+    "suitable",
 ];
 
 /// Salesy lead adjectives: allowed, but an anchor reads better without them (sorted).
@@ -885,8 +897,12 @@ pub fn tag_tokens(toks: &[Token<'_>]) -> Vec<Tag> {
             k == TokenKind::Number || (k == TokenKind::Word && has(OBJECT_MARKERS, nw))
         });
         // "helmet fits right", "lock works well": an adjective/adverb right after
+        // ... but not a postpositive adjective after a plural noun ("caps available", "crafts
+        // perfect for"): there the -s form is the noun
         let next_modifier = next.is_some_and(|(k, nw)| {
-            k == TokenKind::Word && (is_adverb(nw) || has(ADJECTIVES, nw) || nw == "well")
+            k == TokenKind::Word
+                && (is_adverb(nw) || has(ADJECTIVES, nw) || nw == "well")
+                && !has(POSTPOSITIVE, nw)
         });
         let after_determiner = prev.is_some_and(|p| has(NOUN_DETERMINERS, p));
         let after_trigger = prev.is_some_and(|p| has(VERB_TRIGGERS, p));
@@ -992,6 +1008,79 @@ pub fn suspect_token(raw: &str) -> Option<Suspect> {
     None
 }
 
+/// Unit / spec words that are only meaningful after a number ("20 V", "1/2 Inch", "16.9 Oz"):
+/// an anchor never starts on one (sorted).
+static UNIT_WORDS: &[&str] = &[
+    "ah", "cc", "cm", "cu", "db", "feet", "ft", "ft-lbs", "gal", "gallon", "gallons", "gb", "hp",
+    "hz", "in-lbs", "inch", "inches", "kg", "khz", "kw", "kwh", "lb", "lbs", "liter", "liters",
+    "litre", "litres", "mah", "ml", "mm", "mp", "mph", "nm", "ounce", "ounces", "oz", "pcs", "psi",
+    "qt", "qts", "rpm", "tb", "volt", "volts", "watt", "watts", "wh",
+];
+
+/// Words that never head an anchor (the last word must be a content noun): trailing
+/// evaluations ("kits perfect", "bottle easy") and empty heads ("12V options", "things"; sorted).
+static BAD_HEADS: &[&str] = &[
+    "aspect",
+    "aspects",
+    "available",
+    "best",
+    "better",
+    "choice",
+    "choices",
+    "compatible",
+    "easy",
+    "good",
+    "great",
+    "ideal",
+    "included",
+    "kind",
+    "kinds",
+    "needed",
+    "one",
+    "ones",
+    "option",
+    "options",
+    "perfect",
+    "popular",
+    "ready",
+    "stuff",
+    "suitable",
+    "thing",
+    "things",
+    "way",
+    "ways",
+    "worth",
+];
+
+/// A unit word ("inch", "oz", "mAh", "V" is a lone letter, see [`is_fragment_lead`]).
+pub fn is_unit_word(w_lower: &str) -> bool {
+    has(UNIT_WORDS, w_lower)
+}
+
+/// A token that cannot start an anchor: a unit word or a lone letter ("V kits", "inch
+/// cordless wrenches", "T Rex"): the number before it belongs to the spec.
+pub fn is_fragment_lead(w_lower: &str) -> bool {
+    let w = strip_possessive(w_lower);
+    if is_unit_word(w) {
+        return true;
+    }
+    let mut chars = w.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_alphabetic())
+}
+
+/// True when the lowercase word cannot be the head (last word) of an anchor: an adjective,
+/// evaluation or empty noun, a unit, or a token with digits ("Bike 48V"). A lone letter may end
+/// one ("Vitamin C").
+pub fn is_bad_head(w_lower: &str) -> bool {
+    let w = strip_possessive(w_lower);
+    w.is_empty()
+        || has(BAD_HEADS, w)
+        || has(ADJECTIVES, w)
+        || has(EVALUATIVE, w)
+        || is_unit_word(w)
+        || w.chars().any(|c| c.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,6 +1116,9 @@ mod tests {
             VERB_TRIGGERS,
             OBJECT_MARKERS,
             NOUN_DETERMINERS,
+            UNIT_WORDS,
+            BAD_HEADS,
+            POSTPOSITIVE,
         ] {
             assert!(
                 l.windows(2).all(|w| w[0] < w[1]),

@@ -127,8 +127,11 @@ pub async fn run(home: PathBuf) -> Result<()> {
         sf_ops::monitor::Monitor::start(cfg_arc.clone(), db.clone(), Some(notifier.clone()));
     let ai = sf_ai::Ai::new(db.clone(), state.secret_key.clone(), cfg.llm.clone())
         .map_err(|e| anyhow::anyhow!("ai init: {e}"))?;
-    let embed = Arc::new(sf_embed::EmbedChain::from_config(
-        &cfg.embed, &cfg.home, threads,
+    let embed = Arc::new(sf_embed::EmbedChain::from_config_budget(
+        &cfg.embed,
+        &cfg.home,
+        threads,
+        cfg.resources.low_priority_jobs,
     ));
     let errors = sf_ops::errors::ErrorTracker::new(db.clone());
     state.services.insert(Arc::new(notifier.clone()));

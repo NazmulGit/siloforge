@@ -3411,7 +3411,7 @@ dependencies = [
 
 [[package]]
 name = "sf-ai"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "axum",
  "parking_lot",
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "sf-core"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -3449,7 +3449,7 @@ dependencies = [
 
 [[package]]
 name = "sf-crawl"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3474,7 +3474,7 @@ dependencies = [
 
 [[package]]
 name = "sf-embed"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "axum",
  "candle-core",
@@ -3484,11 +3484,13 @@ dependencies = [
  "hex",
  "ort",
  "parking_lot",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",
  "sf-core",
  "sha2 0.10.9",
+ "thread-priority",
  "tokenizers",
  "tokio",
  "tracing",
@@ -3497,7 +3499,7 @@ dependencies = [
 
 [[package]]
 name = "sf-engine"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "hex",
  "lol_html",
@@ -3519,7 +3521,7 @@ dependencies = [
 
 [[package]]
 name = "sf-jobs"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "axum",
  "chrono",
@@ -3548,7 +3550,7 @@ dependencies = [
 
 [[package]]
 name = "sf-mcp"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -3567,7 +3569,7 @@ dependencies = [
 
 [[package]]
 name = "sf-ops"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -3595,7 +3597,7 @@ dependencies = [
 
 [[package]]
 name = "sf-server"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "axum",
  "chrono",
@@ -3626,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "sf-store"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "chrono",
  "hex",
@@ -3702,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "siloforge"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "axum",

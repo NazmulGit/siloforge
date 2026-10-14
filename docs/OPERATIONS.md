@@ -140,15 +140,18 @@ ADR 0001 keeps multi-PC sharing out of scope). Patterns:
 
 | Setting | Default | Effect (measured on a 12C/24T Ryzen 9 3900X, see docs/testing/performance.md) |
 |---|---|---|
-| `resources.cpu_threads` | 0 = logical/4 (6 here) | Size of the compute pool (scoring, graph, anchors, CPU embeddings). With CPU embeddings: 2 -> 1.8 cores avg, 134 texts/s; 6 -> 3.8 cores, 204 texts/s; 12 -> 7.0 cores, 221 texts/s. 12 costs 75 % more CPU for 8 % more speed. Env override `SILOFORGE_CPU_THREADS`. |
+| `resources.cpu_threads` | 0 = logical/4 (6 here) | Size of the compute pool (scoring, graph, anchors) and the intra-op thread count of local CPU embeddings (ONNX Runtime CPU EP, candle's private pool). With CPU embeddings: 2 -> 1.8 cores avg, 134 texts/s; 6 -> 3.8 cores, 204 texts/s; 12 -> 7.0 cores, 221 texts/s. 12 costs 75 % more CPU for 8 % more speed. Env override `SILOFORGE_CPU_THREADS`. |
 | `resources.max_concurrent_jobs` | 3 | Jobs on different sites at once. Lower to 1 on small machines. |
-| `resources.low_priority_jobs` | true | Compute threads run at below-normal priority. (ONNX Runtime's own threads are not lowered yet.) |
+| `resources.low_priority_jobs` | true | Compute threads run at below-normal priority. Local embedding inference too: ONNX Runtime's intra-op threads are created below normal (custom thread manager) with busy-wait spinning off, and the thread that drives a batch is lowered for the call (restored afterwards). CPU-EP embedding is ~20-25 % slower without spinning; set `false` for maximum throughput on a dedicated box. |
 | `resources.defer_when_cpu_above` | 0 (off) | Heavy jobs wait while total CPU is above this percent. |
 | `resources.vector_cache_mb` | 512 | RAM for cached site vectors (~1.6 KB per paragraph; the 112k-paragraph site needs ~270 MB). Vectors stay cached after a plan until LRU eviction. |
 | `embed.gpu` | true | DirectML on Windows when a GPU is present (387-715 texts/s at ~0.9 core). `false` forces CPU. |
 | `embed.chain` | remote, remote2, onnx, local | Order of embedding rungs. `["onnx"]` = local only, no OpenRouter calls. |
 | `embed.batch_size` | 64 | Texts per batch (batches are length-sorted). |
 | `crawl.concurrency` | 4 | Parallel requests per crawl (with per-host politeness and 429/503 backoff). |
+
+`job_runs.resources` (Jobs page "Peak RAM"/"CPU") is sampled for the whole process while the job runs
+(`scope: "process"`); when `concurrent_jobs_max` > 1 other jobs ran at the same time and the figures are shared.
 
 GPU off: set `embed.gpu = false` (or remove `DirectML.dll` from the runtime folder); restart. GPU-less helper PCs
 fall back to the CPU session automatically.

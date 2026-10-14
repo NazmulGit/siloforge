@@ -7,12 +7,14 @@
 //!   minute are averaged into one `system_metrics` row; rows older than `monitor.retain_days` are pruned.
 //! * Threshold alerts (CPU, RAM, disk; checked on each 1-minute aggregate) become `system.alert`
 //!   notifications, debounced to one per kind per 30 minutes.
-//! * [`JobMeter`] measures one job (peak RSS, CPU) for `job_runs.resources`.
+//! * [`JobMeter`] samples the process while one job runs (peak RSS, CPU) for `job_runs.resources`.
+//!   The figures are process-wide (R22): `scope: "process"` and `concurrent_jobs_max` (jobs metered
+//!   at the same time, this one included) say how much of it may belong to other jobs.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -506,8 +508,12 @@ pub async fn detect_gpu() -> Option<String> {
 
 // ---------------------------------------------------------------------------------------------
 
+/// Job meters alive right now (one per running job).
+static ACTIVE_METERS: AtomicUsize = AtomicUsize::new(0);
+
 #[derive(Default)]
 struct MeterStats {
+    concurrent_max: usize,
     peak_rss: u64,
     cpu_sum: f64,
     cpu_n: u64,
@@ -525,6 +531,8 @@ struct MeterStats {
 /// ```
 pub struct JobMeter {
     started: Instant,
+    /// Still counted in `ACTIVE_METERS`.
+    counted: bool,
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<MeterStats>>,
     thread: Option<std::thread::Thread>,
@@ -539,7 +547,13 @@ impl JobMeter {
     /// Like `start` with a custom sampling period (tests).
     pub fn start_every(period: Duration) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let stats = Arc::new(Mutex::new(MeterStats::default()));
+        let active = ACTIVE_METERS
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        let stats = Arc::new(Mutex::new(MeterStats {
+            concurrent_max: active,
+            ..MeterStats::default()
+        }));
         let (s2, st2) = (stop.clone(), stats.clone());
         let handle = std::thread::Builder::new()
             .name("sf-job-meter".into())
@@ -557,6 +571,8 @@ impl JobMeter {
                     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, kind);
                     if let Some(p) = sys.process(pid) {
                         let mut st = st2.lock();
+                        st.concurrent_max =
+                            st.concurrent_max.max(ACTIVE_METERS.load(Ordering::SeqCst));
                         st.peak_rss = st.peak_rss.max(p.memory());
                         let cpu_ms = p.accumulated_cpu_time();
                         if st.cpu_ms_start.is_none() {
@@ -576,16 +592,20 @@ impl JobMeter {
             .ok();
         Self {
             started: Instant::now(),
+            counted: true,
             stop,
             stats,
             thread: handle.map(|h| h.thread().clone()),
         }
     }
 
-    /// Stops measuring and returns `{peak_rss_mb, avg_cpu_pct, cpu_secs, wall_ms}`.
+    /// Stops measuring and returns `{peak_rss_mb, avg_cpu_pct, cpu_secs, wall_ms, scope,
+    /// concurrent_jobs_max}`. All figures are for the whole process (`scope: "process"`).
     pub fn finish(mut self) -> Value {
+        let active_now = ACTIVE_METERS.load(Ordering::SeqCst);
         self.halt();
         let mut st = self.stats.lock();
+        st.concurrent_max = st.concurrent_max.max(active_now);
         if st.cpu_ms_last.is_none() {
             // very short job: the sampler thread never ran; take one reading inline
             if let Ok(pid) = sysinfo::get_current_pid() {
@@ -614,10 +634,15 @@ impl JobMeter {
             "avg_cpu_pct": (avg * 10.0).round() / 10.0,
             "cpu_secs": (cpu_secs * 1000.0).round() / 1000.0,
             "wall_ms": self.started.elapsed().as_millis() as u64,
+            "scope": "process",
+            "concurrent_jobs_max": st.concurrent_max.max(1),
         })
     }
 
     fn halt(&mut self) {
+        if std::mem::take(&mut self.counted) {
+            ACTIVE_METERS.fetch_sub(1, Ordering::SeqCst);
+        }
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             t.unpark();
@@ -732,5 +757,19 @@ mod tests {
         assert!(v["peak_rss_mb"].as_u64().unwrap() > 0);
         assert!(v["wall_ms"].as_u64().unwrap() >= 80);
         assert!(v["cpu_secs"].as_f64().unwrap() >= 0.0);
+        assert_eq!(v["scope"], "process");
+        assert!(v["concurrent_jobs_max"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn job_meter_reports_overlapping_jobs() {
+        let a = JobMeter::start_every(Duration::from_millis(10));
+        let b = JobMeter::start_every(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(40));
+        let va = a.finish();
+        let vb = b.finish();
+        // other tests may meter in parallel, so only lower bounds hold
+        assert!(va["concurrent_jobs_max"].as_u64().unwrap() >= 2, "{va}");
+        assert!(vb["concurrent_jobs_max"].as_u64().unwrap() >= 2, "{vb}");
     }
 }

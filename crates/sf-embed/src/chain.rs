@@ -10,6 +10,7 @@ use serde::Serialize;
 use sf_core::config::EmbedCfg;
 use sf_core::{Error, Result};
 
+use crate::budget::CpuBudget;
 use crate::remote::RemoteEmbedder;
 use crate::selftest::{SelfTest, reference_text};
 use crate::{Embedder, EmbedderKind, check_output};
@@ -134,6 +135,17 @@ impl EmbedChain {
     /// name) are kept as unavailable so `status()` can explain them. `cpu_threads` is the CPU budget
     /// for local inference (physical cores; 0 = half the logical CPUs).
     pub fn from_config(cfg: &EmbedCfg, home: &Path, cpu_threads: usize) -> Self {
+        Self::from_config_budget(cfg, home, cpu_threads, false)
+    }
+
+    /// [`Self::from_config`] plus `resources.low_priority_jobs`: local rungs then run their
+    /// inference threads below normal priority without busy-wait spinning (R11).
+    pub fn from_config_budget(
+        cfg: &EmbedCfg,
+        home: &Path,
+        cpu_threads: usize,
+        low_priority: bool,
+    ) -> Self {
         let threads = if cpu_threads == 0 {
             std::thread::available_parallelism()
                 .map(|n| (n.get() / 2).max(1))
@@ -188,8 +200,8 @@ impl EmbedChain {
                         .map_err(|e| e.to_string())
                     }
                 }
-                "onnx" => onnx_rung(cfg, home, threads),
-                "local" => candle_rung(cfg, home),
+                "onnx" => onnx_rung(cfg, home, CpuBudget::new(threads, low_priority)),
+                "local" => candle_rung(cfg, home, CpuBudget::new(threads, low_priority)),
                 other => Err(format!("unknown embed rung `{other}`")),
             };
             let (embedder, err) = match built {
@@ -454,10 +466,10 @@ impl EmbedChain {
 fn onnx_rung(
     cfg: &EmbedCfg,
     home: &Path,
-    threads: usize,
+    budget: CpuBudget,
 ) -> std::result::Result<Arc<dyn Embedder>, String> {
-    Ok(Arc::new(crate::onnx::OnnxEmbedder::from_config(
-        cfg, home, threads,
+    Ok(Arc::new(crate::onnx::OnnxEmbedder::from_config_budget(
+        cfg, home, budget,
     )))
 }
 
@@ -465,20 +477,28 @@ fn onnx_rung(
 fn onnx_rung(
     _cfg: &EmbedCfg,
     _home: &Path,
-    _threads: usize,
+    _budget: CpuBudget,
 ) -> std::result::Result<Arc<dyn Embedder>, String> {
     Err("built without the `onnx` feature".into())
 }
 
 #[cfg(feature = "candle")]
-fn candle_rung(cfg: &EmbedCfg, home: &Path) -> std::result::Result<Arc<dyn Embedder>, String> {
-    Ok(Arc::new(crate::candle::CandleEmbedder::from_config(
-        cfg, home,
-    )))
+fn candle_rung(
+    cfg: &EmbedCfg,
+    home: &Path,
+    budget: CpuBudget,
+) -> std::result::Result<Arc<dyn Embedder>, String> {
+    Ok(Arc::new(
+        crate::candle::CandleEmbedder::from_config(cfg, home).with_budget(budget),
+    ))
 }
 
 #[cfg(not(feature = "candle"))]
-fn candle_rung(_cfg: &EmbedCfg, _home: &Path) -> std::result::Result<Arc<dyn Embedder>, String> {
+fn candle_rung(
+    _cfg: &EmbedCfg,
+    _home: &Path,
+    _budget: CpuBudget,
+) -> std::result::Result<Arc<dyn Embedder>, String> {
     Err("built without the `candle` feature".into())
 }
 

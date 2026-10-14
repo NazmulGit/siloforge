@@ -13,6 +13,10 @@
 //! * The posts <-> clusters FK cycle: clusters are inserted with `pillar_post_id = NULL`, then linked after
 //!   posts. Inserts are `INSERT OR IGNORE` (re-runs are idempotent); rows violating a foreign key (e.g. a
 //!   `--tables` subset without parents) are skipped and counted.
+//! * `refresh` (CLI `--refresh`, reliability R14): UPSERT by `id` instead, so rows that changed in v1
+//!   after an earlier import (edge status, re-crawled posts, settings) overwrite the v2 copy. Unchanged
+//!   rows are left alone (counted as `ignored`). Refresh adds and updates; it never deletes v2 rows
+//!   that v1 no longer has (use a fresh home for an exact copy, as the cutover script does).
 
 pub mod source;
 pub mod tables;
@@ -45,6 +49,8 @@ pub struct MigrateOptions {
     pub dry_run: bool,
     /// Rows per transaction (default 5000).
     pub batch_size: usize,
+    /// UPSERT by id: overwrite rows that already exist and differ (R14). Default false.
+    pub refresh: bool,
     /// AES key for `sites.secrets_enc` (`sf_core::crypto::derive_secret_key(cfg.encryption_master())`).
     pub secret_key: [u8; 32],
 }
@@ -56,6 +62,7 @@ impl MigrateOptions {
             site: None,
             dry_run: false,
             batch_size: 5000,
+            refresh: false,
             secret_key,
         }
     }
@@ -98,7 +105,9 @@ pub struct TableReport {
     /// Rows read from the source (after the site filter).
     pub source_rows: u64,
     pub inserted: u64,
-    /// Already present / unique or CHECK conflict (`INSERT OR IGNORE`).
+    /// Existing rows overwritten because they changed in v1 (`refresh` only).
+    pub updated: u64,
+    /// Already present / unique or CHECK conflict (`INSERT OR IGNORE`); with `refresh`: unchanged.
     pub ignored: u64,
     /// Rejected by a foreign key.
     pub skipped: u64,
@@ -114,6 +123,7 @@ pub struct TableReport {
 pub struct MigrateReport {
     pub source: String,
     pub dry_run: bool,
+    pub refresh: bool,
     pub tables: Vec<TableReport>,
     pub pillars_linked: u64,
     pub secrets_moved: u64,
@@ -123,14 +133,15 @@ impl fmt::Display for MigrateReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "v1 migration from {}{}",
+            "v1 migration from {}{}{}",
             self.source,
-            if self.dry_run { " (dry run)" } else { "" }
+            if self.dry_run { " (dry run)" } else { "" },
+            if self.refresh { " (refresh)" } else { "" }
         )?;
         writeln!(
             f,
-            "{:<22} {:>10} {:>10} {:>8} {:>8} {:>8}",
-            "table", "source", "inserted", "ignored", "skipped", "badvec"
+            "{:<22} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
+            "table", "source", "inserted", "updated", "ignored", "skipped", "badvec"
         )?;
         for t in &self.tables {
             if !t.present {
@@ -139,10 +150,11 @@ impl fmt::Display for MigrateReport {
             }
             writeln!(
                 f,
-                "{:<22} {:>10} {:>10} {:>8} {:>8} {:>8}{}",
+                "{:<22} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}{}",
                 t.table,
                 t.source_rows,
                 t.inserted,
+                t.updated,
                 t.ignored,
                 t.skipped,
                 t.invalid_vectors,
@@ -467,9 +479,43 @@ fn keep_row(
 #[derive(Default)]
 struct BatchResult {
     inserted: u64,
+    updated: u64,
     ignored: u64,
     skipped: u64,
     first_error: Option<String>,
+}
+
+/// The INSERT statement for one table. Refresh = UPSERT by `id` that only touches rows whose
+/// imported columns differ (so `changes()` is 0 for unchanged rows).
+fn insert_sql(table: &str, cols: &[&str], refresh: bool) -> String {
+    let base = format!(
+        "INSERT{} INTO {table}({}) VALUES({})",
+        if refresh { "" } else { " OR IGNORE" },
+        cols.join(","),
+        sf_store::placeholders(cols.len())
+    );
+    if !refresh {
+        return base;
+    }
+    // clusters.pillar_post_id is imported as NULL and linked after posts; never overwrite it here.
+    let upd: Vec<&&str> = cols
+        .iter()
+        .filter(|c| **c != "id" && !(table == "clusters" && **c == "pillar_post_id"))
+        .collect();
+    if upd.is_empty() {
+        return format!("{base} ON CONFLICT(id) DO NOTHING");
+    }
+    let set = upd
+        .iter()
+        .map(|c| format!("{c}=excluded.{c}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let differs = upd
+        .iter()
+        .map(|c| format!("{table}.{c} IS NOT excluded.{c}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("{base} ON CONFLICT(id) DO UPDATE SET {set} WHERE {differs}")
 }
 
 fn write_batch(
@@ -477,17 +523,22 @@ fn write_batch(
     table: &'static str,
     cols: &[&'static str],
     rows: Vec<Vec<SqlValue>>,
+    refresh: bool,
 ) -> Result<BatchResult> {
-    let sql = format!(
-        "INSERT OR IGNORE INTO {table}({}) VALUES({})",
-        cols.join(","),
-        sf_store::placeholders(cols.len())
-    );
+    let sql = insert_sql(table, cols, refresh);
+    let id_idx = cols.iter().position(|c| *c == "id");
+    let exists_sql = format!("SELECT 1 FROM {table} WHERE id=?1");
     db.write_blocking(move |t| {
         let mut stmt = t.prepare_cached(&sql).map_err(err)?;
+        let mut exists = t.prepare_cached(&exists_sql).map_err(err)?;
         let mut r = BatchResult::default();
         for row in rows {
+            let existed = match (refresh, id_idx.and_then(|i| row.get(i))) {
+                (true, Some(id)) => exists.exists([id]).map_err(err)?,
+                _ => false,
+            };
             match stmt.execute(rusqlite::params_from_iter(row.iter())) {
+                Ok(1) if existed => r.updated += 1,
                 Ok(1) => r.inserted += 1,
                 Ok(_) => r.ignored += 1,
                 Err(rusqlite::Error::SqliteFailure(f, msg))
@@ -541,6 +592,7 @@ pub fn import(
     let mut report = MigrateReport {
         source: src.describe(),
         dry_run: opts.dry_run,
+        refresh: opts.refresh,
         ..Default::default()
     };
     let mut posts: HashSet<String> = HashSet::new();
@@ -603,8 +655,9 @@ pub fn import(
                 return Ok(());
             }
             let rows = std::mem::take(buf);
-            let r = write_batch(db, t.name, &out_cols, rows)?;
+            let r = write_batch(db, t.name, &out_cols, rows, opts.refresh)?;
             tr.inserted += r.inserted;
+            tr.updated += r.updated;
             tr.ignored += r.ignored;
             tr.skipped += r.skipped;
             if tr.first_error.is_none() {

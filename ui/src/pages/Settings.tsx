@@ -77,7 +77,12 @@ const SECTIONS: SectionDef[] = [
   },
   { id: 'plans', label: 'Plans & Usage', hint: 'Self-hosted usage totals — unlimited, no per-link cost.' },
   { id: 'activity', label: 'Activity', hint: 'Current jobs and the most recent applied links for the active site (plus the audit log for admins).' },
-  { id: 'notifications', label: 'Notifications', hint: 'Where alerts go: webhook, ntfy, Telegram, Hermes, desktop toast.' },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    hint: 'Where alerts go: webhook, ntfy, Telegram, Hermes, desktop toast. Admins only.',
+    adminOnly: true,
+  },
   {
     id: 'backups',
     label: 'Backups',

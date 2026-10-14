@@ -162,7 +162,13 @@ export async function fetchBackups(): Promise<BackupRow[]> {
   return listOf<BackupRow>(await v2<unknown>('/backups'), 'backups');
 }
 
-export function createBackup(body: { kind: BackupKind; passphrase?: string; note?: string }): Promise<unknown> {
+export function createBackup(body: {
+  kind: BackupKind;
+  passphrase?: string;
+  note?: string;
+  /** Skip encryption even when a server passphrase is configured (secrets.env is then left out). */
+  unencrypted?: boolean;
+}): Promise<unknown> {
   return v2<unknown>('/backups', { method: 'POST', body });
 }
 

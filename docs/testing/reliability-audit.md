@@ -201,17 +201,18 @@ Experiment: `D:\tmp\sf-rel\fk_bench.py` (stdlib sqlite3, in-memory). Test logs: 
 | R8 | Fixed. `sf_ops::supervise` restarts monitor, notifier, backup scheduler, retention, job scheduler and runner claim loop with backoff, records `errors` (`service:<name>`), liveness in `/health` (`background`, `background_ok`) and `/api/v2/system`. Test `supervise::panicking_loop_is_restarted_and_recorded`. |
 | R9 | Fixed. Snapshot-mode undo compares live `modified_gmt` with `posts.sf_written_gmt` (0005, set on every SiloForge write) and refuses unless `force: true` (stats `refused`). Test `snapshot_undo_refuses_after_editor_change_unless_forced`. |
 | R10 | Mitigated. `UpdateOutcome.raw` (content.raw returned by WP) is compared with what was sent; a difference is a job warning and the stored raw is kept. GET-compare-POST window remains (WP has no conditional write). |
-| R11 | Open (sf-embed was owned by another agent during this pass). |
+| R11 | Fixed (v2.0.1). `sf_embed::budget::CpuBudget {threads, low_priority}` from `resources.cpu_threads` / `low_priority_jobs` (`EmbedChain::from_config_budget`, used by `serve`). ONNX: intra-op threads = budget; with low priority intra/inter-op spinning off and ORT pool threads created below normal by a custom `ThreadManager` (`LowPriorityThreads`); the blocking thread that drives a batch is lowered by `PriorityGuard` and restored afterwards. candle: inference runs inside a private rayon pool of `threads` workers (below normal when low priority) instead of the global pool. Cancellation granularity is one chain batch (`embed.batch_size`). Tests `budget::*`, `onnx::tests::{spinning_only_on_cpu_at_normal_priority, budget_flows_into_options, low_priority_cpu_session_matches_reference}`. |
 | R12 | Fixed. Restore swaps secrets → config → DB and undoes every rename on failure. Test `swap_failure_rolls_back_every_file`. |
 | R13 | Fixed. Snapshot is inserted with the journal and deleted when the write did not land; old snapshots not backing an applied edge are pruned (`monitor.snapshot_retain_days`). |
-| R14 | Open (migrator refresh mode). |
+| R14 | Fixed (v2.0.1). `MigrateOptions.refresh` / CLI `migrate from-postgres --refresh`, `migrate import --refresh`: UPSERT by id that only touches rows whose imported columns differ (`updated` column in the report; `clusters.pillar_post_id` is never nulled). Never deletes; documented in MIGRATION.md. Tests `refresh_overwrites_rows_changed_in_v1`, `insert_sql_shapes`. |
 | R15 | Fixed. Reaper re-queues crawl/link_health/embed/gsc/maintenance with attempts left, cancels cancel-requested rows, fails the rest. Test `reaper_requeues_idempotent_jobs`. |
-| R16 | Open (ctx.rs/embed.rs owned by another agent). |
+| R16 | Fixed (v2.0.1). `chunk_changed` invalidates the site's vector cache whenever it re-chunked a post (insert/delete/re-index), not only when embed produced vectors. Test `reliability::rechunk_without_new_embeddings_invalidates_vector_cache` (fails without the fix). |
 | R17 | Fixed. Windows ctrl_close/logoff/shutdown trigger graceful shutdown; HTTP drain capped at 10 s. |
 | R18 | Fixed. Per-row errors are logged and skipped; a failed enqueue gives the firing back. |
 | R19 | Fixed. Checksums compared on open (CRLF-normalised), warning only. Test `checksum_mismatch_is_reported`. |
 | R20 | Fixed (snapshot lookup uses `optional()`, real errors propagate). |
-| R21, R22 | Open (L). |
+| R21 | Fixed (v2.0.1). link_health remembers each post's `content_hash` when it extracts links; the rollup `UPDATE posts ... WHERE id=? AND content_hash=?` skips posts a concurrent crawl changed (`stats.rollupStale`, job log line). Test `link_health::tests::rollups_skip_posts_changed_by_a_concurrent_crawl`. |
+| R22 / G2-8 | Fixed by labelling (v2.0.1). `job_runs.resources` gains `scope: "process"` and `concurrent_jobs_max` (jobs metered at the same time); the Jobs page shows "(shared ×N)" and the column tooltips say process-wide; documented in API.md / OPERATIONS.md. Test `job_meter_reports_overlapping_jobs`. |
 | G2-1 | Fixed: breadcrumb detection (`sf_crawl::breadcrumbs`) in the link_health job writes the three columns. Test `link_health_writes_breadcrumb_columns`. |
 | G2-2 | Fixed: `gsc` job + audit step (service-account JWT RS256 via jsonwebtoken, searchAnalytics paging) writes keywords(source='gsc'); `POST /api/v2/sites/{id}/gsc/sync`. Tests in `sf-jobs/tests/gsc.rs` (stub Google). |
 | G2-3 | Fixed: scheduler queues `maintenance` daily (`monitor.maintenance_cron`); retention now prunes job_runs (keep newest `job_runs_keep_per_site` per site+kind), unused snapshots, resolved errors; notifications/audit periods configurable (G2-18); site_metrics_history kept. Tests `scheduler_queues_daily_maintenance`, `prunes_job_runs_snapshots_and_errors`. |
@@ -221,4 +222,14 @@ Experiment: `D:\tmp\sf-rel\fk_bench.py` (stdlib sqlite3, in-memory). Test logs: 
 | G2-7 / A6 | Fixed: mcp-info lists the MCP tool catalogue, no `--home`, `client_config` has `SILOFORGE_API_URL`. |
 | A1 | Fixed: `api_url` is the origin; the MCP client also strips a trailing `/api`. Test `api_url_with_api_suffix_is_normalised`. |
 | A2 | Fixed: `GET /api/v2/jobs?offset=`; the status filter matches the API-visible status. |
-| A3–A5, A7–A13, other G2-* | Open (UI/doc work deferred: deploy cut-off). |
+| A3 | Fixed (docs/descriptions; routes stay admin-only). MCP descriptions of `siloforge_system_status` (degrades to /health + `system_error` without admin), `siloforge_create_backup`, `siloforge_list_notifications` state the admin scope; MCP panel and HERMES.md say the same. |
+| A4 | Fixed. The notification bell is rendered (and polls) only for admins. |
+| A5 | Fixed. Settings -> Notifications is `adminOnly`. |
+| A7 | Fixed. `BackupRow.schema_version` removed (`sha256` is sent and kept); `BackupVerifyResult` now types `manifest` instead of a non-existent `sha256`. |
+| A8 | Fixed. Create-backup dialog has an "Unencrypted" checkbox that sends `unencrypted: true`. |
+| A9 | Fixed (UI). `fetchLinksReport` no longer sends the ignored `?duplicates=1`; v1 route unchanged (contract). |
+| A10 | Fixed. All Jobs kind filter lists `embed`, `gsc` and `maintenance`. |
+| A11 | Fixed. MCP `ANCHOR_TYPES` includes `naked` and `cta` (server accepts all seven). |
+| A12 | Fixed. `siloforge_create_backup` documents `{id, status, kind, encrypted, secrets_included}`; `siloforge_list_notifications` lists the real events. |
+| A13 | Fixed. 05-ui-audit.md §5 carries a "superseded" note pointing to API.md; 04-integrations.md marks the `/api/jobs` and `/test` paths as Hermes / Mission Control routes. |
+| Other G2-* | G2-5 still open (`GSC_CREDENTIALS_JSON` unused). |

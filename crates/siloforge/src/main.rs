@@ -122,6 +122,9 @@ enum MigrateCmd {
         tables: Option<String>,
         #[arg(long)]
         dry_run: bool,
+        /// Overwrite rows that changed in v1 since an earlier import (UPSERT by id; never deletes).
+        #[arg(long)]
+        refresh: bool,
     },
     /// Export v1 tables to CSV files (for migrating from another PC).
     Export {
@@ -134,6 +137,9 @@ enum MigrateCmd {
         dir: PathBuf,
         #[arg(long)]
         site: Option<String>,
+        /// Overwrite rows that changed since an earlier import (UPSERT by id; never deletes).
+        #[arg(long)]
+        refresh: bool,
     },
     /// Compare row counts and sample embeddings between v1 and this database.
     Verify {
@@ -217,9 +223,12 @@ fn main() -> std::process::ExitCode {
                     site,
                     tables,
                     dry_run,
-                } => cmds::migrate_pg(&home, site, tables, dry_run).await,
+                    refresh,
+                } => cmds::migrate_pg(&home, site, tables, dry_run, refresh).await,
                 MigrateCmd::Export { dir, site } => cmds::migrate_export(&dir, site),
-                MigrateCmd::Import { dir, site } => cmds::migrate_import(&home, &dir, site).await,
+                MigrateCmd::Import { dir, site, refresh } => {
+                    cmds::migrate_import(&home, &dir, site, refresh).await
+                }
                 MigrateCmd::Verify { site, sample } => {
                     cmds::migrate_verify(&home, site, sample).await
                 }

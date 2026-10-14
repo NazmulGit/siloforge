@@ -43,29 +43,40 @@ pub async fn check_site(
     let mut inputs: Vec<LinkCheckInput> = Vec::new();
     let mut links_per_post: HashMap<String, usize> = HashMap::new();
     let mut post_ids: Vec<String> = Vec::new();
+    // content_hash each post had when its links were extracted (R21: a crawl may run beside us)
+    let mut post_hash: HashMap<String, String> = HashMap::new();
     let mut post_pages: Vec<(String, String)> = Vec::new(); // (id, url) for breadcrumb detection
     let mut after = String::new();
     loop {
         job.checkpoint().await?;
         let (sid, a) = (site.id.clone(), after.clone());
-        let batch: Vec<(String, String, String)> = ctx
+        let rows: Vec<(String, String, String, String)> = ctx
             .db
             .read(move |c| {
                 let mut st = c
                     .prepare(
-                        "SELECT id, url, content_html FROM posts WHERE site_id=?1 AND id > ?2 ORDER BY id LIMIT 200",
+                        "SELECT id, url, content_html, content_hash FROM posts WHERE site_id=?1 AND id > ?2 ORDER BY id LIMIT 200",
                     )
                     .map_err(err)?;
                 let v = st
-                    .query_map(params![sid, a], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .query_map(params![sid, a], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                    })
                     .map_err(err)?
                     .collect::<rusqlite::Result<Vec<_>>>()
                     .map_err(err)?;
                 Ok(v)
             })
             .await?;
-        let Some(last) = batch.last() else { break };
+        let Some(last) = rows.last() else { break };
         after = last.0.clone();
+        let batch: Vec<(String, String, String)> = rows
+            .into_iter()
+            .map(|(id, url, html, hash)| {
+                post_hash.insert(id.clone(), hash);
+                (id, url, html)
+            })
+            .collect();
         post_pages.extend(batch.iter().map(|(id, url, _)| (id.clone(), url.clone())));
         let h = hosts.clone();
         let found: Vec<(String, Vec<sf_crawl::ExtractedLink>)> = compute(move || {
@@ -290,41 +301,32 @@ pub async fn check_site(
             .map_err(err)
         })
         .await?;
+    let mut rollup_stale = 0usize;
     for chunk in post_ids.chunks(1000) {
-        let rows: Vec<(String, usize, (usize, usize, usize, usize))> = chunk
+        let rows: Vec<Rollup> = chunk
             .iter()
             .map(|id| {
-                (
-                    id.clone(),
-                    links_per_post.get(id).copied().unwrap_or(0),
-                    per_post.get(id).copied().unwrap_or_default(),
-                )
+                let (internal, broken, nofollow, redirected) =
+                    per_post.get(id).copied().unwrap_or_default();
+                Rollup {
+                    id: id.clone(),
+                    content_hash: post_hash.get(id).cloned().unwrap_or_default(),
+                    total: links_per_post.get(id).copied().unwrap_or(0),
+                    internal,
+                    broken,
+                    nofollow,
+                    redirected,
+                }
             })
             .collect();
         let now = started.clone();
-        ctx.db
-            .write(move |t| {
-                let mut st = t
-                    .prepare(
-                        "UPDATE posts SET outbound_link_count=?2, internal_link_count=?3, broken_link_count=?4,
-                           nofollow_link_count=?5, redirect_link_count=?6, link_health_checked_at=?7 WHERE id=?1",
-                    )
-                    .map_err(err)?;
-                for (id, total, (internal, broken, nofollow, redirected)) in &rows {
-                    st.execute(params![
-                        id,
-                        *total as i64,
-                        *internal as i64,
-                        *broken as i64,
-                        *nofollow as i64,
-                        *redirected as i64,
-                        now
-                    ])
-                    .map_err(err)?;
-                }
-                Ok(())
-            })
-            .await?;
+        rollup_stale += ctx.db.write(move |t| write_rollups(t, &rows, &now)).await?;
+    }
+    if rollup_stale > 0 {
+        job.info(format!(
+            "link health: {rollup_stale} posts changed during the check; their link counts are left for the next run"
+        ))
+        .await;
     }
     // silo drift: applied topology edges no longer backed by a live link
     let sid = site.id.clone();
@@ -356,6 +358,7 @@ pub async fn check_site(
         o.insert("siloApplied".into(), json!(drift.total_applied));
         o.insert("siloDrifted".into(), json!(drift.total_drifted));
         o.insert("pruned".into(), json!(pruned));
+        o.insert("rollupStale".into(), json!(rollup_stale));
         o.insert("progress".into(), json!({"phase": "done", "pct": 100}));
     }
     job.info(format!(
@@ -364,6 +367,53 @@ pub async fn check_site(
     ))
     .await;
     Ok(stats)
+}
+
+/// Per-post link counts computed from the HTML read at the start of the check.
+pub(crate) struct Rollup {
+    pub id: String,
+    /// `posts.content_hash` when the links were extracted.
+    pub content_hash: String,
+    pub total: usize,
+    pub internal: usize,
+    pub broken: usize,
+    pub nofollow: usize,
+    pub redirected: usize,
+}
+
+/// Write the per-post rollups, skipping posts whose content changed since they were read (a crawl
+/// may run beside link_health; R21). Returns how many were skipped as stale.
+pub(crate) fn write_rollups(
+    t: &rusqlite::Transaction<'_>,
+    rows: &[Rollup],
+    now: &str,
+) -> sf_core::Result<usize> {
+    let mut st = t
+        .prepare(
+            "UPDATE posts SET outbound_link_count=?2, internal_link_count=?3, broken_link_count=?4,
+               nofollow_link_count=?5, redirect_link_count=?6, link_health_checked_at=?7
+             WHERE id=?1 AND content_hash=?8",
+        )
+        .map_err(err)?;
+    let mut stale = 0usize;
+    for r in rows {
+        let n = st
+            .execute(params![
+                r.id,
+                r.total as i64,
+                r.internal as i64,
+                r.broken as i64,
+                r.nofollow as i64,
+                r.redirected as i64,
+                now,
+                r.content_hash
+            ])
+            .map_err(err)?;
+        if n == 0 {
+            stale += 1;
+        }
+    }
+    Ok(stale)
 }
 
 /// Posts whose breadcrumb report is written per transaction (also the cancellation granularity).
@@ -462,4 +512,50 @@ async fn breadcrumb_pass(
     Ok(json!({
         "checked": checked, "failed": failed, "with_visible": visible, "with_schema": schema,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn rollups_skip_posts_changed_by_a_concurrent_crawl() {
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        sf_store::migrate::run(&mut c).unwrap();
+        c.execute_batch(
+            "INSERT INTO sites(id, domain, api_key) VALUES('s','a.com','k');
+             INSERT INTO posts(id, site_id, url, content_hash) VALUES('p1','s','https://a.com/1','h1');
+             INSERT INTO posts(id, site_id, url, content_hash) VALUES('p2','s','https://a.com/2','h2-new');",
+        )
+        .unwrap();
+        let row = |id: &str, hash: &str| Rollup {
+            id: id.into(),
+            content_hash: hash.into(),
+            total: 5,
+            internal: 3,
+            broken: 1,
+            nofollow: 0,
+            redirected: 1,
+        };
+        let t = c.transaction().unwrap();
+        // p2 was re-crawled after link_health read it (hash h2 -> h2-new); p3 was deleted
+        let stale = write_rollups(
+            &t,
+            &[row("p1", "h1"), row("p2", "h2"), row("p3", "h3")],
+            "2026-10-14T00:00:00.000Z",
+        )
+        .unwrap();
+        t.commit().unwrap();
+        assert_eq!(stale, 2);
+        let counts: Vec<(i64, Option<String>)> = c
+            .prepare("SELECT outbound_link_count, link_health_checked_at FROM posts ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(counts[0], (5, Some("2026-10-14T00:00:00.000Z".into())));
+        assert_eq!(counts[1], (0, None));
+    }
 }

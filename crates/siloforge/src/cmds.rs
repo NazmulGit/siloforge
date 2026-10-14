@@ -231,6 +231,7 @@ fn migrate_opts(
     site: Option<String>,
     tables: Option<String>,
     dry_run: bool,
+    refresh: bool,
 ) -> sf_ops::migrate_v1::MigrateOptions {
     let mut o = sf_ops::migrate_v1::MigrateOptions::new(key);
     o.site = site;
@@ -241,6 +242,7 @@ fn migrate_opts(
             .collect()
     });
     o.dry_run = dry_run;
+    o.refresh = refresh;
     o
 }
 
@@ -258,9 +260,10 @@ pub async fn migrate_pg(
     site: Option<String>,
     tables: Option<String>,
     dry_run: bool,
+    refresh: bool,
 ) -> Result<()> {
     let (_, db, key) = load(home.to_path_buf()).await?;
-    let opts = migrate_opts(key, site, tables, dry_run);
+    let opts = migrate_opts(key, site, tables, dry_run, refresh);
     let db2 = db.clone();
     let report = tokio::task::spawn_blocking(move || {
         sf_ops::migrate_v1::import_from_docker(&db2, &opts, &print_progress)
@@ -279,9 +282,14 @@ pub fn migrate_export(dir: &Path, site: Option<String>) -> Result<()> {
     Ok(())
 }
 
-pub async fn migrate_import(home: &Path, dir: &Path, site: Option<String>) -> Result<()> {
+pub async fn migrate_import(
+    home: &Path,
+    dir: &Path,
+    site: Option<String>,
+    refresh: bool,
+) -> Result<()> {
     let (_, db, key) = load(home.to_path_buf()).await?;
-    let opts = migrate_opts(key, site, None, false);
+    let opts = migrate_opts(key, site, None, false, refresh);
     let (db2, dir2) = (db.clone(), dir.to_path_buf());
     let report = tokio::task::spawn_blocking(move || {
         sf_ops::migrate_v1::import_from_dir(&dir2, &db2, &opts, &print_progress)
@@ -294,7 +302,7 @@ pub async fn migrate_import(home: &Path, dir: &Path, site: Option<String>) -> Re
 
 pub async fn migrate_verify(home: &Path, site: Option<String>, sample: usize) -> Result<()> {
     let (_, db, key) = load(home.to_path_buf()).await?;
-    let opts = migrate_opts(key, site, None, false);
+    let opts = migrate_opts(key, site, None, false, false);
     let db2 = db.clone();
     let report = tokio::task::spawn_blocking(move || {
         let src = sf_ops::migrate_v1::DockerSource::default();

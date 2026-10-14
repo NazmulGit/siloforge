@@ -433,3 +433,60 @@ async fn runner_holds_site_lock_until_cancelled_pipeline_stops() {
     );
     runner.shutdown(Duration::from_secs(1)).await;
 }
+
+/// R16: a re-chunk that only deletes/re-indexes paragraphs (nothing to embed) must still drop the
+/// cached site vectors, or the next plan ranks paragraphs by stale ids/idx.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rechunk_without_new_embeddings_invalidates_vector_cache() {
+    let (base, wp) = start_wp(vec![]).await;
+    wp.lock().posts = bike_posts(&base).into_iter().map(|p| (p.id, p)).collect();
+    let e = env("r16");
+    let site = add_site(&e, &base, true, settings()).await;
+    run_job(&e, JobKind::Crawl, &site, json!({})).await;
+    run_job(&e, JobKind::Plan, &site, json!({"topology": "reverse"})).await;
+    let first = e.ctx.vectors.get(&site).await.unwrap();
+
+    // control: a plan with no content change keeps the cached entry
+    run_job(&e, JobKind::Plan, &site, json!({"topology": "reverse"})).await;
+    let same = e.ctx.vectors.get(&site).await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &same));
+
+    // drop the first paragraph of one multi-paragraph post: kept paragraphs move up one idx
+    let rows = q_rows(
+        &e.db,
+        "SELECT p.id, p.content_html FROM posts p WHERE p.site_id=?1
+         AND (SELECT count(*) FROM paragraphs pa WHERE pa.post_id=p.id) >= 2 ORDER BY p.id LIMIT 1",
+        vec![site.clone()],
+    )
+    .await;
+    let (pid, html) = (s(&rows[0][0]), s(&rows[0][1]));
+    let cut = html.find("</p>").map(|i| i + 4).unwrap();
+    let paras_before = q_i64(
+        &e.db,
+        "SELECT count(*) FROM paragraphs WHERE post_id=?1",
+        vec![pid.clone()],
+    )
+    .await;
+    exec(
+        &e.db,
+        "UPDATE posts SET content_html=?2, content_raw=NULL, content_hash='r16-changed' WHERE id=?1",
+        vec![pid.clone(), html[cut..].to_string()],
+    )
+    .await;
+    run_job(&e, JobKind::Plan, &site, json!({"topology": "reverse"})).await;
+    let paras_after = q_i64(
+        &e.db,
+        "SELECT count(*) FROM paragraphs WHERE post_id=?1",
+        vec![pid.clone()],
+    )
+    .await;
+    assert!(
+        paras_after < paras_before,
+        "{paras_before} -> {paras_after}"
+    );
+    let fresh = e.ctx.vectors.get(&site).await.unwrap();
+    assert!(
+        !std::sync::Arc::ptr_eq(&first, &fresh),
+        "vector cache must be reloaded after a re-chunk"
+    );
+}

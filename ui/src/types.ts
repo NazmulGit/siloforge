@@ -81,6 +81,16 @@ export interface SiteSettings {
   money_page_urls?: string[];
   /** Skip the post-injection live verify. Off by default — the T8 SOP calls it mandatory. */
   skip_inject_verify?: boolean;
+  /** v2: let the AI refine the top plan anchors (validated; heuristic fallback). Default off. */
+  ai_anchor_refine?: boolean;
+  /** v2: edges per plan sent to the AI (0–5000, default 200). */
+  ai_anchor_refine_max?: number;
+  /** v2: parallel AI calls (1–16, default 4). */
+  ai_anchor_refine_concurrency?: number;
+  /** v2: total time budget for the AI step in seconds (5–3600, default 300). */
+  ai_anchor_refine_timeout_s?: number;
+  /** v2: turn off semantic phrase scoring (on by default when vectors exist). */
+  anchor_semantic_off?: boolean;
 }
 
 // ---- Rules layer (LinkBoss parity) ----

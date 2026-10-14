@@ -221,11 +221,26 @@ export function triggerCrawl(siteId: string): Promise<{ job_run_id: string }> {
   return request<{ job_run_id: string }>(`/sites/${siteId}/crawl`, { method: 'POST', body: {} });
 }
 
-export function triggerPlan(siteId: string, topology?: SiloTopology): Promise<{ job_run_id: string }> {
+/** `aiRefine` (v2, optional) overrides the site's `ai_anchor_refine` for this run only. */
+export function triggerPlan(
+  siteId: string,
+  topology?: SiloTopology,
+  opts: { aiRefine?: boolean } = {},
+): Promise<{ job_run_id: string }> {
   return request<{ job_run_id: string }>(`/sites/${siteId}/plan`, {
     method: 'POST',
-    body: topology ? { topology } : {},
+    body: {
+      ...(topology ? { topology } : {}),
+      ...(opts.aiRefine !== undefined ? { ai_refine: opts.aiRefine } : {}),
+    },
   });
+}
+
+/** Select value for the per-run AI anchor option: '' = site setting. */
+export type AiRefineChoice = '' | 'on' | 'off';
+
+export function aiRefineOpt(c: AiRefineChoice): { aiRefine?: boolean } {
+  return c === '' ? {} : { aiRefine: c === 'on' };
 }
 
 // ---- Archive/taxonomy Silo (Gap A) ----
@@ -241,8 +256,10 @@ export function fetchDashboard(siteId: string): Promise<DashboardData> {
   return request<DashboardData>(`/dashboard/${siteId}`);
 }
 
-export function fetchLinksReport(siteId: string, duplicates = false): Promise<LinkReportRow[]> {
-  return request<LinkReportRow[]>(`/reports/links/${siteId}${duplicates ? '?duplicates=1' : ''}`);
+/** Per-post link report. The server has no duplicates filter (v1 ignored `?duplicates=1`, A9):
+ *  filter on `duplicate_count > 0` client-side. */
+export function fetchLinksReport(siteId: string): Promise<LinkReportRow[]> {
+  return request<LinkReportRow[]>(`/reports/links/${siteId}`);
 }
 
 // ---- link history (Gap J) ----

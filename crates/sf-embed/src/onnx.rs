@@ -17,6 +17,7 @@ use sf_core::config::EmbedCfg;
 use sf_core::{Error, Result};
 
 use crate::batching::run_sorted;
+use crate::budget::{CpuBudget, LowPriorityThreads, PriorityGuard};
 use crate::tok::Tok;
 use crate::{EmbedFuture, Embedder, EmbedderKind, check_output, paths};
 
@@ -41,18 +42,25 @@ pub struct OnnxOptions {
     pub gpu: bool,
     /// Intra-op threads for the CPU EP (physical cores budget).
     pub threads: usize,
+    /// `resources.low_priority_jobs`: no spinning, below-normal ORT and driver threads (R11).
+    pub low_priority: bool,
     pub max_chars: usize,
 }
 
 impl OnnxOptions {
     pub fn from_config(cfg: &EmbedCfg, home: &Path, threads: usize) -> Self {
+        Self::from_config_budget(cfg, home, CpuBudget::new(threads, false))
+    }
+
+    pub fn from_config_budget(cfg: &EmbedCfg, home: &Path, budget: CpuBudget) -> Self {
         Self {
             dylib: None,
             runtime_dir: cfg.onnx_runtime_dir.clone(),
             home: home.to_path_buf(),
             model_dir: paths::model_dir(&cfg.model_dir, home),
             gpu: cfg.gpu,
-            threads: threads.max(1),
+            threads: budget.threads.max(1),
+            low_priority: budget.low_priority,
             max_chars: cfg.max_chars,
         }
     }
@@ -90,6 +98,10 @@ impl OnnxEmbedder {
         Self::new(OnnxOptions::from_config(cfg, home, threads))
     }
 
+    pub fn from_config_budget(cfg: &EmbedCfg, home: &Path, budget: CpuBudget) -> Self {
+        Self::new(OnnxOptions::from_config_budget(cfg, home, budget))
+    }
+
     /// Load the runtime + model now (normally lazy). Returns the active device.
     pub async fn load(&self) -> Result<String> {
         let state = self.state.clone();
@@ -120,7 +132,12 @@ fn ensure_loaded(
                 Device::Cpu if opts.gpu => "cpu (gpu unavailable)",
                 Device::Cpu => "cpu",
             };
-            tracing::info!(device = d, threads = opts.threads, "onnx embedder loaded");
+            tracing::info!(
+                device = d,
+                threads = opts.threads,
+                low_priority = opts.low_priority,
+                "onnx embedder loaded"
+            );
             *device.write() = d.to_string();
             *slot = Some(s);
             Ok(())
@@ -136,16 +153,32 @@ fn ort_err(ctx: &str) -> impl Fn(ort::Error<SessionBuilder>) -> Error + '_ {
     move |e| Error::internal(format!("onnx {ctx}: {e}"))
 }
 
-fn base_builder(threads: usize, gpu: bool) -> Result<SessionBuilder> {
+/// Whether the intra-op pool may busy-wait between ops. Spinning keeps CPU-EP batch runs ~25%
+/// faster, but on DirectML it only burns CPU, and with `low_priority_jobs` it would hold cores the
+/// desktop wants.
+fn spinning(gpu: bool, low_priority: bool) -> bool {
+    !gpu && !low_priority
+}
+
+fn base_builder(threads: usize, gpu: bool, low_priority: bool) -> Result<SessionBuilder> {
     let b = Session::builder()
         .map_err(|e| Error::internal(format!("onnx session builder: {e}")))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(ort_err("optimization level"))?
         .with_intra_threads(threads)
         .map_err(ort_err("threads"))?
-        // spinning keeps CPU-EP batch runs ~25% faster; on DirectML it only burns CPU
-        .with_intra_op_spinning(!gpu)
-        .map_err(ort_err("spinning"))?;
+        .with_intra_op_spinning(spinning(gpu, low_priority))
+        .map_err(ort_err("spinning"))?
+        .with_inter_op_spinning(spinning(gpu, low_priority))
+        .map_err(ort_err("inter spinning"))?;
+    let b = if low_priority {
+        // ORT's own pool threads start below normal (the session's pool is per-session, so the
+        // custom thread hooks apply to it).
+        b.with_thread_manager(LowPriorityThreads)
+            .map_err(ort_err("thread manager"))?
+    } else {
+        b
+    };
     if !gpu {
         return Ok(b);
     }
@@ -175,7 +208,7 @@ fn open(opts: &OnnxOptions) -> Result<State> {
         .commit();
 
     let mut attempt = if opts.gpu {
-        base_builder(opts.threads, true)
+        base_builder(opts.threads, true, opts.low_priority)
             .and_then(|mut b| {
                 b.commit_from_file(&model)
                     .map_err(|e| Error::internal(format!("onnx directml session: {e}")))
@@ -190,7 +223,7 @@ fn open(opts: &OnnxOptions) -> Result<State> {
         None
     };
     if attempt.is_none() {
-        let mut b = base_builder(opts.threads, false)?;
+        let mut b = base_builder(opts.threads, false, opts.low_priority)?;
         let s = b
             .commit_from_file(&model)
             .map_err(|e| Error::internal(format!("onnx session {}: {e}", model.display())))?;
@@ -266,6 +299,8 @@ impl Embedder for OnnxEmbedder {
             let texts = texts.to_vec();
             let n = texts.len();
             let out = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>> {
+                // ORT runs part of every op on the calling thread too.
+                let _prio = PriorityGuard::new(opts.low_priority);
                 let mut g = state.lock();
                 ensure_loaded(&mut g, &opts, &device)?;
                 let st = g
@@ -309,8 +344,39 @@ mod tests {
             model_dir: MODEL_DIR.into(),
             gpu,
             threads: 4,
+            low_priority: false,
             max_chars: 2000,
         })
+    }
+
+    #[test]
+    fn spinning_only_on_cpu_at_normal_priority() {
+        assert!(spinning(false, false));
+        assert!(!spinning(true, false));
+        assert!(!spinning(false, true));
+        assert!(!spinning(true, true));
+    }
+
+    #[test]
+    fn budget_flows_into_options() {
+        let cfg = EmbedCfg::default();
+        let o = OnnxOptions::from_config_budget(&cfg, Path::new("D:/tmp"), CpuBudget::new(3, true));
+        assert_eq!(o.threads, 3);
+        assert!(o.low_priority);
+        let o = OnnxOptions::from_config(&cfg, Path::new("D:/tmp"), 0);
+        assert_eq!(o.threads, 1);
+        assert!(!o.low_priority);
+    }
+
+    #[tokio::test]
+    async fn low_priority_cpu_session_matches_reference() {
+        let Some(mut o) = opts(false) else { return };
+        o.threads = 2;
+        o.low_priority = true;
+        let e = OnnxEmbedder::new(o);
+        let v = e.embed(&[reference_text().to_string()]).await.unwrap();
+        let c = crate::cosine(&v[0], &reference_vector());
+        assert!(c >= 0.9999, "cosine {c}");
     }
 
     #[tokio::test]
@@ -322,6 +388,7 @@ mod tests {
             model_dir: MODEL_DIR.into(),
             gpu: false,
             threads: 1,
+            low_priority: true,
             max_chars: 0,
         });
         // may succeed if a dll sits next to the test exe or SILOFORGE_ORT_DYLIB is set; must not panic

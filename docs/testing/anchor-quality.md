@@ -29,9 +29,9 @@ Measured on `D:\tmp\sf-test-home` (scratch tool `D:\tmp\sf-postvec`, 150 posts p
 
 | Site | match at 512 | match at 256 |
 |---|---|---|
-| site36.example | 148/150 (worst 0.99988) | 49/150 |
-| site62.example | 150/150 | 96/150 |
-| site04 / site80.example / site56 / site20 / site44 / site74 | 58-103/150 | 150/150 |
+| site21.example | 148/150 (worst 0.99988) | 49/150 |
+| site63.example | 150/150 | 96/150 |
+| site04 / site82.example / site55 / site16 / site47 / site72 | 58-103/150 | 150/150 |
 
 Paragraph vectors were always 256 (40/40 long paragraphs per site match at 256). So before it
 re-embeds posts, `embed_site` re-embeds up to 6 stored long posts at both caps and uses the cap
@@ -40,7 +40,7 @@ uses 256. Test: `post_vectors_reuse_the_sites_token_cap`.
 
 ## Golden set (method)
 
-`crates/sf-engine/src/anchor/golden_anchors.json` has 61 real cases from the site62 pilot DB: the
+`crates/sf-engine/src/anchor/golden_anchors.json` has 61 real cases from the site63 pilot DB: the
 source paragraph, target title, top-10 keywords, the anchor the old picker chose, and hand-labelled
 acceptable anchors (51 cases have at least one; 10 have no good anchor in the paragraph). Cases 1-11 are
 the pilot's known-bad anchors; 12-61 are random suggestions (seed 7, 42 native + 8 content_gap). The
@@ -143,3 +143,52 @@ quality gate.
   The v1 settings whitelist (`sf-server`) may need them added so the UI/API can set them.
 - `sf_embed::MAX_TOKENS_LONG` reproduces v1-local post vectors only on local rungs (onnx). A remote
   rung ignores the cap.
+
+## v2.0.1 fragment filter (2026-10-14)
+
+Hermes acceptance on site47.example reported the anchors "V kits perfect" ('12 Best Drill Kits with
+Accessory Sets' → 'Drill Driver Kits Under $200') and "inch cordless Impact Wrenches". Both are **v1
+suggestions** carried over by the migration (created 2026-07-27, v1 split "20V" into "20" + "V"): the
+v2 plan does not re-pick anchors of existing pending edges. The v2 picker did produce the second kind
+itself, though: "1/2 Inch Cordless Impact Wrenches" tokenizes as `1 / 2 Inch ...`, and a phrase could
+start on "Inch".
+
+| Rule (`nlp/pos.rs`, `nlp/phrases.rs`, `anchor/pick.rs`) | Example rejected | Kept |
+|---|---|---|
+| Never start on a unit word (`UNIT_WORDS`: inch, oz, ml, mm, gal, lbs, ft-lbs, mAh, hp, rpm, ...) or a lone letter | "Inch Cordless Impact Wrenches", "V kits", "Oz Water Bottles", "Gal Air Compressor" | "cordless Impact Wrenches", "20V kits" (one token, allowed when the target names 20V) |
+| Never start inside a glued spec (token directly after a number, or after `/ . - × ⁄` glued to a number) | "3/[8-inch drive sockets]" | "drive sockets"; "2-inch spindle travel" (whole spec) |
+| The head (last word) is a content noun (`is_bad_head`: adjectives, `BAD_HEADS` perfect/best/great/ideal/ready/available/compatible/options/things/..., units, tokens with digits) | "kits perfect", "12V options", "water bottle easy", "dual 4.0Ah" | "4.0Ah batteries" |
+| Postpositive adjectives (available, compatible, ideal, perfect, ready, suitable) no longer turn a preceding -s noun into a verb | "jug caps available" tagged `caps` as a verb | `caps` = noun |
+| `balance`, `strike` are noun/verb homographs | "saws balance performance", "water bottle strikes" | "bevel adjustments", "water bottle" |
+| Picker skips listicle leads (same rule as `is_natural_anchor`) | "Best Drill Kits" | "Drill Kits" |
+| Keyword fallback skips keywords led by a unit and matches that continue a spec | "inch impact wrench" in "1/2-inch impact wrench" | |
+| `clean_title` keeps a number run before a unit | "Inch Cordless Impact Wrenches" | "1/2 Inch Cordless Impact Wrenches", "32 Oz Water Bottles With Straw" |
+| `is_natural_anchor` accepts a leading spec only whole (number(s) + unit) | "Inch ...", "1/2 Cordless ..." | "1/2 Inch Cordless Impact Wrenches" |
+
+Golden set: cases 62-96 are new (35 cases): the two Hermes anchors plus 33 real v1 suggestions from
+site47.example and site21.example (`D:\tmp\sf-test-home`, read-only) whose anchor starts on a
+unit/letter fragment or ends on an adjective; paragraphs trimmed to the sentences around the anchor,
+target keywords from the DB, acceptable anchors labelled by hand.
+
+| Metric | Before (v1 anchor) | After |
+|---|---|---|
+| Fragment cases 62-96, natural | 2.9% | **100%** (assert ≥ 85%, and no pick may start on a fragment or end on a bad head) |
+| Fragment cases, exactly a hand-labelled anchor (34 labelled) | n/a | 79.4% |
+| All 96, natural | 32.3% | 100% |
+| Cases 1-61, hand-labelled match | 35.3% | 80.4% (was 78.4% before this pass) |
+
+My reading of the 35 new picks: 33 natural. Weak: "crafting wine bottle" (a gerund after "Try"; the
+-ing lead is a known POS limit) and "Starbucks glass bottles" (a brand the fixture has no capitalisation
+counts for). Tests: `nlp::phrases::{unit_fragments_and_trailing_adjectives,
+spec_fragments_hostile_input_never_panics}`, `anchor::pick::{fragments_are_never_natural_or_picked,
+keyword_fallback_skips_spec_fragments, clean_title_keeps_whole_specs}`, extended
+`golden::strict_check_examples`. `NLP_VERSION` stays 2 (keywords do not use the phrase chunker).
+
+Pending suggestions from older pickers: `sf_engine::anchor::is_fragment_anchor` (first word a unit or
+lone letter, or last word a bad head) runs over every pending `origin=plan/archive` suggestion when a plan
+loads its edges (`sf-jobs pipelines/plan.rs load_edges`). A fragment anchor is treated like a blank one:
+the edge gets a fresh anchor from the current picker, or is dropped by the blank-anchor safety net when
+its paragraph offers nothing natural. Natural anchors are never re-picked. The plan log says
+"N pending suggestions rescored (M get a new anchor)". Test
+`anchors_ai::fragment_anchors_of_pending_suggestions_are_repicked`. So the v1 "V kits perfect" edges on
+site47.example are replaced on its next plan, with no data migration.

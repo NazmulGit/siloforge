@@ -1,4 +1,4 @@
-//! Golden anchor-quality set: 61 real (paragraph, target) cases from the site62 pilot
+//! Golden anchor-quality set: 61 real (paragraph, target) cases from the site63 pilot
 //! (`golden_anchors.json`, labels by hand; see docs/testing/anchor-quality.md).
 //!
 //! "Natural" = the anchor is one of the hand-labelled acceptable anchors, or passes the strict
@@ -8,7 +8,9 @@
 
 use serde::Deserialize;
 
-use super::{PickOptions, TargetProfile, find_unblocked, is_natural_anchor, pick_anchor};
+use super::{
+    PickOptions, TargetProfile, find_unblocked, is_fragment_anchor, is_natural_anchor, pick_anchor,
+};
 use crate::nlp::{ParagraphNlp, SiteTerms};
 
 #[derive(Deserialize)]
@@ -52,6 +54,9 @@ fn judge(c: &Case, anchor: &str, t: &TargetProfile, terms: &SiteTerms) -> Judged
     }
 }
 
+/// Cases after this id are the unit/spec-fragment set (v2.0.1).
+const FRAGMENT_CASES_FROM: u32 = 61;
+
 fn pct(n: usize, d: usize) -> f64 {
     if d == 0 {
         0.0
@@ -68,6 +73,7 @@ fn golden_anchor_naturalness() {
     let (mut nb, mut na, mut lb, mut la, mut vb, mut va, mut labelled_cases) =
         (0, 0, 0, 0, 0, 0, 0);
     let (mut rand_n, mut rand_b, mut rand_a) = (0, 0, 0);
+    let (mut frag_n, mut frag_b, mut frag_a, mut frag_l, mut frag_ln) = (0, 0, 0, 0, 0);
     for c in &f.cases {
         let t = TargetProfile::new(&c.target_title, &c.keywords, &[]);
         let p = ParagraphNlp::with_terms(&c.paragraph, &[], Some(&terms));
@@ -83,8 +89,23 @@ fn golden_anchor_naturalness() {
             lb += usize::from(b.labelled);
             la += usize::from(a.labelled);
         }
-        // cases 1-11 are the pilot's known-bad anchors; the rest are a random sample
-        if c.id > 11 {
+        // cases 1-11 are the pilot's known-bad anchors; 12-61 a random sample; 62+ fragments
+        if c.id > FRAGMENT_CASES_FROM {
+            frag_n += 1;
+            frag_b += usize::from(b.natural);
+            frag_a += usize::from(a.natural);
+            if !c.acceptable.is_empty() {
+                frag_ln += 1;
+                frag_l += usize::from(a.labelled);
+            }
+            // a fragment lead or an adjective head never survives
+            assert!(
+                !is_fragment_anchor(&pick.anchor),
+                "#{} picked a fragment {:?}",
+                c.id,
+                pick.anchor
+            );
+        } else if c.id > 11 {
             rand_n += 1;
             rand_b += usize::from(b.natural);
             rand_a += usize::from(a.natural);
@@ -116,7 +137,20 @@ fn golden_anchor_naturalness() {
         pct(vb, n),
         pct(va, n),
     );
+    eprintln!(
+        "fragment cases (#{}+): natural {:.1}% -> {:.1}% (n={frag_n}); in hand-labelled set {:.1}%          (n={frag_ln})",
+        FRAGMENT_CASES_FROM + 1,
+        pct(frag_b, frag_n),
+        pct(frag_a, frag_n),
+        pct(frag_l, frag_ln),
+    );
+    assert!(frag_n >= 20, "fragment cases did not load");
     assert!(pct(na, n) >= 85.0, "natural after = {:.1}%", pct(na, n));
+    assert!(
+        pct(frag_a, frag_n) >= 85.0,
+        "fragment natural after = {:.1}%",
+        pct(frag_a, frag_n)
+    );
     assert!(na >= nb);
 }
 
@@ -160,6 +194,13 @@ fn strict_check_examples() {
         "mount",
         "AGPTEK Bike Disc Brake Pads",
         "the phone mount",
+        // v2.0.1 fragments
+        "V kits perfect",
+        "inch cordless Impact Wrenches",
+        "Oz Water Bottles",
+        "water bottle easy",
+        "glass bottles available",
+        "bike mounts perfect",
     ] {
         assert!(!is_natural_anchor(bad, &t, Some(&terms)), "{bad}");
     }

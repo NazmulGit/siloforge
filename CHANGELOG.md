@@ -3,6 +3,35 @@
 All notable changes to SiloForge. Versions follow [SemVer](https://semver.org). v2 is a rewrite in Rust; the v1
 history (TypeScript, Docker) is summarised at the end.
 
+## [2.0.1] - 2026-10-14
+
+First maintenance release after the production cutover (v2 live on 127.0.0.1:8600/8601 since 2026-10-14 10:16).
+
+### Fixed
+- Anchors: phrases can no longer start with a unit, a lone letter or a broken spec fragment (e.g. "V kits", "inch ...") or
+  end with a trailing adjective, unit or number ("... perfect"). Golden set grown to 96 real cases. Pending suggestions
+  that carry such a fragment (including ones migrated from v1) get a new anchor on the next plan.
+- Plan route forwards the optional `ai_refine` field (it was dropped before); MCP plan tools expose it.
+- R11: local ONNX embeddings honour `resources.cpu_threads`; with `low_priority_jobs`, spinning is off and inference
+  threads run below normal priority.
+- R16: re-chunking clears the cached site vectors. R21: link health no longer overwrites link counts on posts that a
+  crawl changed mid-run. R22: job resource figures are labelled as process-wide and marked when shared.
+- UI/server/MCP mismatches A3–A13: notification bell and settings are admin-only, an "Unencrypted" backup option, aligned
+  backup types, job filter includes embed/gsc/maintenance, MCP accepts the `naked`/`cta` anchor types.
+- Flaky test `reaper_requeues_idempotent_jobs`.
+
+### Added
+- Settings → Linking Rules → "Anchor text": AI anchor refinement toggle + budget, semantic scoring toggle. Plan dialogs
+  offer "AI anchors: site default / on / off".
+- `siloforge migrate from-postgres --refresh` updates rows that changed in v1 (never deletes).
+
+### Integrations (outside the binary; see docs/INTEGRATIONS-v2.md)
+- Backup Hub backs up the v2 data home (consistent DB snapshot) and `D:\Backups\SiloForge`; v1 hooks disabled.
+- Mission Control probes v2 /health with watchdog restart through the `siloforge-keepalive` task.
+- Model Control edits `DARIO_MODEL_*` / `EMBED_REMOTE_MODEL` in the v2 `secrets.env`.
+- Hermes teli scripts use the REST API with a scoped token; the gateway has a `siloforge` webhook route, and a v2
+  "Hermes Telegram" notification channel is set up (active after the gateway restarts).
+
 ## [2.0.0] - 2026-10-13
 
 The Rust rewrite: one binary (`siloforge.exe`) and one SQLite file replace the 7-container v1 stack. The `/api/v1`

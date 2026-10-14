@@ -3,6 +3,8 @@
 // Lives inside the Tools "Bulk" tab. Talks only to the documented API endpoints.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  aiRefineOpt,
+  type AiRefineChoice,
   bulkDecide,
   bulkRun,
   ApiError,
@@ -331,6 +333,7 @@ export function BulkWizard({ siteId, onClose, onApplied }: BulkWizardProps) {
 
   // ---- Step 2: matching options ----
   const [topology, setTopology] = useState<SiloTopology | ''>('');
+  const [aiRefine, setAiRefine] = useState<AiRefineChoice>('');
 
   // ---- Step 3/5: job progress ----
   const [runningJob, setRunningJob] = useState<{ id: string; type: 'plan' | 'inject' } | null>(null);
@@ -536,7 +539,7 @@ export function BulkWizard({ siteId, onClose, onApplied }: BulkWizardProps) {
     setJobError(null);
     setProgress(null);
     try {
-      const { job_run_id } = await triggerPlan(siteId, topology === '' ? undefined : topology);
+      const { job_run_id } = await triggerPlan(siteId, topology === '' ? undefined : topology, aiRefineOpt(aiRefine));
       setRunningJob({ id: job_run_id, type: 'plan' });
       setStep('progress');
       toast.push('Topical matching started', 'info');
@@ -943,6 +946,20 @@ export function BulkWizard({ siteId, onClose, onApplied }: BulkWizardProps) {
                     {t} — {TOPOLOGY_HINTS[t]}
                   </option>
                 ))}
+              </select>
+            </label>
+
+            <label className="field wiz-topology">
+              AI anchor refinement
+              <select
+                className="input"
+                value={aiRefine}
+                onChange={(e) => setAiRefine(e.target.value as AiRefineChoice)}
+                data-hint="Let the AI review the anchors of the best new suggestions for this run. Replies are validated; on any failure the heuristic anchors are kept. “site default” follows Linking Rules → Anchor text."
+              >
+                <option value="">site default</option>
+                <option value="on">on for this run</option>
+                <option value="off">off for this run</option>
               </select>
             </label>
 

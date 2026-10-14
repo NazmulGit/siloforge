@@ -1,5 +1,5 @@
 {
- "source": "site62.example pilot (D:/tmp/sf-pilot-home), 2026-10-13; labels by hand",
+ "source": "site63.example pilot (D:/tmp/sf-pilot-home), 2026-10-13, cases 1-61; site47.example + site21.example v1 suggestions with unit/spec fragments or trailing adjectives (D:/tmp/sf-test-home, read-only), 2026-10-14, cases 62+; labels by hand",
  "case_counts": [
   [
    "a",
@@ -9435,6 +9435,839 @@
    "old_anchor": "MIPS Full Face Bike Helmets",
    "acceptable": [
     "MIPS Bike Helmet"
+   ]
+  },
+  {
+   "id": 62,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Best Drill Driver Kits Under $200 in 2026",
+   "keywords": [
+    "$200",
+    "drill",
+    "driver",
+    "kits",
+    "$200",
+    "123-piece",
+    "126-piece",
+    "20v",
+    "21v",
+    "34-piece"
+   ],
+   "paragraph": "12 Best Drill Kits with Accessory Sets for 2026: You’ll find powerful 20V kits perfect for heavy-duty tasks, while 8V to 12V options keep things light for home fixes. Look for lithium-ion batteries with quick USB-C charging and long runtimes.",
+   "old_anchor": "V kits perfect",
+   "acceptable": [
+    "20V kits",
+    "powerful 20V kits",
+    "Drill Kits",
+    "Drill Kits with Accessory Sets"
+   ]
+  },
+  {
+   "id": 63,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Best Compact Impact Drivers for 2026 (Power in Your Palm)",
+   "keywords": [
+    "compact",
+    "drivers",
+    "impact",
+    "palm",
+    "power",
+    "1/4",
+    "1/4″",
+    "12v",
+    "140nm",
+    "168v"
+   ],
+   "paragraph": "You get serious power in 2026’s top 3/8-inch cordless Impact Wrenches, with brushless motors delivering up to 450 N·m and efficient lithium-ion batteries boosting runtime. Models like the DEWALT 20V MAX, CRAFTSMAN V20, and Milwaukee M18 FUEL offer lightweight builds, smart torque control, and bright LEDs for tight spots.",
+   "old_anchor": "inch cordless Impact Wrenches",
+   "acceptable": [
+    "cordless Impact Wrenches",
+    "Impact Wrenches"
+   ]
+  },
+  {
+   "id": 64,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "What is the Volume of a Water Bottle? 0.5 liters!",
+   "keywords": [
+    "bottle",
+    "liters",
+    "volume",
+    "water",
+    "affecting",
+    "bottle",
+    "calculating",
+    "cap",
+    "choosing",
+    "conclusion"
+   ],
+   "paragraph": "A 40 oz water bottle can hold up to 1.18 liters of water. This is a significant amount of hydration that is typically ideal for long trips, workouts, or daily hydration needs.",
+   "old_anchor": "oz water bottle",
+   "acceptable": [
+    "water bottle",
+    "40 oz water bottle"
+   ]
+  },
+  {
+   "id": 65,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Clever Coffee Creamer Bottle Crafts to Perk Up Your Home",
+   "keywords": [
+    "bottle",
+    "clever",
+    "coffee",
+    "crafts",
+    "creamer",
+    "home",
+    "perk",
+    "accents",
+    "adhesives",
+    "alternative"
+   ],
+   "paragraph": "Transform your Starbucks glass bottles with creative crafts perfect for coffee-loving crafters. Turn them into painted vases with soothing ombre effects, or delight in making snowman decorations for festive cheer.",
+   "old_anchor": "creative crafts perfect",
+   "acceptable": [
+    "glass bottles",
+    "creative crafts",
+    "painted vases",
+    "snowman decorations"
+   ]
+  },
+  {
+   "id": 66,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "40 Oz to Water Bottle: 1.18 Liters of Water!",
+   "keywords": [
+    "bottle",
+    "liters",
+    "water",
+    "activities",
+    "additional",
+    "analyzing",
+    "appropriately",
+    "benefits",
+    "beverages",
+    "bottle"
+   ],
+   "paragraph": "Continuing from the previous subtopic on ounces for hydration needs, the 16.9 oz water bottle size is a common choice for individuals seeking a portable and convenient option for staying hydrated throughout the day.",
+   "old_anchor": "oz water bottle size",
+   "acceptable": [
+    "water bottle size",
+    "water bottle",
+    "16.9 oz water bottle"
+   ]
+  },
+  {
+   "id": 67,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "How to Carry Water Bottle While Walking? 5 Easy Methods!",
+   "keywords": [
+    "bottle",
+    "carry",
+    "easy",
+    "methods",
+    "walking",
+    "water",
+    "adjusting",
+    "apply",
+    "attaching",
+    "avoiding"
+   ],
+   "paragraph": "If you want to make your water bottle easy to carry while hiking or walking, you can make a strap to attach it to your backpack.",
+   "old_anchor": "water bottle easy",
+   "acceptable": [
+    "water bottle"
+   ]
+  },
+  {
+   "id": 68,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "Where Can I Buy Diet Coke in Glass Bottles? Top 8 Stores!",
+   "keywords": [
+    "bottles",
+    "buy",
+    "coke",
+    "diet",
+    "glass",
+    "stores",
+    "top",
+    "antique",
+    "availability",
+    "beverage"
+   ],
+   "paragraph": "Amazon: Customers can find a variety of Faygo flavors in glass bottles available for purchase on Amazon’s website. Walmart: Walmart offers a selection of Faygo flavors in glass bottles for convenient online ordering and delivery.",
+   "old_anchor": "glass bottles available",
+   "acceptable": [
+    "glass bottles"
+   ]
+  },
+  {
+   "id": 69,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "9 Best Water Bottles With Time Markings for 2026 (Stay Hydrated)",
+   "keywords": [
+    "bottles",
+    "hydrated",
+    "markings",
+    "stay",
+    "time",
+    "water",
+    "32oz",
+    "500ml/750ml",
+    "accuracy",
+    "aquafit"
+   ],
+   "paragraph": "The Takeya Tritan 64 oz Motivational Water Bottle’s got you covered. You’ll love the leakproof straw lid and time markers that nudge you to drink.",
+   "old_anchor": "oz Motivational Water Bottle",
+   "acceptable": [
+    "Motivational Water Bottle",
+    "time markers",
+    "leakproof straw lid"
+   ]
+  },
+  {
+   "id": 70,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "Blender Bottle V1 Vs V2: Which is Better!",
+   "keywords": [
+    "blender",
+    "bottle",
+    "additional",
+    "blender",
+    "bottle",
+    "cap",
+    "capacity",
+    "comparison",
+    "conclusion",
+    "construction"
+   ],
+   "paragraph": "With the lid and spout features providing unique advantages for different usage scenarios, it’s essential to consider these aspects when selecting the ideal Blender Bottle.",
+   "old_anchor": "ideal Blender Bottle",
+   "acceptable": [
+    "Blender Bottle"
+   ]
+  },
+  {
+   "id": 71,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "Where Can I Buy Glass Milk Bottles? Top 11 Stores!",
+   "keywords": [
+    "bottles",
+    "buy",
+    "glass",
+    "milk",
+    "stores",
+    "top",
+    "antique",
+    "availability",
+    "bottle",
+    "bottles"
+   ],
+   "paragraph": "Where can one find a wide selection of blue glass bottles available for purchase online? Many online retailers offer a diverse range of blue glass bottles for various purposes.",
+   "old_anchor": "blue glass bottles available",
+   "acceptable": [
+    "blue glass bottles",
+    "glass bottles"
+   ]
+  },
+  {
+   "id": 72,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "What is a Spray Bottle Called? 10 Names!",
+   "keywords": [
+    "bottle",
+    "called",
+    "names",
+    "spray",
+    "aerosol",
+    "basics",
+    "bottle",
+    "bottles",
+    "called",
+    "choosing"
+   ],
+   "paragraph": "There are different types of spray bottles available including trigger sprayers, continuous misters, pump bottles, aerosol sprayers, and foam sprayers.",
+   "old_anchor": "spray bottles available",
+   "acceptable": [
+    "spray bottles",
+    "trigger sprayers",
+    "pump bottles",
+    "continuous misters",
+    "aerosol sprayers",
+    "foam sprayers"
+   ]
+  },
+  {
+   "id": 73,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "Hot Water Bottle Vs Heat Pack? Which One Better!",
+   "keywords": [
+    "bottle",
+    "heat",
+    "hot",
+    "pack",
+    "water",
+    "alternative",
+    "bottle",
+    "bottles",
+    "capabilities",
+    "choosing"
+   ],
+   "paragraph": "Portable and travel-friendly: The compact size and flat shape make the traditional rectangular hot water bottle easy to pack and carry on trips, allowing you to enjoy its comforting warmth even when away from home.",
+   "old_anchor": "traditional rectangular hot water bottle easy",
+   "acceptable": [
+    "hot water bottle",
+    "rectangular hot water bottle",
+    "traditional rectangular hot water bottle"
+   ]
+  },
+  {
+   "id": 74,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "10 Adorable Small Alcohol Bottle Crafts for Tiny Spaces",
+   "keywords": [
+    "adorable",
+    "alcohol",
+    "bottle",
+    "crafts",
+    "small",
+    "spaces",
+    "tiny",
+    "art",
+    "asked",
+    "bottle"
+   ],
+   "paragraph": "Transform your space with these edgy cut glass bottle crafts perfect for a modern industrial vibe. Try crafting wine bottle pendant lighting: select your favorite bottle style, score, and smooth for a unique light fixture.",
+   "old_anchor": "edgy cut glass bottle crafts perfect",
+   "acceptable": [
+    "cut glass bottle crafts",
+    "glass bottle crafts",
+    "edgy cut glass bottle crafts",
+    "bottle crafts",
+    "wine bottle pendant lighting"
+   ]
+  },
+  {
+   "id": 75,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "10 Best Bottled Waters for 2026 Without Microplastics (Truly Pure)",
+   "keywords": [
+    "bottled",
+    "microplastics",
+    "pure",
+    "waters",
+    "12-pack",
+    "24-pack",
+    "6-pack",
+    "affect",
+    "alkaline",
+    "amazon"
+   ],
+   "paragraph": "When it comes to serving bottled water at a party, it’s important to be aware of the different types of bottled water available in the market.",
+   "old_anchor": "bottled water available",
+   "acceptable": [
+    "bottled water"
+   ]
+  },
+  {
+   "id": 76,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "How to Waterproof Labels on Glass Bottles? Quick Steps!",
+   "keywords": [
+    "bottles",
+    "glass",
+    "labels",
+    "quick",
+    "steps",
+    "waterproof",
+    "additional",
+    "adhesive",
+    "application",
+    "common"
+   ],
+   "paragraph": "Choose label materials compatible with glass surfaces, such as clear polyester or vinyl labels with strong adhesive.",
+   "old_anchor": "label materials compatible",
+   "acceptable": [
+    "label materials",
+    "vinyl labels",
+    "glass surfaces",
+    "clear polyester"
+   ]
+  },
+  {
+   "id": 77,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "How to Keep 5 Gallon Water Jugs from Leaking?",
+   "keywords": [
+    "gallon",
+    "jugs",
+    "leaking",
+    "water",
+    "5-gallon",
+    "check",
+    "conclusion",
+    "dispenser",
+    "faq",
+    "fix"
+   ],
+   "paragraph": "There are several types of 5-gallon water jug caps available in the market, each designed to cater to specific needs and preferences.",
+   "old_anchor": "gallon water jug caps available",
+   "acceptable": [
+    "5-gallon water jug caps",
+    "water jug caps"
+   ]
+  },
+  {
+   "id": 78,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "18 Eco-Friendly Recycled Beer Bottle Crafts You’ll Love",
+   "keywords": [
+    "beer",
+    "bottle",
+    "crafts",
+    "eco-friendly",
+    "love",
+    "recycled",
+    "youll",
+    "arrangements",
+    "art",
+    "asked"
+   ],
+   "paragraph": "Use uncrimped 26 mm beer bottle caps for mosaics, coasters, and framed wall art with epoxy adhesive. Create rustic beer cap garlands by flattening and stringing assorted caps for bar or party decor.",
+   "old_anchor": "mm beer bottle caps",
+   "acceptable": [
+    "beer bottle caps",
+    "beer cap garlands",
+    "framed wall art"
+   ]
+  },
+  {
+   "id": 79,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "How Many Oz in a Bottle of Water? Sizes & Capacities!",
+   "keywords": [
+    "bottle",
+    "capacities",
+    "sizes",
+    "water",
+    "bottle",
+    "bottles",
+    "capacities",
+    "comparing",
+    "conclusion",
+    "conversions"
+   ],
+   "paragraph": "20 oz: The 20 oz water bottle strikes a balance between size and capacity. It is great for longer journeys or activities that require more hydration.",
+   "old_anchor": "oz water bottle strikes",
+   "acceptable": [
+    "water bottle"
+   ]
+  },
+  {
+   "id": 80,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "Fastest Time to Drink a Water Bottle: 5.40 Seconds",
+   "keywords": [
+    "bottle",
+    "drink",
+    "fastest",
+    "seconds",
+    "time",
+    "water",
+    "attempts",
+    "benefits",
+    "bottle",
+    "chart"
+   ],
+   "paragraph": "Peter czerwinski, alias “furious pete,” holds the record for the fastest time to drink a 750ml water bottle, achieving the feat in a remarkable 1.75 seconds. Competitive speed drinker isaac harding-davis holds the guinness world record for drinking a water bottle in just 2.12 seconds.",
+   "old_anchor": "ml water bottle",
+   "acceptable": [
+    "water bottle",
+    "750ml water bottle"
+   ]
+  },
+  {
+   "id": 81,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "How to Wash Hot Water Bottle? 10 Easy Steps",
+   "keywords": [
+    "bottle",
+    "easy",
+    "hot",
+    "steps",
+    "wash",
+    "water",
+    "additional",
+    "bacteria",
+    "bottle",
+    "brush"
+   ],
+   "paragraph": "A 500ml plastic water bottle may take around 2 hours to melt at 72°F. Higher temperatures, like 90°F, will melt it in about 1 hour.",
+   "old_anchor": "ml plastic water bottle",
+   "acceptable": [
+    "plastic water bottle",
+    "500ml plastic water bottle"
+   ]
+  },
+  {
+   "id": 82,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "What Can I Use Instead of a Spray Bottle: 10 Alternatives!",
+   "keywords": [
+    "alternatives",
+    "bottle",
+    "spray",
+    "alternative",
+    "alternatives",
+    "apply",
+    "bottle",
+    "cleaning",
+    "conclusion",
+    "effectively"
+   ],
+   "paragraph": "Let’s explore the different types of spray bottle nozzles available:",
+   "old_anchor": "spray bottle nozzles available",
+   "acceptable": [
+    "spray bottle nozzles"
+   ]
+  },
+  {
+   "id": 83,
+   "source_title": "site21.example (sf-test-home, v1 suggestion)",
+   "target_title": "How to Seal Acrylic Paint on Water Bottle? 6 Easy Steps",
+   "keywords": [
+    "acrylic",
+    "bottle",
+    "easy",
+    "paint",
+    "seal",
+    "steps",
+    "water",
+    "achieving",
+    "acrylic",
+    "adding"
+   ],
+   "paragraph": "This process will give you a unique and durable water bottle perfect for an on-the-go lifestyle.",
+   "old_anchor": "durable water bottle perfect",
+   "acceptable": [
+    "durable water bottle",
+    "water bottle"
+   ]
+  },
+  {
+   "id": 84,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "How to Choose a Cordless Drill Driver",
+   "keywords": [
+    "choose",
+    "cordless",
+    "drill",
+    "driver",
+    "accessories",
+    "asked",
+    "basic",
+    "batteries",
+    "battery",
+    "bits"
+   ],
+   "paragraph": "Its 1/2-inch corded drill design handles tough tasks without draining power. At just 3.8 pounds, it’s lightweight but built tough, with a soft-grip spade handle that cuts fatigue.",
+   "old_anchor": "inch corded drill design",
+   "acceptable": [
+    "corded drill design",
+    "corded drill",
+    "spade handle",
+    "soft-grip spade handle"
+   ]
+  },
+  {
+   "id": 85,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "Hex Shank Vs Round Shank Compatibility Chart",
+   "keywords": [
+    "chart",
+    "compatibility",
+    "hex",
+    "round",
+    "shank",
+    "access",
+    "adapters",
+    "affect",
+    "alignment",
+    "asked"
+   ],
+   "paragraph": "While 1/4″ hex shanks work great in quick-change systems and impact drivers, giving you fast swaps, 3-flats shanks reduce spin-out and boost grip in standard chucks.",
+   "old_anchor": "hex shanks work great",
+   "acceptable": [
+    "hex shanks",
+    "quick-change systems",
+    "impact drivers",
+    "standard chucks",
+    "3-flats shanks"
+   ]
+  },
+  {
+   "id": 86,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "Drill Bit Shank Types and Compatibility",
+   "keywords": [
+    "bit",
+    "compatibility",
+    "drill",
+    "shank",
+    "types",
+    "accuracy",
+    "adapters",
+    "affect",
+    "asked",
+    "bit"
+   ],
+   "paragraph": "If you’re using an impact driver, go for a 1/4-inch hex shank; it clicks right into place and changes fast. Straight shanks work fine in standard drills but may slip under high torque.",
+   "old_anchor": "inch hex shank",
+   "acceptable": [
+    "hex shank",
+    "impact driver",
+    "Straight shanks",
+    "standard drills"
+   ]
+  },
+  {
+   "id": 87,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Best High Torque Cordless Drill Drivers for 2026",
+   "keywords": [
+    "cordless",
+    "drill",
+    "drivers",
+    "high",
+    "torque",
+    "1/2",
+    "1060in·lbs",
+    "20v",
+    "21v",
+    "40ah"
+   ],
+   "paragraph": "The BLACK+DECKER BDC120VA100 offers 1,700 RPM and 150 in-lbs torque. The DEWALT DCD771C2 provides 530 in-lbs and a durable 1/2-inch chuck.",
+   "old_anchor": "lbs torque",
+   "acceptable": []
+  },
+  {
+   "id": 88,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Best Corded Die Grinders for 2026 (Power You Can Trust)",
+   "keywords": [
+    "corded",
+    "die",
+    "grinders",
+    "power",
+    "trust",
+    "1-1/2-inch",
+    "1/4″",
+    "2-inch",
+    "20v",
+    "42-amp"
+   ],
+   "paragraph": "You’ll love the 20,000 RPM power and 0.6 HP motor delivering smooth, low-vibration performance. The aluminum body keeps it light at just 0.7 kg, and the rear exhaust keeps your workspace clean.",
+   "old_anchor": "RPM power",
+   "acceptable": [
+    "aluminum body",
+    "low-vibration performance",
+    "rear exhaust"
+   ]
+  },
+  {
+   "id": 89,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "10 Best 8 Inch Bench Grinders for 2026 (Top Workshop Tools)",
+   "keywords": [
+    "bench",
+    "grinders",
+    "inch",
+    "tools",
+    "top",
+    "workshop",
+    "115v",
+    "1ph",
+    "3450rpm",
+    "3600rpm"
+   ],
+   "paragraph": "Its 8-inch swing and 2-inch spindle travel offer solid range, while the cast iron construction ensures stability. You’ll appreciate the 6.5-inch square worktable, adjustable up to 45 degrees in both directions.",
+   "old_anchor": "inch spindle travel offer solid range",
+   "acceptable": [
+    "cast iron construction",
+    "spindle travel",
+    "square worktable",
+    "8-inch swing"
+   ]
+  },
+  {
+   "id": 90,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "10 Best 12-Inch Sliding Miter Saws for 2026",
+   "keywords": [
+    "12-inch",
+    "miter",
+    "saws",
+    "sliding",
+    "10-inch",
+    "12-inch",
+    "12″",
+    "angles",
+    "asked",
+    "bevel"
+   ],
+   "paragraph": "Models like the WEN BA3959 and PeakPursuit 8-inch offer reliable motors, bevel adjustments up to 45° , and sturdy builds. Whether you need dual speeds, dust collection, or portability, these saws balance performance and convenience.",
+   "old_anchor": "inch offer reliable motors",
+   "acceptable": [
+    "reliable motors",
+    "bevel adjustments",
+    "sturdy builds",
+    "dust collection",
+    "dual speeds"
+   ]
+  },
+  {
+   "id": 91,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "10 Best Impact Drivers with Variable Speeds for 2026",
+   "keywords": [
+    "drivers",
+    "impact",
+    "speeds",
+    "variable",
+    "1/2″",
+    "1/4",
+    "168v",
+    "20ah",
+    "20v",
+    "21v"
+   ],
+   "paragraph": "You’ll power through tough jobs with top picks like the DEWALT 20V MAX XR and FLEX 24V Brushless drivers. All feature quick-change collets for fast bit swaps.",
+   "old_anchor": "V Brushless drivers",
+   "acceptable": [
+    "quick-change collets",
+    "Brushless drivers",
+    "fast bit swaps"
+   ]
+  },
+  {
+   "id": 92,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "10 Best Cordless Jig Saws for 2026 (Power & Precision)",
+   "keywords": [
+    "cordless",
+    "jig",
+    "power",
+    "precision",
+    "saws",
+    "18v",
+    "20v",
+    "21v",
+    "2400rpm",
+    "accessories"
+   ],
+   "paragraph": "You’ll find top 6½-inch Cordless Circular Saws for 2026 deliver strong power and long runtimes, thanks to brushless motors and efficient 18V–20V platforms. Models like the Milwaukee M18, DEWALT DCS565B, and Makita XSS02Z offer durability, precision, and smart ergonomics.",
+   "old_anchor": "inch Cordless Circular Saws",
+   "acceptable": [
+    "Cordless Circular Saws",
+    "brushless motors"
+   ]
+  },
+  {
+   "id": 93,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "10 Best 3/8 Inch Cordless Impact Wrenches for 2026",
+   "keywords": [
+    "3/8",
+    "cordless",
+    "impact",
+    "inch",
+    "wrenches",
+    "12v",
+    "18v",
+    "20v",
+    "3/8",
+    "3/8-inch"
+   ],
+   "paragraph": "10 Best Compact 1/2 Inch Impact Wrenches for 2026: You need power and precision in tight spaces, and these 10 compact 1/2-inch impact wrenches deliver. From the lightweight Milwaukee M12 FUEL Stubby to the 1000 ft-lbs beast with brushless efficiency, each balances torque, weight, and smart features.",
+   "old_anchor": "Inch Impact Wrenches",
+   "acceptable": [
+    "impact wrenches",
+    "brushless efficiency"
+   ]
+  },
+  {
+   "id": 94,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Best Oil-Free Air Compressors for 2026",
+   "keywords": [
+    "air",
+    "compressors",
+    "oil-free",
+    "13-gallon",
+    "20-gallon",
+    "2010a",
+    "2hp",
+    "6-gallon",
+    "8010a",
+    "accessories"
+   ],
+   "paragraph": "ECOMAX 6 Gal Air Compressor with Kit Best Value View Latest Price Need a reliable, portable air compressor that handles everything from tire inflation to powering tools without the hassle of oil maintenance? You’ll love the ECOMAX 6 Gal model.",
+   "old_anchor": "Gal Air Compressor",
+   "acceptable": [
+    "portable air compressor",
+    "air compressor",
+    "tire inflation",
+    "oil maintenance"
+   ]
+  },
+  {
+   "id": 95,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Best Brushless Impact Driver Kits for 2026",
+   "keywords": [
+    "brushless",
+    "driver",
+    "impact",
+    "kits",
+    "168v",
+    "16v",
+    "17v",
+    "18v",
+    "20v",
+    "21v"
+   ],
+   "paragraph": "From SKIL’s 4V screwdriver to DEWALT’s 20V brushless models, they balance voltage, torque, and size. Light yet tough, with smart clutches, LED lights , and long-lasting lithium-ion batteries, they handle everything from delicate tasks to heavy fastening.",
+   "old_anchor": "V brushless models",
+   "acceptable": [
+    "brushless models",
+    "smart clutches",
+    "lithium-ion batteries",
+    "LED lights"
+   ]
+  },
+  {
+   "id": 96,
+   "source_title": "site47.example (sf-test-home, v1 suggestion)",
+   "target_title": "12 Best Brushless Impact Driver Kits for 2026",
+   "keywords": [
+    "brushless",
+    "driver",
+    "impact",
+    "kits",
+    "168v",
+    "16v",
+    "17v",
+    "18v",
+    "20v",
+    "21v"
+   ],
+   "paragraph": "Choose DEWALT’s 20V models for reliability; or step up to 21V brushless drills for extra torque and efficiency. Impact drivers like the DCF845B and Seesii WH700 tackle heavy fastening with ease.",
+   "old_anchor": "V brushless drills",
+   "acceptable": [
+    "brushless drills",
+    "Impact drivers",
+    "extra torque",
+    "heavy fastening"
    ]
   }
  ]

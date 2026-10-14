@@ -126,6 +126,11 @@ pub async fn chunk_changed(
         )
         .await;
     }
+    if stats.chunked_posts > 0 {
+        // Re-chunking inserts, deletes and re-indexes paragraphs even when nothing needs a new
+        // embedding, so cached `para_meta` ids/idx would point at the wrong text (R16).
+        ctx.vectors.invalidate(&site.id);
+    }
     Ok(stats)
 }
 

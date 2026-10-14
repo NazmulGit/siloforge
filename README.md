@@ -32,6 +32,9 @@ contract is unchanged, so the v1 UI, the MCP tool names and the SiloForge Connec
 - One HTML splitter for chunking and insertion (exact byte spans); Gutenberg block comments are never touched.
 - Keywords as 1-3-grams, search intent, anchor selection with guards (2-6 words, no reuse per source, no
   linking inside headings/code/buttons/existing links, cannibalization-aware, diversity and over-optimisation penalties).
+  Anchors are POS-filtered noun phrases (no verbs, possessives, model-number or unit fragments such as "V kits
+  perfect"), scored semantically against the target; optional AI refinement per site (`ai_anchor_refine`, UI:
+  Settings -> Linking Rules -> Anchor text) or per plan (`ai_refine`), always validated with a heuristic fallback.
 - 11-dimension composite score, density limits applied after scoring, 5 silo topologies
   (reverse, serial, priority, circle, bidirectional), k-means clusters with pillars, silo drift, keyword linker rules.
 - Safe injection: fresh raw content is read, the link is spliced at a hash-checked position, the post is updated
@@ -187,8 +190,8 @@ siloforge [--home <dir>] <command>        # home: --home, else $SILOFORGE_HOME, 
   backup create [--kind full|db|config] [--passphrase ..] [--note ..] [--include-secrets]
   backup list | backup verify <file>
   restore <file> [--passphrase ..] [--force]
-  migrate from-postgres [--site <uuid>] [--tables a,b] [--dry-run]    read-only import from the v1 container
-  migrate export <dir> [--site ..] | migrate import <dir> [--site ..]  v1 -> CSV -> v2 (other PC)
+  migrate from-postgres [--site <uuid>] [--tables a,b] [--dry-run] [--refresh]   read-only import from the v1 container
+  migrate export <dir> [--site ..] | migrate import <dir> [--site ..] [--refresh]  v1 -> CSV -> v2 (other PC)
   migrate verify [--site ..] [--sample 100]                           counts + embedding samples vs v1
   token create --name <n> [--user <email>] [--scopes read,write] [--expires-days N]   (printed once)
   token list | token revoke <id-or-prefix>
@@ -221,7 +224,7 @@ migrated copy of the production data. The machine was busy with other work durin
 about ±30 %; the order of magnitude is solid, exact ratios are not. Sources:
 [docs/testing/performance.md](docs/testing/performance.md), [docs/testing/contract-diff.md](docs/testing/contract-diff.md).
 
-Plan pipeline, largest site (site36.example: 2,621 posts, 112,706 paragraphs):
+Plan pipeline, largest site (site21.example: 2,621 posts, 112,706 paragraphs):
 
 | Run | v1 | v2 |
 |---|---|---|
@@ -236,7 +239,7 @@ CPU with 6 threads 204 texts/s; cosine vs the stored v1 vectors 0.999999+ for pa
 REST API (203 requests over 66 endpoint templates and 4 sites): **0 real contract mismatches**. After the read-path
 pass (covering indexes, concurrent reads), every heavy read on the largest site is at or below v1 (curl p50, ms):
 
-| Endpoint (site36.example) | v1 | v2 |
+| Endpoint (site21.example) | v1 | v2 |
 |---|---|---|
 | `/reports/link-health?limit=250` | 43.0 | 27.2 |
 | `/reports/link-health?format=csv` (46k rows) | 1037.9 | 203.4 |
@@ -253,13 +256,14 @@ injected and verified, Gutenberg block counts unchanged, an edit made in WordPre
 byte-identical ([docs/testing/pilot-e2e.md](docs/testing/pilot-e2e.md)).
 
 ### Known limitations (2.0.0)
-- Anchor text is the weak spot: the noun-phrase chunker has no POS model, so some anchors contain verbs or are
-  product names. In the pilot sample about half of the native anchors were natural noun phrases. Review anchors
-  before injecting (the approval gate is mandatory anyway).
+- Anchor text uses a light POS heuristic, not a trained model: brands written in lowercase on the site and
+  off-topic but natural phrases still slip through ([docs/testing/anchor-quality.md](docs/testing/anchor-quality.md)).
+  Review anchors before injecting (the approval gate is mandatory anyway).
 - About a quarter of suggestions are `content_gap` (no natural anchor in the text). They need an LLM to be placed;
   without one they are reported, not written.
-- Not ported from v1 yet: Google Search Console data pull, WordPress taxonomy/archive crawl, breadcrumb detection.
-- ONNX Runtime's own threads run at normal priority. There is no MCP tool for link health.
+- Not ported from v1 yet: WordPress taxonomy/archive crawl. (GSC pull and breadcrumb detection landed in the
+  reliability pass: `gsc` job kind, link_health breadcrumb columns.)
+- There is no MCP tool for link health.
 
 ---
 

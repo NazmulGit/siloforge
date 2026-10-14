@@ -113,7 +113,9 @@ export function McpPanel() {
         <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
           Paste this into the profile&apos;s <code>config.yaml</code>, then replace the token with one from{' '}
           <Link to="/settings?section=tokens">API tokens</Link> (scopes <code>read</code> + <code>write</code> are enough
-          for linking work). Restart the Hermes gateway afterwards.
+          for linking work; <code>siloforge_list_notifications</code>, <code>siloforge_create_backup</code> and the full{' '}
+          <code>siloforge_system_status</code> need an admin user&apos;s token with the <code>admin</code> scope). Restart
+          the Hermes gateway afterwards.
         </p>
         <CopyBlock text={hermesYaml} label="Hermes config" />
       </div>

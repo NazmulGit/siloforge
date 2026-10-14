@@ -12,7 +12,20 @@ import type { JobProgress } from '../types';
 import type { JobRunV2 } from '../types2';
 
 const STATUSES = ['', 'queued', 'running', 'done', 'failed', 'cancelled'] as const;
-const KINDS = ['', 'crawl', 'plan', 'inject', 'undo', 'keyword_link', 'link_health', 'audit', 'backup'];
+const KINDS = [
+  '',
+  'crawl',
+  'plan',
+  'inject',
+  'undo',
+  'keyword_link',
+  'link_health',
+  'audit',
+  'embed',
+  'gsc',
+  'backup',
+  'maintenance',
+];
 const LIMITS = [50, 100, 250, 500];
 
 function readProgress(job: JobRunV2): JobProgress | null {
@@ -181,10 +194,10 @@ export function AllJobsPage() {
                     <th>Progress</th>
                     <th>Created</th>
                     <th className="num">Duration</th>
-                    <th className="num" title="Peak resident memory while running">
+                    <th className="num" title="Peak resident memory of the whole SiloForge process while this job ran (includes jobs running at the same time)">
                       Peak RAM
                     </th>
-                    <th className="num" title="Average CPU % (of one core) / CPU seconds">
+                    <th className="num" title="Process-wide average CPU % / CPU seconds while this job ran (includes jobs running at the same time)">
                       CPU
                     </th>
                     <th>Error</th>
@@ -232,6 +245,12 @@ export function AllJobsPage() {
                         <td className="num muted">
                           {res.avg_cpu_pct !== undefined ? `${res.avg_cpu_pct.toFixed(0)}%` : '—'}
                           {res.cpu_secs !== undefined ? ` · ${res.cpu_secs.toFixed(1)}s` : ''}
+                          {(res.concurrent_jobs_max ?? 1) > 1 && (
+                            <span className="faint" title="Other jobs ran at the same time; RAM/CPU are shared figures">
+                              {' '}
+                              (shared ×{res.concurrent_jobs_max})
+                            </span>
+                          )}
                         </td>
                         <td
                           style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: j.error ? 'var(--red)' : undefined }}

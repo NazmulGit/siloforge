@@ -252,8 +252,27 @@ pub fn clean_title(title: &str, max_words: usize) -> String {
     let opens = |w: &str| w.starts_with('(') || w.starts_with('[');
     let closes = |w: &str| w.ends_with(')') || w.ends_with(']');
     let is_separator = |w: &str| matches!(w, "-" | "\u{2013}" | "\u{2014}" | "|" | ":");
+    let is_num = |w: &str| {
+        let n = norm(w);
+        !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())
+    };
+    // "10 Best 1/2 Inch Cordless Impact Wrenches": a number run followed by a unit is a spec,
+    // kept whole ("1/2 Inch ..."), never cut to "Inch ...".
+    let spec_at = |ws: &[&str], i: usize| {
+        let mut j = i;
+        while ws.get(j).is_some_and(|w| is_num(w)) {
+            j += 1;
+        }
+        j > i && ws.get(j).is_some_and(|w| pos::is_unit_word(&norm(w)))
+    };
     for _ in 0..4 {
-        let skip = words.iter().take_while(|w| leading_noise(w)).count();
+        let skip = (0..words.len())
+            .take_while(|&i| {
+                words
+                    .get(i)
+                    .is_some_and(|w| leading_noise(w) && !spec_at(&words, i))
+            })
+            .count();
         words.drain(..skip);
         // A leading aside ("[with Brackets] Bike Locks") is dropped as a whole.
         if words.first().is_some_and(|w| opens(w)) {
@@ -477,7 +496,7 @@ pub fn pick_anchor(para: &ParagraphNlp, target: &TargetProfile, opts: &PickOptio
             continue;
         }
         let lower = ph.text.to_lowercase();
-        if !opts.allowed(&lower) || is_generic_anchor(&lower) {
+        if !opts.allowed(&lower) || is_generic_anchor(&lower) || listicle_lead(&lower) {
             continue;
         }
         let Some(s) = score_phrase(ph, target) else {
@@ -552,10 +571,20 @@ pub fn pick_anchor(para: &ParagraphNlp, target: &TargetProfile, opts: &PickOptio
     for kw in &target.keywords {
         let words = kw.split_whitespace().count();
         let lower = kw.to_lowercase();
-        if words < min_w || words > max_w || kw.chars().count() <= 3 || !opts.allowed(&lower) {
+        if words < min_w
+            || words > max_w
+            || kw.chars().count() <= 3
+            || !opts.allowed(&lower)
+            || lower
+                .split_whitespace()
+                .next()
+                .is_some_and(pos::is_fragment_lead)
+        {
             continue;
         }
-        if let Some((s, e)) = find_unblocked(&para.text, kw, &para.blocked) {
+        if let Some((s, e)) = find_unblocked(&para.text, kw, &para.blocked)
+            && !text_mid_spec(&para.text, s)
+        {
             let surface = para.text.get(s..e).unwrap_or(kw).to_string();
             return AnchorPick {
                 anchor: surface,
@@ -596,6 +625,24 @@ pub fn pick_anchor(para: &ParagraphNlp, target: &TargetProfile, opts: &PickOptio
             .filter(|a| *a != clean)
             .collect(),
     }
+}
+
+/// "Best Drill Kits", "Top Picks": a listicle lead reads as a heading (same rule as
+/// [`is_natural_anchor`]).
+fn listicle_lead(lower: &str) -> bool {
+    lower
+        .split_whitespace()
+        .next()
+        .is_some_and(|w| LISTICLE_WORDS.contains(&w))
+}
+
+/// The match at byte `start` continues a number spec: "3/[8-inch ...]", "4.[5 Inch ...]".
+fn text_mid_spec(text: &str, start: usize) -> bool {
+    let mut before = text.get(..start).unwrap_or("").chars().rev();
+    matches!(
+        (before.next(), before.next()),
+        (Some('/' | '.' | '-' | '\u{d7}' | '\u{2044}'), Some(d)) if d.is_ascii_digit()
+    )
 }
 
 /// "Lock Bike Lock Cable", "MIPS feature MIPS": a repeated word is never a natural anchor.
@@ -671,7 +718,7 @@ pub fn top_phrases(
                 continue;
             }
             let lower = ph.text.to_lowercase();
-            if !opts.allowed(&lower) || is_generic_anchor(&lower) {
+            if !opts.allowed(&lower) || is_generic_anchor(&lower) || listicle_lead(&lower) {
                 continue;
             }
             if let Some(s) = score_phrase(ph, target) {
@@ -692,6 +739,17 @@ pub fn top_phrases(
         }
     }
     out
+}
+
+/// Context-free spec-fragment check (v2.0.1): the first word is a unit or a lone letter ("V kits
+/// perfect", "inch cordless Impact Wrenches"), or the last word cannot be a head (an adjective such
+/// as "perfect", a unit, a token with digits). The plan uses it to re-pick anchors of pending
+/// suggestions made by older pickers (v1 split "20V" into "20" + "V").
+pub fn is_fragment_anchor(anchor: &str) -> bool {
+    let lower = crate::nlp::norm_word(anchor);
+    let first = lower.split_whitespace().next().unwrap_or("");
+    let last = lower.split_whitespace().last().unwrap_or("");
+    crate::nlp::pos::is_fragment_lead(first) || crate::nlp::pos::is_bad_head(last)
 }
 
 /// Strict "natural anchor" check: 2-6 words, a noun phrase (starts on a noun/adjective/
@@ -722,10 +780,37 @@ pub fn is_natural_anchor(anchor: &str, target: &TargetProfile, terms: Option<&Si
     }
     let tags = pos::tag_tokens(&toks);
     let tag = |i: usize| tags.get(i).copied().unwrap_or(Tag::Func);
-    let (Some(&first), Some(&last)) = (words.first(), words.last()) else {
+    let word_at = |k: usize| words.get(k).and_then(|&i| toks.get(i));
+    // A leading number spec is fine only as a whole, unit included ("1/2 Inch Impact Wrenches");
+    // a unit or lone letter without its number never starts an anchor ("V kits", "inch drills").
+    let mut lead = 0usize;
+    while word_at(lead).is_some_and(|t| t.kind == TokenKind::Number) {
+        lead += 1;
+    }
+    if lead > 0 {
+        if !word_at(lead).is_some_and(|t| pos::is_unit_word(&norm_word(t.text))) {
+            return false;
+        }
+        lead += 1;
+    }
+    let (Some(&first), Some(&last)) = (words.get(lead), words.last()) else {
         return false;
     };
+    if lead == 0
+        && toks
+            .get(first)
+            .is_some_and(|t| pos::is_fragment_lead(&norm_word(t.text)))
+    {
+        return false;
+    }
     if !matches!(tag(first), Tag::Noun | Tag::Adj | Tag::Part) || tag(last) != Tag::Noun {
+        return false;
+    }
+    // the head must be a content noun ("kits perfect", "12V options", "water bottle easy")
+    if toks
+        .get(last)
+        .is_some_and(|t| pos::is_bad_head(&norm_word(t.text)))
+    {
         return false;
     }
     // a listicle lead ("Best Bike Helmets", "Top Picks") reads as a heading, not an anchor
@@ -736,7 +821,7 @@ pub fn is_natural_anchor(anchor: &str, target: &TargetProfile, terms: Option<&Si
         return false;
     }
     let mut descriptive = 0usize;
-    for &i in &words {
+    for &i in words.get(lead..).unwrap_or(&[]) {
         let Some(t) = toks.get(i) else { return false };
         let w = norm_word(t.text);
         match tag(i) {
@@ -853,7 +938,7 @@ mod tests {
         assert_eq!(clean_title("", 6), "");
     }
 
-    /// Pilot 2026-10-13 (site62 titles): no year holes, parentheses or dangling stop words.
+    /// Pilot 2026-10-13 (site63 titles): no year holes, parentheses or dangling stop words.
     #[test]
     fn clean_title_pilot_regressions() {
         let cases = [
@@ -1064,5 +1149,99 @@ mod tests {
         o.target_anchor_counts.insert("steel bike lock".into(), 3);
         let alt = pick_anchor(&p, &t, &o);
         assert_ne!(alt.anchor, "steel bike lock");
+    }
+
+    /// v2.0.1: unit / spec fragments and trailing adjectives (Hermes acceptance, site47.example).
+    #[test]
+    fn fragments_are_never_natural_or_picked() {
+        let t = TargetProfile::new(
+            "12 Best Drill Driver Kits Under $200 in 2026",
+            &kws(&["drill driver kits", "drill kits", "20v"]),
+            &[],
+        );
+        for bad in [
+            "V kits perfect",
+            "V kits",
+            "inch cordless Impact Wrenches",
+            "Oz Water Bottles",
+            "drill kits perfect",
+            "12V options",
+            "water bottle easy",
+            "kits available",
+            "Drill Kits 20V",
+            "mm drill bits",
+        ] {
+            assert!(!is_natural_anchor(bad, &t, None), "{bad}");
+        }
+        for good in ["drill driver kits", "cordless drill kits", "Vitamin C"] {
+            assert!(is_natural_anchor(good, &t, None), "{good}");
+        }
+        // a whole spec is fine when the target names it
+        let w = TargetProfile::new(
+            "10 Best 1/2 Inch Cordless Impact Wrenches for 2026",
+            &[],
+            &[],
+        );
+        assert!(is_natural_anchor(
+            "1/2 Inch Cordless Impact Wrenches",
+            &w,
+            None
+        ));
+        assert!(!is_natural_anchor(
+            "Inch Cordless Impact Wrenches",
+            &w,
+            None
+        ));
+        assert!(!is_natural_anchor("1/2 Cordless Impact Wrenches", &w, None));
+        let p = pick(
+            "You'll find powerful 20V kits perfect for heavy-duty tasks, while 8V to 12V options \
+             keep things light. Look for lithium-ion batteries with quick USB-C charging.",
+            "12 Best Drill Driver Kits Under $200 in 2026",
+            &["drill driver kits", "kits", "batteries"],
+        );
+        assert!(
+            !p.anchor.starts_with("V ") && !p.anchor.ends_with("perfect"),
+            "{}",
+            p.anchor
+        );
+        let p = pick(
+            "You get serious power in 2026's top 3/8-inch cordless Impact Wrenches, with brushless \
+             motors.",
+            "10 Best 3/8 Inch Cordless Impact Wrenches for 2026",
+            &["cordless impact wrenches", "inch cordless impact wrenches"],
+        );
+        assert_eq!(p.anchor, "cordless Impact Wrenches");
+    }
+
+    #[test]
+    fn keyword_fallback_skips_spec_fragments() {
+        // only the keyword matches; "inch ..." would cut "1/2-inch" in two
+        let p = pick(
+            "Grab a 1/2-inch impact wrench today.",
+            "Impact Gear",
+            &["inch impact wrench"],
+        );
+        assert!(!p.anchor.to_lowercase().starts_with("inch"), "{}", p.anchor);
+        assert!(text_mid_spec("3/8-inch", 2));
+        assert!(text_mid_spec("4.5 Inch", 2));
+        assert!(!text_mid_spec("a 20 V", 5));
+        assert!(!text_mid_spec("", 0));
+        assert!(!text_mid_spec("\u{d7}", 99));
+    }
+
+    #[test]
+    fn clean_title_keeps_whole_specs() {
+        assert_eq!(
+            clean_title("10 Best 1/2 Inch Cordless Impact Wrenches for 2026", 6),
+            "1/2 Inch Cordless Impact Wrenches"
+        );
+        assert_eq!(
+            clean_title("12 Best 4 1/2 Inch Angle Grinders for 2026 (Top Picks)", 6),
+            "4 1/2 Inch Angle Grinders"
+        );
+        assert_eq!(
+            clean_title("9 Best 32 Oz Water Bottles With Straw for 2026", 6),
+            "32 Oz Water Bottles With Straw"
+        );
     }
 }

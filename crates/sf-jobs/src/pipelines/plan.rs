@@ -221,11 +221,12 @@ pub async fn plan_site(
     }
     let new_count = cands.len();
     let rescored = existing.len();
+    let repicked = existing.iter().filter(|e| e.anchor.is_empty()).count();
     for e in existing {
         cands.push(e);
     }
     job.info(format!(
-        "candidates: {new_count} new, {rescored} pending suggestions rescored"
+        "candidates: {new_count} new, {rescored} pending suggestions rescored ({repicked} get a new anchor)"
     ))
     .await;
     job.checkpoint().await?;
@@ -690,6 +691,13 @@ async fn load_edges(ctx: &JobContext, site_id: &str) -> JobResult<(Vec<Cand>, Ve
     let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
     for (id, s, t, status, origin, anchor, topo, breakdown) in rows {
         if status == "suggested" && (origin == "plan" || origin == "archive") && s != t {
+            // Pending anchors from older pickers that are spec fragments ("V kits perfect",
+            // "inch cordless Impact Wrenches": v1 split "20V") are re-picked like blank ones.
+            let anchor = if sf_engine::anchor::is_fragment_anchor(&anchor) {
+                String::new()
+            } else {
+                anchor
+            };
             // one rescored suggestion per pair (older duplicates are left as they are)
             if seen_pairs.insert((s.clone(), t.clone())) {
                 existing.push(Cand {
@@ -928,7 +936,7 @@ async fn cluster_site(
 
 /// Replace the site's auto clusters. An auto cluster whose member set is unchanged keeps its id
 /// (label/pillar refreshed) and its posts are not touched: every `posts` UPDATE rewrites the whole
-/// row (content + embedding, ~40 KB on site36), and the old delete-all (FK SET NULL) +
+/// row (content + embedding, ~40 KB on site21), and the old delete-all (FK SET NULL) +
 /// re-assign rewrote every post twice per plan. k-means is seeded, so a re-plan of an unchanged
 /// site now writes no post rows here.
 fn write_clusters(

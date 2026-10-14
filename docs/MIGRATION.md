@@ -83,6 +83,13 @@ What `-Execute` does (log: `D:\Final_Apps\SiloForge\logs\cutover-<ts>.log`):
 The import is a full fresh import because the importer uses `INSERT OR IGNORE`: re-importing into an older test DB
 would keep stale rows. Writers are stopped before the dump so the dump and the import see the same data.
 
+To catch up an existing v2 home instead (for example a side-by-side test home after v1 kept running), use
+`siloforge migrate from-postgres --refresh` (or `migrate import <dir> --refresh`): rows are UPSERTed by id, so edges
+that v1 approved, applied or rejected meanwhile, re-crawled posts and changed settings overwrite the v2 copy; unchanged
+rows are left alone (report columns `inserted`, `updated`, `ignored`). Refresh never deletes: rows that v1 no longer has
+(for example paragraphs of a re-chunked post) stay in v2, so use a fresh home when you need an exact copy. Do not
+refresh a home that v2 has already written to (plans, injects): v1's older copy of a row would overwrite v2's.
+
 ### 1.5 Manual follow-ups (in this order)
 Before editing any file below, copy it to `<file>.bak-pre-sf2`. `rollback-to-v1.ps1` restores exactly those copies.
 

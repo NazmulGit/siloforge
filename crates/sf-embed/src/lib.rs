@@ -17,6 +17,7 @@ use serde::Serialize;
 use sf_core::{EMBED_DIM, Error, Result};
 
 mod batching;
+pub mod budget;
 pub mod chain;
 pub mod paths;
 pub mod remote;
@@ -32,6 +33,7 @@ pub mod onnx;
 #[cfg(feature = "candle")]
 pub mod candle;
 
+pub use budget::CpuBudget;
 pub use chain::{BatchDone, ChainOptions, EmbedChain, RungStatus};
 pub use remote::RemoteEmbedder;
 pub use selftest::{SelfTest, reference_text, reference_vector, self_test};

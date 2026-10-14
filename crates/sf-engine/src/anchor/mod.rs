@@ -30,8 +30,8 @@ pub use guards::{
 };
 pub use pick::{
     AnchorPick, PhraseScore, PickOptions, PickSource, SEMANTIC_BASE, SEMANTIC_WEIGHT,
-    STRIKING_WEIGHT, TargetProfile, clean_title, find_unblocked, is_ignored, is_natural_anchor,
-    pick_anchor, pick_anchor_across, score_phrase, top_phrases,
+    STRIKING_WEIGHT, TargetProfile, clean_title, find_unblocked, is_fragment_anchor, is_ignored,
+    is_natural_anchor, pick_anchor, pick_anchor_across, score_phrase, top_phrases,
 };
 
 #[cfg(test)]

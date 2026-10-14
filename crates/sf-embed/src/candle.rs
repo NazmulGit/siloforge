@@ -13,6 +13,7 @@ use sf_core::config::EmbedCfg;
 use sf_core::{Error, Result};
 
 use crate::batching::run_sorted;
+use crate::budget::CpuBudget;
 use crate::tok::Tok;
 use crate::{EmbedFuture, Embedder, EmbedderKind, check_output, paths};
 
@@ -27,6 +28,10 @@ struct State {
 pub struct CandleEmbedder {
     dir: PathBuf,
     max_chars: usize,
+    budget: CpuBudget,
+    /// Private rayon pool of `budget.threads` workers (candle's gemm otherwise uses the global pool
+    /// with every logical core at normal priority; R11). Built on first use.
+    pool: Arc<Mutex<Option<Arc<rayon::ThreadPool>>>>,
     state: Arc<Mutex<Option<State>>>,
     device: Arc<RwLock<String>>,
 }
@@ -41,6 +46,8 @@ impl CandleEmbedder {
         Self {
             dir: dir.into(),
             max_chars,
+            budget: CpuBudget::default(),
+            pool: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(None)),
             device: Arc::new(RwLock::new("not loaded".into())),
         }
@@ -49,6 +56,36 @@ impl CandleEmbedder {
     pub fn from_config(cfg: &EmbedCfg, home: &Path) -> Self {
         Self::new(paths::model_dir(&cfg.model_dir, home), cfg.max_chars)
     }
+
+    /// Thread count and priority for inference (default: 1 thread, normal priority).
+    pub fn with_budget(mut self, budget: CpuBudget) -> Self {
+        self.budget = budget;
+        self
+    }
+}
+
+fn compute_pool(
+    slot: &Mutex<Option<Arc<rayon::ThreadPool>>>,
+    budget: CpuBudget,
+) -> Result<Arc<rayon::ThreadPool>> {
+    let mut g = slot.lock();
+    if let Some(p) = g.as_ref() {
+        return Ok(p.clone());
+    }
+    let low = budget.low_priority;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(budget.threads.max(1))
+        .thread_name(|i| format!("sf-candle-{i}"))
+        .start_handler(move |_| {
+            if low {
+                crate::budget::lower_current_thread();
+            }
+        })
+        .build()
+        .map_err(|e| Error::internal(format!("candle pool: {e}")))?;
+    let pool = Arc::new(pool);
+    *g = Some(pool.clone());
+    Ok(pool)
 }
 
 fn open(dir: &Path) -> Result<State> {
@@ -104,9 +141,13 @@ impl Embedder for CandleEmbedder {
             let device = self.device.clone();
             let dir = self.dir.clone();
             let max_chars = self.max_chars;
+            let budget = self.budget;
+            let pool_slot = self.pool.clone();
             let texts = texts.to_vec();
             let n = texts.len();
             let out = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>> {
+                let _prio = crate::budget::PriorityGuard::new(budget.low_priority);
+                let pool = compute_pool(&pool_slot, budget)?;
                 let mut g = state.lock();
                 if g.is_none() {
                     match open(&dir) {
@@ -124,7 +165,9 @@ impl Embedder for CandleEmbedder {
                     .as_ref()
                     .ok_or_else(|| Error::internal("candle model missing"))?;
                 let ids = st.tok.encode(&texts, max_chars, crate::MAX_TOKENS)?;
-                run_sorted(&ids, BATCH, 1, |a, m, b, l| hidden(&st.model, a, m, b, l))
+                pool.install(|| {
+                    run_sorted(&ids, BATCH, 1, |a, m, b, l| hidden(&st.model, a, m, b, l))
+                })
             })
             .await
             .map_err(|e| Error::internal(format!("candle worker: {e}")))??;

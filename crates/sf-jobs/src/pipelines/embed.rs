@@ -5,7 +5,7 @@
 //!
 //! Post vectors: v1 embedded `title + "\n" + content_text[:2000]` (UTF-16 units) on whichever
 //! rung served. OpenRouter truncated at 256 word-pieces, v1's local transformers.js rung at 512,
-//! so some migrated sites (site36, site62.example) hold 512-token post vectors and others 256.
+//! so some migrated sites (site21, site63.example) hold 512-token post vectors and others 256.
 //! Before re-embedding posts, a few stored long-post vectors are re-embedded at both caps and the
 //! cap that reproduces them (cos >= 0.999) is used, so new post vectors match the old ones.
 //! Paragraph vectors were always 256 (remote) and stay at 256.

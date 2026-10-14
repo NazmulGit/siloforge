@@ -395,3 +395,83 @@ fn live_docker_dry_run_counts() {
     db.close();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn refresh_overwrites_rows_changed_in_v1() {
+    let dir = fixture_dir();
+    let db = open_db(&dir);
+    import_from_dir(&dir, &db, &MigrateOptions::new(key()), &|_| {}).unwrap();
+    // v1 keeps running after the first import: P1's title changes, a keyword's score changes.
+    let posts = std::fs::read_to_string(dir.join("posts.csv")).unwrap();
+    std::fs::write(
+        dir.join("posts.csv"),
+        posts.replacen(",p1,P1,", ",p1,P1 renamed,", 1),
+    )
+    .unwrap();
+    let kw = std::fs::read_to_string(dir.join("keywords.csv")).unwrap();
+    std::fs::write(
+        dir.join("keywords.csv"),
+        kw.replacen(",cap,body,0.5,", ",cap,body,0.9,", 1),
+    )
+    .unwrap();
+
+    // a plain re-run keeps the stale copy
+    let plain = import_from_dir(&dir, &db, &MigrateOptions::new(key()), &|_| {}).unwrap();
+    let t = |r: &MigrateReport, n: &str| r.tables.iter().find(|t| t.table == n).unwrap().clone();
+    assert_eq!(t(&plain, "posts").updated, 0);
+    let title: String = db
+        .read_blocking(|c| {
+            c.query_row("SELECT title FROM posts WHERE id=?1", [P1], |r| r.get(0))
+                .map_err(sf_store::err)
+        })
+        .unwrap();
+    assert_eq!(title, "P1");
+
+    let mut o = MigrateOptions::new(key());
+    o.refresh = true;
+    let rep = import_from_dir(&dir, &db, &o, &|_| {}).unwrap();
+    assert!(rep.refresh && rep.to_string().contains("(refresh)"));
+    assert_eq!(t(&rep, "posts").updated, 1);
+    assert_eq!(t(&rep, "posts").ignored, 2);
+    assert_eq!(t(&rep, "posts").inserted, 0);
+    assert_eq!(t(&rep, "keywords").updated, 1);
+    assert_eq!(t(&rep, "paragraphs").updated, 0);
+    // pillar is never nulled by a refresh
+    assert_eq!(t(&rep, "clusters").updated, 0);
+    db.read_blocking(|c| {
+        let title: String = c
+            .query_row("SELECT title FROM posts WHERE id=?1", [P1], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "P1 renamed");
+        let score: f64 = c
+            .query_row("SELECT score FROM keywords WHERE keyword='cap'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!((score - 0.9).abs() < 1e-9);
+        let pillar: Option<String> = c
+            .query_row("SELECT pillar_post_id FROM clusters", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pillar.as_deref(), Some(P1));
+        Ok(())
+    })
+    .unwrap();
+    // refresh is idempotent once caught up
+    let again = import_from_dir(&dir, &db, &o, &|_| {}).unwrap();
+    assert_eq!(t(&again, "posts").updated, 0);
+    db.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn insert_sql_shapes() {
+    assert!(
+        insert_sql("posts", &["id", "title"], false).starts_with("INSERT OR IGNORE INTO posts")
+    );
+    let up = insert_sql("posts", &["id", "title"], true);
+    assert!(up.contains("ON CONFLICT(id) DO UPDATE SET title=excluded.title"));
+    assert!(up.contains("WHERE posts.title IS NOT excluded.title"));
+    let cl = insert_sql("clusters", &["id", "pillar_post_id", "label"], true);
+    assert!(!cl.contains("pillar_post_id=excluded"));
+    assert!(insert_sql("x", &["id"], true).ends_with("DO NOTHING"));
+}

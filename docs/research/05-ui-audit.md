@@ -230,6 +230,13 @@ Dev: the Vite server runs on :5173 and proxies `/api` to `http://localhost:8600`
 
 ## 5. UI gaps for the planned features
 
+> **Superseded (2026-10-14, audit A13).** The "New endpoints" column below is the pre-build proposal. What was
+> actually built is in [../API.md](../API.md) §5: `/api/v2/system`, `/api/v2/jobs`, `/api/v2/jobs/{id}/logs`,
+> `/api/v2/notifications` + `/api/v2/notifications/channels[/{id}/test]` (events `job.done`, `job.failed`,
+> `plan.ready`, `inject.done`, `backup.*`, `system.alert`), `/api/v2/backups` (no restore route: restore is the CLI
+> `siloforge restore`), `/api/v2/tokens`, `/api/v2/mcp`. The proposed `/settings/notifications*`,
+> `/backups/restore` and `/jobs/run/:id*` paths were never built.
+
 Code-style conventions to follow: pages live in `src/pages/<Name>.tsx` and export `function <Name>Page()`, lazy-loaded in `App.tsx`. Settings sub-panels are components in `src/components/<Name>Panel.tsx`, registered in the `SECTIONS` array in `Settings.tsx` (with `adminOnly: true` where needed) plus one `{section === 'x' && …}` line. API helpers go in `api.ts` as `fetchX/createX/patchX/deleteX`, and wire types go in `types.ts`. Use the existing `Skeleton`/`EmptyState`, `StatCard`, `StatusChip`, `Modal`, `Toggle`, `useToast`, and `data-hint` tooltips. Polling follows the `setTimeout`-tick pattern from `Jobs.tsx`.
 
 | Feature | Exists? | Minimal additions (proposed names) | New endpoints |

@@ -112,6 +112,30 @@ fn suspect(raw: &str, terms: Option<&SiteTerms>) -> bool {
     terms.is_some_and(|t| t.is_proper(&norm_word(raw)))
 }
 
+/// Separators inside a number spec: "1/2", "3-8", "2×4".
+const SPEC_JOINERS: &[&str] = &["/", ".", "-", "\u{d7}", "\u{2044}"];
+
+/// Token `i` is glued (no whitespace) to a number before it, directly or through a spec joiner
+/// ("3/[8-inch sockets]", "1/[2-inch drive]"): a phrase starting there would cut a spec in two.
+/// The tokenizer keeps "20V" and "4.0Ah" whole.
+pub(crate) fn starts_mid_spec(toks: &[super::tokenize::Token<'_>], i: usize) -> bool {
+    let Some(cur) = toks.get(i) else { return false };
+    let Some(prev) = i.checked_sub(1).and_then(|p| toks.get(p)) else {
+        return false;
+    };
+    if prev.end != cur.start {
+        return false;
+    }
+    if prev.kind == TokenKind::Number {
+        return true;
+    }
+    prev.kind == TokenKind::Punct
+        && SPEC_JOINERS.contains(&prev.text)
+        && i.checked_sub(2)
+            .and_then(|p| toks.get(p))
+            .is_some_and(|pp| pp.kind == TokenKind::Number && pp.end == prev.start)
+}
+
 /// Extract candidate noun phrases in document order (no site statistics).
 pub fn noun_phrases(text: &str) -> Vec<NounPhrase> {
     noun_phrases_with(text, None)
@@ -192,6 +216,14 @@ pub fn noun_phrases_with(text: &str, terms: Option<&SiteTerms>) -> Vec<NounPhras
                     continue;
                 }
                 if pos::is_year(&norm_word(tb.text)) {
+                    continue;
+                }
+                // never start mid-spec ("20 [V kits]", "1/2 [Inch Cordless ...]", "3/[8-inch
+                // sockets]") and always end on a content noun ("kits perfect", "12V options")
+                if pos::is_fragment_lead(&norm_word(ta.text))
+                    || starts_mid_spec(&toks, a)
+                    || pos::is_bad_head(&norm_word(tb.text))
+                {
                     continue;
                 }
                 let Some(full) = text.get(ta.start..tb.end) else {
@@ -463,5 +495,103 @@ mod tests {
             h.iter()
                 .any(|p| p.text == "Bike U-Lock" && !p.split_modifier)
         );
+    }
+
+    /// Hermes acceptance 2026-10-14 (site47.example): "V kits perfect", "inch cordless Impact
+    /// Wrenches". A unit or lone letter never starts a phrase, a phrase never starts inside a
+    /// glued spec, and the last word is a content noun.
+    #[test]
+    fn unit_fragments_and_trailing_adjectives() {
+        let p = texts(
+            "You'll find powerful 20V kits perfect for heavy-duty tasks, while 8V to 12V options \
+             keep things light. Get the 20 V kits perfect for decks.",
+        );
+        assert!(p.contains(&"20V kits".to_string()), "{p:?}");
+        assert!(!p.iter().any(|x| x.starts_with("V ")), "{p:?}");
+        assert!(!p.iter().any(|x| x.ends_with("perfect")), "{p:?}");
+        assert!(!p.iter().any(|x| x.ends_with("options")), "{p:?}");
+        let p =
+            texts("top 3/8-inch cordless Impact Wrenches and 1/2 Inch Cordless Impact Wrenches");
+        assert!(p.contains(&"cordless Impact Wrenches".to_string()), "{p:?}");
+        assert!(
+            !p.iter()
+                .any(|x| x.to_lowercase().starts_with("inch")
+                    || x.to_lowercase().starts_with("8-inch")),
+            "{p:?}"
+        );
+        for (src, bad, good) in [
+            (
+                "How Many 16.9 Oz Water Bottles fit",
+                "Oz Water Bottles",
+                "Water Bottles",
+            ),
+            (
+                "the ECOMAX 6 Gal Air Compressor runs",
+                "Gal Air Compressor",
+                "Air Compressor",
+            ),
+            (
+                "uncrimped 26 mm beer bottle caps work",
+                "mm beer bottle caps",
+                "beer bottle caps",
+            ),
+            (
+                "with 4.0Ah batteries and dual 4.0Ah packs",
+                "dual 4.0Ah",
+                "4.0Ah batteries",
+            ),
+            (
+                "glass bottles available today",
+                "glass bottles available",
+                "glass bottles",
+            ),
+            (
+                "a hot water bottle easy to pack",
+                "hot water bottle easy",
+                "hot water bottle",
+            ),
+        ] {
+            let p = texts(src);
+            assert!(!p.iter().any(|x| x == bad), "{bad}: {p:?}");
+            assert!(p.iter().any(|x| x == good), "{good}: {p:?}");
+        }
+        // a spec glued by a joiner: "3/[8-inch sockets]"
+        let p = texts("a set of 3/8-inch drive sockets");
+        assert!(!p.iter().any(|x| x.starts_with("8-inch")), "{p:?}");
+        assert!(p.contains(&"drive sockets".to_string()), "{p:?}");
+        // a number descriptor written with a space before it is a whole spec
+        assert!(texts("its 2-inch spindle travel").contains(&"2-inch spindle travel".to_string()));
+    }
+
+    #[test]
+    fn spec_fragments_hostile_input_never_panics() {
+        for s in [
+            "/",
+            "1/",
+            "/2",
+            "1/2",
+            "1/2\u{2033}",
+            "V",
+            "V V V V",
+            "\u{d7}\u{d7}",
+            "1\u{d7}",
+            "3/8-",
+            "-8-inch",
+            "20V/",
+            "inch inch inch",
+            "1 / 2 Inch",
+            "\u{2044}9 mm",
+            "...V kits",
+            "4.0.0.0Ah ah ah",
+            "\u{2033}\u{2033} kits perfect",
+        ] {
+            for p in noun_phrases(s) {
+                assert_eq!(s.get(p.start..p.end), Some(p.text.as_str()));
+            }
+            let toks = tokenize(s);
+            for i in 0..toks.len() + 2 {
+                let _ = starts_mid_spec(&toks, i);
+            }
+        }
     }
 }

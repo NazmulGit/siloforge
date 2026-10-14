@@ -87,12 +87,20 @@ Auth column: **user** = any human token; **own** = plus site ownership; **any** 
 | GET / PATCH | `/sites/{id}` | own | PATCH `{settings?, wp_url?, mode?}`; `settings.wp_user` + `settings.wp_app_password` are sealed into encrypted storage; `null` removes a key; whitelisted keys with ranges; `allow_private_host` is admin-only |
 | POST | `/sites/{id}/rotate-key` | own | v2 addition: new `api_key`, old site tokens revoked |
 | POST | `/sites/{id}/crawl` | own | 202 |
-| POST | `/sites/{id}/plan` | own | `{topology? reverse\|serial\|priority\|circle\|bidirectional, archive?}` -> 202 |
-| POST | `/sites/{id}/archive-plan` | own | `{topology?}` -> 202 |
+| POST | `/sites/{id}/plan` | own | `{topology? reverse\|serial\|priority\|circle\|bidirectional, archive?, ai_refine?}` -> 202. `ai_refine` (v2 addition, alias `aiRefine`) overrides the site setting `ai_anchor_refine` for this run |
+| POST | `/sites/{id}/archive-plan` | own | `{topology?, ai_refine?}` -> 202 |
 | GET / POST / DELETE | `/sites/{id}/gsc` | own | status `{connected, client_email, saved_at}` / connect `{credentials_json}` (encrypted) / disconnect |
 | POST | `/sites/{id}/link-health` | own | optional `{internal_only: true}` -> 202 |
 | GET | `/usage` | user | `{sites, posts, paragraphs, suggested, approved, applied, applied_links, clusters}` |
 | GET | `/posts/{site}` | own | `?search&post_type&cluster_id&is_orphan(true/false/1/0)&limit(1-1000)&offset` -> `{posts[], total, post_types[], clusters[]}` |
+
+Site `settings` keys accepted by PATCH (others answer 400 `unknown settings key`): `preset`, `silo_topology`,
+`insert_modules`, `max_links_per_post`, `min_links_per_post`, `max_new_links_per_pass`, `link_overload_threshold`,
+`money_page_urls`, `allow_private_host` (admin), `skip_inject_verify`, `max_new_inbound_per_target`, `root_urls`, and the
+v2 anchor keys `ai_anchor_refine` (bool, default false), `ai_anchor_refine_max` (0-5000, default 200),
+`ai_anchor_refine_concurrency` (1-16, default 4), `ai_anchor_refine_timeout_s` (5-3600, default 300),
+`anchor_semantic_off` (bool) and `anchor_semantic` (`"true"`/`"false"`). The UI edits the anchor keys under
+Settings -> Linking Rules -> Anchor text.
 
 ### Plugin channel
 | Method | Path | Auth | Notes |
@@ -194,12 +202,15 @@ All routes need a token. "admin" = admin role (and `admin`/`*` scope for API tok
 ### Jobs (user; own sites, admins all)
 | Method | Path | Response |
 |---|---|---|
-| GET | `/jobs?status=&kind=&site_id=&limit=(<=500, default 100)` | `{jobs:[job + site_domain], count}` newest first |
-| GET | `/jobs/{id}` | job row: `id, site_id, kind, status (queued\|running\|done\|failed\|cancelled), stats, error, payload, attempts, max_attempts, priority, requested_by, heartbeat_at, resources{wall_ms, cpu_s, avg_cpu, peak_rss...}, started_at, finished_at, created_at` |
+| GET | `/jobs?status=&kind=&site_id=&limit=(<=500, default 100)&offset=` | `{jobs:[job + site_domain], count}` newest first |
+| GET | `/jobs/{id}` | job row: `id, site_id, kind, status (queued\|running\|done\|failed\|cancelled), stats, error, payload, attempts, max_attempts, priority, requested_by, heartbeat_at, resources{peak_rss_mb, avg_cpu_pct, cpu_secs, wall_ms, scope:"process", concurrent_jobs_max}, started_at, finished_at, created_at` |
 | GET | `/jobs/{id}/logs?after_id=&limit=` | `{logs:[{id, seq, ts, level, message, msg, data}], done, status, last_id}` (tail with `after_id=last_id`) |
 | POST | `/jobs/{id}/cancel` | `{id, status}`; running jobs stop at the next checkpoint |
 
-Job kinds: `crawl`, `plan`, `inject`, `undo`, `keyword_link`, `link_health`, `audit`, `embed`, `backup`, `maintenance`.
+Job kinds: `crawl`, `plan`, `inject`, `undo`, `keyword_link`, `link_health`, `audit`, `embed`, `gsc`, `backup`, `maintenance`.
+
+`resources` is sampled for the **whole process** while the job runs (`scope: "process"`). When other jobs ran at the
+same time (`concurrent_jobs_max` > 1), RAM and CPU are shared figures, not this job's alone.
 
 ### Notifications (admin)
 | Method | Path | Notes |
@@ -231,7 +242,7 @@ Kinds and config: `webhook {url, headers?}`, `ntfy {url, token?}`, `telegram {bo
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/backups` | `{backups:[{id, path, kind, size_bytes, sha256, encrypted, app_version, status, note, created_at}], dir}` |
-| POST | `/backups` | `{kind? full\|db\|config, note?, passphrase?, unencrypted?, include_secrets?}` -> `{id, status:"running", kind, encrypted}` (built in the background) |
+| POST | `/backups` | `{kind? full\|db\|config, note?, passphrase?, unencrypted?, include_secrets?}` -> `{id, status:"running", kind, encrypted, secrets_included}` (built in the background). `unencrypted: true` skips the configured passphrase (UI: "Unencrypted" checkbox) |
 | GET | `/backups/{id}` | one row |
 | GET | `/backups/{id}/download` | the archive |
 | POST | `/backups/{id}/verify` | `{passphrase?}` -> `{ok, manifest}` or `{ok:false, error}` |

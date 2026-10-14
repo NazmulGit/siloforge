@@ -32,7 +32,9 @@ pub struct ToolDef {
 
 const SITE_DESC: &str = "site id or domain (e.g. example.com)";
 const EDGE_STATUSES: &str = "suggested|approved|applied|reverted|rejected|failed";
-const ANCHOR_TYPES: &[&str] = &["exact", "partial", "branded", "generic", "lsi"];
+const ANCHOR_TYPES: &[&str] = &[
+    "exact", "partial", "branded", "generic", "lsi", "naked", "cta",
+];
 /// All five server topologies (v2 accepts `bidirectional`, fixing v1 B3; pilot 2026-10-13 found MCP still refused it).
 const TOPOLOGIES: &[&str] = &["reverse", "serial", "priority", "circle", "bidirectional"];
 const DECISIONS: &[&str] = &["approved", "rejected"];
@@ -180,7 +182,8 @@ pub fn catalogue() -> Vec<ToolDef> {
             json!({"type":"object","properties":{
                 "site":{"type":"string","description":SITE_DESC},
                 "topology":{"type":"string","enum":TOPOLOGIES},
-                "archive":{"type":"boolean","description":"also build the archive/taxonomy silo"}
+                "archive":{"type":"boolean","description":"also build the archive/taxonomy silo"},
+                "ai_refine":{"type":"boolean","description":"AI anchor refinement for this run (overrides the site setting ai_anchor_refine; validated, falls back to heuristic anchors)"}
             },"required":["site"]}),
             false,
             false,
@@ -289,7 +292,7 @@ pub fn catalogue() -> Vec<ToolDef> {
         def(
             "siloforge_system_status",
             "System status",
-            "SiloForge server health: version, uptime, CPU/RAM, database, queued/running job counts.",
+            "SiloForge server health: version, uptime, CPU/RAM, database, queued/running job counts. The full system block needs an admin user's token with the `admin` scope; other tokens get the /health part (ok, version, uptime, jobs) plus `system_error`.",
             json!({"type":"object","properties":{}}),
             true,
             false,
@@ -342,6 +345,7 @@ pub fn catalogue() -> Vec<ToolDef> {
                 "site":{"type":"string","description":SITE_DESC},
                 "topology":{"type":"string","enum":TOPOLOGIES},
                 "archive":{"type":"boolean","description":"also build the archive/taxonomy silo"},
+                "ai_refine":{"type":"boolean","description":"AI anchor refinement for the plan step (overrides the site setting)"},
                 "skip_crawl":{"type":"boolean","description":"plan on the existing crawl"},
                 "timeout_secs":{"type":"integer","minimum":1,"maximum":PIPELINE_MAX_SECS,"description":"total time budget, default 900, max 1800"}
             },"required":["site"]}),
@@ -351,7 +355,7 @@ pub fn catalogue() -> Vec<ToolDef> {
         def(
             "siloforge_create_backup",
             "Create a backup",
-            "Start a full SiloForge backup (database + settings). Returns the backup row or a job_run_id. Requires an admin token.",
+            "Start a full SiloForge backup (database + settings), encrypted when a backup passphrase is configured. Returns {id, status:\"running\", kind, encrypted, secrets_included}; the archive is built in the background. Requires an admin user's token with the `admin` scope.",
             json!({"type":"object","properties":{"note":{"type":"string","description":"optional label"}}}),
             false,
             false,
@@ -359,7 +363,7 @@ pub fn catalogue() -> Vec<ToolDef> {
         def(
             "siloforge_list_notifications",
             "List notifications",
-            "Recent notifications (job failed/done, broken links found, schedule missed, ...), newest first.",
+            "Recent notifications, newest first. Events: job.done, job.failed, plan.ready, inject.done, backup.done, backup.failed, system.alert. Requires an admin user's token with the `admin` scope.",
             json!({"type":"object","properties":{
                 "limit":{"type":"integer","minimum":1,"maximum":200,"description":"default 50"},
                 "unread_only":{"type":"boolean"}
@@ -742,6 +746,7 @@ fn plan_body(a: &Args<'_>) -> ToolResult<Value> {
             "archive",
             a.bool_opt("archive")?.filter(|b| *b).map(Value::Bool),
         ),
+        ("ai_refine", a.bool_opt("ai_refine")?.map(Value::Bool)),
     ]))
 }
 

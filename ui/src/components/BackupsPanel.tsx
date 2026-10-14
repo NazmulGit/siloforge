@@ -33,11 +33,16 @@ function CreateBackupModal({ onClose, onCreated }: { onClose: () => void; onCrea
   const [note, setNote] = useState('');
   const [passphrase, setPassphrase] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [unencrypted, setUnencrypted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
     setError(null);
+    if (unencrypted && passphrase) {
+      setError('Clear the passphrase or untick "Unencrypted".');
+      return;
+    }
     if (passphrase && passphrase.length < 8) {
       setError('Passphrase must be at least 8 characters (or leave it empty).');
       return;
@@ -48,7 +53,12 @@ function CreateBackupModal({ onClose, onCreated }: { onClose: () => void; onCrea
     }
     setBusy(true);
     try {
-      await createBackup({ kind, ...(passphrase ? { passphrase } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
+      await createBackup({
+        kind,
+        ...(passphrase ? { passphrase } : {}),
+        ...(note.trim() ? { note: note.trim() } : {}),
+        ...(unencrypted ? { unencrypted: true } : {}),
+      });
       toast.push('Backup started', 'success');
       onCreated();
     } catch (e) {
@@ -100,6 +110,20 @@ function CreateBackupModal({ onClose, onCreated }: { onClose: () => void; onCrea
             A passphrase typed here is not stored anywhere — without it you cannot restore. If no passphrase is set at
             all, the archive is unencrypted and secrets.env (master keys) is left out of it.
           </span>
+        </label>
+        <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={unencrypted}
+            onChange={(e) => {
+              setUnencrypted(e.target.checked);
+              if (e.target.checked) {
+                setPassphrase('');
+                setConfirm('');
+              }
+            }}
+          />
+          Unencrypted (ignore the server passphrase; secrets.env is left out)
         </label>
         {passphrase && (
           <label className="field">

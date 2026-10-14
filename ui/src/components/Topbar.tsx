@@ -14,7 +14,8 @@ export function Topbar({ siteId }: { siteId?: string }) {
     <header className="topbar">
       <SiteSelect siteId={siteId} />
       <div className="spacer" />
-      <NotificationBell />
+      {/* notifications are admin-only on the server (A4) */}
+      {user?.role === 'admin' && <NotificationBell />}
       <button
         type="button"
         className={`help-toggle${enabled ? ' on' : ''}`}

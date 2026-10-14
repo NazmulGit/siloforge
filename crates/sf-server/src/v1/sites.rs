@@ -551,6 +551,17 @@ pub struct PlanBody {
     topology: Option<String>,
     #[serde(default)]
     archive: Option<bool>,
+    /// v2 addition (optional, request only): override the site's `ai_anchor_refine` for this run.
+    #[serde(default, alias = "aiRefine")]
+    ai_refine: Option<bool>,
+}
+
+fn plan_payload(b: &PlanBody, topology: Option<String>, archive: bool) -> Value {
+    let mut p = json!({ "topology": topology, "archive": archive });
+    if let (Some(v), Some(o)) = (b.ai_refine, p.as_object_mut()) {
+        o.insert("ai_refine".into(), Value::Bool(v));
+    }
+    p
 }
 
 /// Accepts all five topologies, including `bidirectional` (fixes v1 B3).
@@ -577,7 +588,7 @@ pub async fn plan(
     guard_user_site(&st, &u, &id).await?;
     let b = body.unwrap_or_default();
     let topology = parse_topology(b.topology.as_deref())?;
-    let payload = json!({ "topology": topology, "archive": b.archive.unwrap_or(false) });
+    let payload = plan_payload(&b, topology, b.archive.unwrap_or(false));
     enqueue(&st, &u, JobKind::Plan, &id, payload).await
 }
 
@@ -590,7 +601,7 @@ pub async fn archive_plan(
     guard_user_site(&st, &u, &id).await?;
     let b = body.unwrap_or_default();
     let topology = parse_topology(b.topology.as_deref())?;
-    let payload = json!({ "topology": topology, "archive": true });
+    let payload = plan_payload(&b, topology, true);
     enqueue(&st, &u, JobKind::Plan, &id, payload).await
 }
 
@@ -601,6 +612,18 @@ pub fn topology_param(t: Option<&str>) -> ApiResult<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_payload_forwards_ai_refine_only_when_given() {
+        let b: PlanBody =
+            serde_json::from_value(json!({"topology": "reverse"})).unwrap_or_default();
+        let p = plan_payload(&b, Some("reverse".into()), false);
+        assert_eq!(p, json!({"topology": "reverse", "archive": false}));
+        let b: PlanBody = serde_json::from_value(json!({"ai_refine": true})).unwrap_or_default();
+        assert_eq!(plan_payload(&b, None, true)["ai_refine"], json!(true));
+        let b: PlanBody = serde_json::from_value(json!({"aiRefine": false})).unwrap_or_default();
+        assert_eq!(plan_payload(&b, None, false)["ai_refine"], json!(false));
+    }
 
     #[test]
     fn domain_normalisation() {

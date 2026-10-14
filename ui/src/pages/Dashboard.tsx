@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { fetchDashboard, fetchLinkHealth, fetchMetricsReport, triggerCrawl, triggerPlan } from '../api';
+import {
+  aiRefineOpt,
+  fetchDashboard,
+  fetchLinkHealth,
+  fetchMetricsReport,
+  triggerCrawl,
+  triggerPlan,
+  type AiRefineChoice,
+} from '../api';
 import { PostLink, UrlMono } from '../components/PostLink';
 import { StatCard } from '../components/StatCard';
 import { StatusChip } from '../components/StatusChip';
@@ -160,6 +168,7 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [topology, setTopology] = useState<SiloTopology>('reverse');
+  const [aiRefine, setAiRefine] = useState<AiRefineChoice>('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -206,7 +215,7 @@ export function DashboardPage() {
     if (!siteId || busy) return;
     setBusy(true);
     try {
-      const { job_run_id } = await triggerPlan(siteId, topology);
+      const { job_run_id } = await triggerPlan(siteId, topology, aiRefineOpt(aiRefine));
       track(siteId, job_run_id, `Plan (${topology})`, () => void load());
     } catch (e) {
       toast.push(e instanceof Error ? e.message : 'Plan failed to start', 'error');
@@ -269,6 +278,16 @@ export function DashboardPage() {
               {t} — {TOPOLOGY_HINTS[t]}
             </option>
           ))}
+        </select>
+        <select
+          value={aiRefine}
+          onChange={(e) => setAiRefine(e.target.value as AiRefineChoice)}
+          aria-label="AI anchor refinement"
+          data-hint="AI anchor refinement for this plan: site default (Linking Rules → Anchor text), on, or off. Replies are validated; failures keep the heuristic anchors."
+        >
+          <option value="">AI anchors: site default</option>
+          <option value="on">AI anchors: on</option>
+          <option value="off">AI anchors: off</option>
         </select>
         <button
           className="btn btn-primary"

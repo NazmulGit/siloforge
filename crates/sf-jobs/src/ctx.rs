@@ -364,7 +364,7 @@ struct CacheEntry {
 }
 
 /// Caches unused this long are dropped so idle RAM falls back to the baseline (perf open item:
-/// the site36 vectors kept about 270 MB resident after a plan).
+/// the site21 vectors kept about 270 MB resident after a plan).
 pub const CACHE_IDLE_TTL: Duration = Duration::from_secs(600);
 /// How often the idle sweeper looks.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);

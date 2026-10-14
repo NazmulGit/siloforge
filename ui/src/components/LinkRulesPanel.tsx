@@ -53,6 +53,15 @@ const NUM_FIELDS: NumField[] = [
   },
 ];
 
+type AiKey = 'ai_anchor_refine_max' | 'ai_anchor_refine_concurrency' | 'ai_anchor_refine_timeout_s';
+
+/** Budget for the optional AI anchor refinement (ranges = sf-server settings validator). */
+const AI_FIELDS: Array<{ key: AiKey; label: string; def: number; min: number; max: number; desc: string }> = [
+  { key: 'ai_anchor_refine_max', label: 'Edges per plan', def: 200, min: 0, max: 5000, desc: 'Top new suggestions (by score) sent to the AI.' },
+  { key: 'ai_anchor_refine_concurrency', label: 'Parallel calls', def: 4, min: 1, max: 16, desc: 'AI requests in flight at once.' },
+  { key: 'ai_anchor_refine_timeout_s', label: 'Time budget (s)', def: 300, min: 5, max: 3600, desc: 'The plan finishes with heuristic anchors when this runs out.' },
+];
+
 function toInput(v: number | undefined): string {
   return v === undefined || v === null ? '' : String(v);
 }
@@ -71,6 +80,9 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [topology, setTopology] = useState<SiloTopology | ''>('');
   const [skipVerify, setSkipVerify] = useState(false);
+  const [aiRefine, setAiRefine] = useState(false);
+  const [semanticOff, setSemanticOff] = useState(false);
+  const [aiValues, setAiValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -89,6 +101,13 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
       });
       setTopology(s.silo_topology ?? '');
       setSkipVerify(s.skip_inject_verify === true);
+      setAiRefine(s.ai_anchor_refine === true);
+      setSemanticOff(s.anchor_semantic_off === true);
+      setAiValues({
+        ai_anchor_refine_max: toInput(s.ai_anchor_refine_max),
+        ai_anchor_refine_concurrency: toInput(s.ai_anchor_refine_concurrency),
+        ai_anchor_refine_timeout_s: toInput(s.ai_anchor_refine_timeout_s),
+      });
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'Failed to load site settings');
       setSettings(null);
@@ -117,8 +136,18 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
       setError('Minimum links per post cannot be greater than the maximum.');
       return;
     }
+    for (const f of AI_FIELDS) {
+      const parsed = parseNum(aiValues[f.key] ?? '');
+      if (parsed === 'invalid' || (parsed !== undefined && (parsed < f.min || parsed > f.max))) {
+        setError(`${f.label} must be a whole number from ${f.min} to ${f.max} (leave it blank for ${f.def}).`);
+        return;
+      }
+      if (parsed !== undefined) patch[f.key] = parsed;
+    }
     if (topology) patch.silo_topology = topology;
     patch.skip_inject_verify = skipVerify;
+    patch.ai_anchor_refine = aiRefine;
+    patch.anchor_semantic_off = semanticOff;
     setError(null);
     setBusy(true);
     try {
@@ -185,6 +214,66 @@ export function LinkRulesPanel({ siteId }: { siteId: string }) {
         {error && (
           <div className="error-box" style={{ marginTop: 12 }}>
             {error}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-title">Anchor text</div>
+        <div className="settings-list">
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-label">AI anchor refinement</div>
+              <div className="settings-row-desc">
+                After each plan, the AI reviews the anchors of the best new suggestions and may swap in a better
+                phrase from the same paragraph. Replies are validated (verbatim, natural, allowed); anything else keeps
+                the heuristic anchor. Uses the site&apos;s AI model chain. A single plan can override this
+                (&ldquo;AI anchor refinement&rdquo; in the Run plan dialog).
+              </div>
+            </div>
+            <Toggle
+              checked={aiRefine}
+              onChange={setAiRefine}
+              label="AI anchor refinement"
+              dataHint="Off by default. Costs one AI call per refined edge, bounded by the budget below. If the AI fails, the plan still completes with heuristic anchors."
+            />
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-label">Semantic phrase scoring</div>
+              <div className="settings-row-desc">
+                Prefers anchor phrases whose meaning is close to the target post (uses the embeddings). On by
+                default.
+              </div>
+            </div>
+            <Toggle
+              checked={!semanticOff}
+              onChange={(v) => setSemanticOff(!v)}
+              label="Semantic phrase scoring"
+              dataHint="Turn off only to compare against the plain lexical picker; it adds about a second per thousand edges."
+            />
+          </div>
+        </div>
+        {aiRefine && (
+          <div className="density-grid" style={{ marginTop: 12 }}>
+            {AI_FIELDS.map((f) => (
+              <label key={f.key} className="field">
+                {f.label}
+                <input
+                  type="number"
+                  min={f.min}
+                  max={f.max}
+                  step={1}
+                  className="input"
+                  value={aiValues[f.key] ?? ''}
+                  placeholder={`default ${f.def}`}
+                  onChange={(e) => setAiValues({ ...aiValues, [f.key]: e.target.value })}
+                />
+                <span className="faint" style={{ fontSize: 12 }}>
+                  {f.desc}
+                </span>
+              </label>
+            ))}
           </div>
         )}
       </div>
