@@ -1,25 +1,23 @@
-// Tracks the "last selected site" so global routes (e.g. /settings) can scope
-// their per-site panels to whatever site the user was last looking at.
-//
-// The site is normally selected via the URL (/site/:siteId/...). The Topbar
-// SiteSelect mirrors that selection into localStorage here; global pages read
-// it back, validate it against the loaded site list, and fall back to the
-// first available site.
+// The "current site": the site in the URL (/site/:siteId/...) or, on global routes,
+// the last site the user picked. Remembered in localStorage `sf_site` (v2.1 contract §7);
+// the older `sf_active_site` key is still read once for continuity.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
+import { useSites } from './sites';
 import type { SiteListItem } from './types';
 
-export const ACTIVE_SITE_KEY = 'sf_active_site';
+export const ACTIVE_SITE_KEY = 'sf_site';
+const LEGACY_KEY = 'sf_active_site';
 
-function readStored(): string | null {
+export function readRememberedSite(): string | null {
   try {
-    return localStorage.getItem(ACTIVE_SITE_KEY);
+    return localStorage.getItem(ACTIVE_SITE_KEY) ?? localStorage.getItem(LEGACY_KEY);
   } catch {
     return null;
   }
 }
 
-function writeStored(id: string): void {
+export function writeRememberedSite(id: string): void {
   try {
     localStorage.setItem(ACTIVE_SITE_KEY, id);
   } catch {
@@ -28,29 +26,16 @@ function writeStored(id: string): void {
 }
 
 /**
- * Resolves the active site for a global (non-site-scoped) route.
- * Returns the current siteId (or null when there are no sites) plus a setter.
- * Validates the stored id against the loaded list and defaults to the first site.
+ * Resolves the active site for a global (non-site-scoped) route: the remembered site
+ * when it still exists, otherwise the first site. `sites` is accepted for backwards
+ * compatibility; the list comes from the SitesProvider.
  */
-export function useActiveSite(sites: SiteListItem[]): {
+export function useActiveSite(_sites?: SiteListItem[]): {
   siteId: string | null;
   setSiteId: (id: string) => void;
 } {
-  const [siteId, setSiteIdState] = useState<string | null>(readStored);
-
-  useEffect(() => {
-    if (sites.length === 0) return;
-    const valid = siteId != null && sites.some((s) => s.id === siteId);
-    if (!valid) {
-      const first = sites[0];
-      if (first) setSiteIdState(first.id);
-    }
-  }, [sites, siteId]);
-
-  const setSiteId = useCallback((id: string) => {
-    setSiteIdState(id);
-    writeStored(id);
-  }, []);
-
+  const { sites, currentSiteId, rememberSite } = useSites();
+  const siteId = currentSiteId ?? sites[0]?.id ?? null;
+  const setSiteId = useCallback((id: string) => rememberSite(id), [rememberSite]);
   return { siteId, setSiteId };
 }

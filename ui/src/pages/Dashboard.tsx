@@ -48,7 +48,7 @@ function HealthDial({ score }: { score: number }) {
   return (
     <div className="dial-wrap">
       <svg width="132" height="132" viewBox="0 0 132 132" style={{ transform: 'rotate(-90deg)' }} aria-hidden="true">
-        <circle cx="66" cy="66" r={r} fill="none" stroke="#e6ebf3" strokeWidth="10" />
+        <circle cx="66" cy="66" r={r} fill="none" stroke="var(--panel-3)" strokeWidth="10" />
         <circle
           cx="66"
           cy="66"

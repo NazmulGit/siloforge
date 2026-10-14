@@ -909,19 +909,22 @@ pub fn next_run(cron: &str) -> Result<chrono::DateTime<chrono::Local>> {
         .map_err(|e| Error::bad(format!("backup.schedule has no next run: {e}")))
 }
 
-/// Spawns the automatic backup loop for `backup.schedule` (None when the schedule is empty/invalid).
+/// Spawns the automatic backup loop for `backup.schedule`. The schedule (and dir/keep/passphrase)
+/// is re-read from the live config before every wait, so `PUT /api/v2/settings` applies without a
+/// restart (v2.1); an empty or invalid schedule idles (re-checked every minute).
 pub fn spawn_scheduler(
-    cfg: Arc<Config>,
+    cfg: impl Into<sf_core::LiveConfig>,
     db: Db,
     notifier: Option<Notifier>,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let sched = cfg.backup.schedule.trim().to_string();
-    if sched.is_empty() {
-        return None;
-    }
-    if let Err(e) = next_run(&sched) {
-        tracing::warn!(error = %e, "automatic backups disabled");
-        return None;
+    let live: sf_core::LiveConfig = cfg.into();
+    {
+        let sched = live.get().backup.schedule.trim().to_string();
+        if !sched.is_empty()
+            && let Err(e) = next_run(&sched)
+        {
+            tracing::warn!(error = %e, "automatic backups paused until backup.schedule is fixed");
+        }
     }
     // R8: supervised; a panic restarts the loop (it recomputes the next slot).
     let db0 = db.clone();
@@ -929,24 +932,40 @@ pub fn spawn_scheduler(
         "backup-scheduler",
         Some(db0),
         move || {
-            let (cfg, db, notifier, sched) =
-                (cfg.clone(), db.clone(), notifier.clone(), sched.clone());
+            let (live, db, notifier) = (live.clone(), db.clone(), notifier.clone());
             async move {
                 loop {
-                    let Ok(next) = next_run(&sched) else {
-                        return crate::supervise::Exit::Stop;
+                    let sched = live.get().backup.schedule.trim().to_string();
+                    let next = if sched.is_empty() {
+                        None
+                    } else {
+                        next_run(&sched).ok()
                     };
-                    // Sleep in <= 1 h steps so clock changes / sleep-resume are picked up.
+                    let Some(next) = next else {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        continue;
+                    };
+                    // Sleep in <= 60 s steps so clock changes, sleep-resume and schedule edits
+                    // are picked up.
+                    let mut changed = false;
                     loop {
                         let wait = (next - chrono::Local::now()).num_seconds();
                         if wait <= 0 {
                             break;
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(
-                            wait.clamp(1, 3600) as u64
-                        ))
+                        tokio::time::sleep(
+                            std::time::Duration::from_secs(wait.clamp(1, 60) as u64),
+                        )
                         .await;
+                        if live.get().backup.schedule.trim() != sched {
+                            changed = true;
+                            break;
+                        }
                     }
+                    if changed {
+                        continue;
+                    }
+                    let cfg = live.get();
                     let opts = BackupOptions {
                         kind: BackupKind::Full,
                         passphrase: configured_passphrase(&cfg),

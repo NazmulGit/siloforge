@@ -198,7 +198,7 @@ impl Scheduler {
         now: DateTime<Utc>,
         rep: &mut TickReport,
     ) -> sf_core::Result<()> {
-        let cron = ctx.cfg.monitor.maintenance_cron.trim().to_string();
+        let cron = ctx.live.get().monitor.maintenance_cron.trim().to_string();
         if cron.is_empty() {
             return Ok(());
         }

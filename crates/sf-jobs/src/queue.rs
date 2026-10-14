@@ -73,6 +73,8 @@ pub struct ClaimedJob {
 pub struct JobQueue {
     db: Db,
     wake: Arc<Notify>,
+    /// Unified event log for `job <kind> queued` rows (shared by every clone; disabled by default).
+    events: Arc<parking_lot::RwLock<sf_ops::eventlog::EventLog>>,
 }
 
 /// Columns returned by list/get (v1 shape + v2 extras). `status` reports a running row whose
@@ -99,7 +101,13 @@ impl JobQueue {
         Self {
             db,
             wake: Arc::new(Notify::new()),
+            events: Arc::default(),
         }
+    }
+
+    /// Records `job <kind> queued` events from now on (every clone of this queue).
+    pub fn set_events(&self, log: sf_ops::eventlog::EventLog) {
+        *self.events.write() = log;
     }
 
     pub fn db(&self) -> &Db {
@@ -132,7 +140,12 @@ impl JobQueue {
             JobKind::Crawl | JobKind::LinkHealth => 2,
             _ => 1,
         });
-        let out = self
+        let (kind, site, by) = (
+            job.kind.as_str().to_string(),
+            job.site_id.clone(),
+            job.requested_by.clone(),
+        );
+        let (out, owner) = self
             .db
             .write(move |t| {
                 if let Some(key) = &dedupe_key {
@@ -145,10 +158,13 @@ impl JobQueue {
                         .optional()
                         .map_err(err)?;
                     if let Some(id) = existing {
-                        return Ok(Enqueued {
-                            job_run_id: id,
-                            deduplicated: true,
-                        });
+                        return Ok((
+                            Enqueued {
+                                job_run_id: id,
+                                deduplicated: true,
+                            },
+                            None,
+                        ));
                     }
                 }
                 let id = sf_core::new_id();
@@ -167,13 +183,41 @@ impl JobQueue {
                     ],
                 )
                 .map_err(err)?;
-                Ok(Enqueued {
-                    job_run_id: id,
-                    deduplicated: false,
-                })
+                let owner: Option<String> = match &job.site_id {
+                    Some(s) => t
+                        .query_row("SELECT user_id FROM sites WHERE id=?1", [s], |r| r.get(0))
+                        .optional()
+                        .map_err(err)?
+                        .flatten(),
+                    None => None,
+                };
+                Ok((
+                    Enqueued {
+                        job_run_id: id,
+                        deduplicated: false,
+                    },
+                    owner,
+                ))
             })
             .await?;
         self.notify();
+        if !out.deduplicated {
+            let log = self.events.read().clone();
+            if log.is_enabled() {
+                let actor = by.unwrap_or_else(|| "system".into());
+                log.record(
+                    sf_ops::eventlog::Event::new(
+                        sf_ops::eventlog::source::JOB,
+                        &actor,
+                        &format!("job {kind} queued"),
+                    )
+                    .target(Some(&out.job_run_id))
+                    .site(site.as_deref())
+                    .user(owner.as_deref())
+                    .detail(serde_json::json!({ "job_id": out.job_run_id })),
+                );
+            }
+        }
         Ok(out)
     }
 

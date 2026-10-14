@@ -36,6 +36,18 @@ impl ToolError {
 
 pub type ToolResult<T> = Result<T, ToolError>;
 
+/// A request body: JSON (the norm) or raw text with its content type (CSV import).
+#[derive(Debug, Clone)]
+pub enum ReqBody {
+    Json(Value),
+    Text(String, &'static str),
+}
+
+/// Header that marks REST calls made by the MCP server (unified log, contract §9).
+pub const VIA_HEADER: &str = "x-siloforge-via";
+/// Header naming the MCP tool a REST call was made for.
+pub const TOOL_HEADER: &str = "x-siloforge-tool";
+
 /// A successful API response.
 #[derive(Debug, Clone)]
 pub enum ApiBody {
@@ -65,7 +77,7 @@ pub(crate) enum Auth {
 
 impl Auth {
     /// Key that scopes the site cache to one identity (different callers own different sites).
-    fn identity(&self) -> String {
+    pub(crate) fn identity(&self) -> String {
         match self {
             Auth::Static(t) | Auth::Forwarded(t) => format!("t:{t}"),
             Auth::Login { email, .. } => format!("l:{email}"),
@@ -134,7 +146,14 @@ pub(crate) struct Core {
     pub stdio_auth: Auth,
     /// Counts `GET /api/v1/sites` calls (tests assert the cache works).
     pub site_list_calls: std::sync::atomic::AtomicUsize,
+    /// Effective MCP tool policy per identity.
+    pub policy: crate::policy::PolicyCache,
+    /// Bounds the fire-and-forget `POST /api/v2/mcp/usage` calls in flight.
+    pub usage_slots: Arc<tokio::sync::Semaphore>,
 }
+
+/// Max usage reports in flight at once; extra reports are dropped (telemetry never blocks tools).
+pub const MAX_USAGE_IN_FLIGHT: usize = 16;
 
 impl Core {
     pub fn new(cfg: McpConfig) -> anyhow::Result<Self> {
@@ -157,6 +176,8 @@ impl Core {
             sites: SiteCache::default(),
             stdio_auth,
             site_list_calls: std::sync::atomic::AtomicUsize::new(0),
+            policy: crate::policy::PolicyCache::default(),
+            usage_slots: Arc::new(tokio::sync::Semaphore::new(MAX_USAGE_IN_FLIGHT)),
         })
     }
 }
@@ -166,10 +187,15 @@ impl Core {
 pub struct Api {
     pub(crate) core: Arc<Core>,
     pub(crate) auth: Auth,
+    /// The tool this handle runs for: sent as `X-SiloForge-Tool` (with `X-SiloForge-Via: mcp`).
+    pub(crate) tool: Option<&'static str>,
+    /// The caller's effective tool policy (capabilities output), when known.
+    pub(crate) policy: Option<Arc<crate::policy::Effective>>,
 }
 
 const MAX_ERROR_BODY: usize = 300;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_POLICY_BYTES: usize = 4 * 1024 * 1024;
 
 impl Api {
     pub(crate) fn cfg(&self) -> &McpConfig {
@@ -240,8 +266,9 @@ impl Api {
         &self,
         method: &Method,
         path: &str,
-        body: Option<&Value>,
+        body: Option<&ReqBody>,
         token: &str,
+        timeout: Option<Duration>,
     ) -> ToolResult<reqwest::Response> {
         let url = format!("{}{}", self.core.cfg.api_url, path);
         let mut req = self
@@ -249,8 +276,20 @@ impl Api {
             .http
             .request(method.clone(), &url)
             .bearer_auth(token);
-        if let Some(b) = body {
-            req = req.json(b);
+        if let Some(tool) = self.tool {
+            req = req.header(VIA_HEADER, "mcp").header(TOOL_HEADER, tool);
+        }
+        if let Some(t) = timeout {
+            req = req.timeout(t);
+        }
+        match body {
+            Some(ReqBody::Json(b)) => req = req.json(b),
+            Some(ReqBody::Text(t, ct)) => {
+                req = req
+                    .header(reqwest::header::CONTENT_TYPE, *ct)
+                    .body(t.clone());
+            }
+            None => {}
         }
         req.send().await.map_err(|e| {
             ToolError::new(format!(
@@ -260,6 +299,62 @@ impl Api {
         })
     }
 
+    /// Sends with the current identity; legacy login auth re-logs in once on a 401.
+    async fn send_raw(
+        &self,
+        method: &Method,
+        path: &str,
+        body: Option<&ReqBody>,
+        timeout: Option<Duration>,
+    ) -> ToolResult<reqwest::Response> {
+        let token = self.bearer().await?;
+        let res = self.send_once(method, path, body, &token, timeout).await?;
+        if res.status() == StatusCode::UNAUTHORIZED && matches!(self.auth, Auth::Login { .. }) {
+            let fresh = self.login().await?;
+            return self.send_once(method, path, body, &fresh, timeout).await;
+        }
+        Ok(res)
+    }
+
+    /// `GET path` that reports the HTTP status instead of failing on non-2xx (policy fetch).
+    /// `Err` only when the API is unreachable or authentication itself failed.
+    pub(crate) async fn get_status(
+        &self,
+        path: &str,
+        timeout: Duration,
+    ) -> ToolResult<(u16, Option<Value>)> {
+        let res = self
+            .send_raw(&Method::GET, path, None, Some(timeout))
+            .await?;
+        let status = res.status().as_u16();
+        let bytes = res
+            .bytes()
+            .await
+            .map_err(|e| ToolError::new(format!("SiloForge API read error: {e}")))?;
+        let bytes = bytes
+            .get(..bytes.len().min(MAX_POLICY_BYTES))
+            .unwrap_or_default();
+        Ok((status, serde_json::from_slice::<Value>(bytes).ok()))
+    }
+
+    /// Fire-and-forget POST (usage telemetry): the response body is ignored.
+    pub(crate) async fn post_quiet(
+        &self,
+        path: &str,
+        body: Value,
+        timeout: Duration,
+    ) -> ToolResult<u16> {
+        let res = self
+            .send_raw(
+                &Method::POST,
+                path,
+                Some(&ReqBody::Json(body)),
+                Some(timeout),
+            )
+            .await?;
+        Ok(res.status().as_u16())
+    }
+
     /// Calls the API. `path` includes the query string. JSON bodies are secret-stripped.
     pub async fn call(
         &self,
@@ -267,12 +362,17 @@ impl Api {
         path: &str,
         body: Option<Value>,
     ) -> ToolResult<ApiBody> {
-        let token = self.bearer().await?;
-        let mut res = self.send_once(&method, path, body.as_ref(), &token).await?;
-        if res.status() == StatusCode::UNAUTHORIZED && matches!(self.auth, Auth::Login { .. }) {
-            let fresh = self.login().await?;
-            res = self.send_once(&method, path, body.as_ref(), &fresh).await?;
-        }
+        self.call_body(method, path, body.map(ReqBody::Json)).await
+    }
+
+    /// [`Api::call`] with any request body kind.
+    pub async fn call_body(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<ReqBody>,
+    ) -> ToolResult<ApiBody> {
+        let res = self.send_raw(&method, path, body.as_ref(), None).await?;
         let status = res.status();
         let is_json = res
             .headers()

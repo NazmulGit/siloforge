@@ -55,7 +55,11 @@ pub fn lower_compute_priority(cfg: &sf_core::Config) -> bool {
 /// Runner tuning. `from_config` gives production values.
 #[derive(Clone)]
 pub struct RunnerOptions {
+    /// Jobs at once. With `follow_live` the live `resources.max_concurrent_jobs` is used instead
+    /// (read before every claim, so a settings change applies without a restart).
     pub max_concurrent: usize,
+    /// Read `resources.max_concurrent_jobs` from the live config before each claim (production).
+    pub follow_live: bool,
     pub heartbeat: Duration,
     /// Idle wait between empty claims (an enqueue wakes the runner earlier).
     pub poll: Duration,
@@ -73,6 +77,7 @@ impl RunnerOptions {
     pub fn from_config(cfg: &sf_core::Config) -> Self {
         Self {
             max_concurrent: cfg.resources.max_concurrent_jobs.clamp(1, 64),
+            follow_live: true,
             heartbeat: Duration::from_secs(15),
             poll: Duration::from_secs(5),
             stale_after: Duration::from_secs(300),
@@ -129,6 +134,22 @@ impl RunnerHandle {
 
 pub struct Runner;
 
+/// Upper bound for concurrent jobs whatever the settings say.
+pub const MAX_CONCURRENT_CEILING: usize = 64;
+
+/// Jobs allowed at once right now.
+fn concurrency_limit(ctx: &JobContext, opts: &RunnerOptions) -> usize {
+    if opts.follow_live {
+        ctx.live
+            .get()
+            .resources
+            .max_concurrent_jobs
+            .clamp(1, MAX_CONCURRENT_CEILING)
+    } else {
+        opts.max_concurrent.clamp(1, MAX_CONCURRENT_CEILING)
+    }
+}
+
 impl Runner {
     /// Start with production options.
     pub fn start(ctx: Arc<JobContext>) -> RunnerHandle {
@@ -141,7 +162,13 @@ impl Runner {
         let shutting_down = Arc::new(AtomicBool::new(false));
         let running: Arc<Mutex<HashMap<String, RunningJob>>> = Arc::new(Mutex::new(HashMap::new()));
         let opts = Arc::new(opts);
-        let sem = Arc::new(Semaphore::new(opts.max_concurrent.max(1)));
+        // The semaphore holds the hard ceiling; the live limit is checked before each claim.
+        let ceiling = if opts.follow_live {
+            MAX_CONCURRENT_CEILING
+        } else {
+            opts.max_concurrent.clamp(1, MAX_CONCURRENT_CEILING)
+        };
+        let sem = Arc::new(Semaphore::new(ceiling));
         let (sd, rn) = (shutting_down.clone(), running.clone());
         let join = tokio::spawn(async move {
             boot(&ctx).await;
@@ -227,6 +254,16 @@ async fn main_loop(
             p = sem.clone().acquire_owned() => match p { Ok(p) => p, Err(_) => break },
             _ = stop.changed() => break,
         };
+        // Live limit (v2.1): wait while as many jobs run as currently allowed; a finishing job
+        // or a settings change (picked up on the next poll) lets the loop continue.
+        if running.lock().len() >= concurrency_limit(&ctx, &opts) {
+            drop(permit);
+            tokio::select! {
+                _ = ctx.queue.wait_for_work(opts.poll) => {}
+                _ = stop.changed() => break,
+            }
+            continue;
+        }
         let allow_heavy = !machine_busy(&ctx);
         match ctx.queue.claim_next(allow_heavy).await {
             Ok(Some(job)) => spawn_job(&ctx, &opts, job, permit, &shutting_down, &running),
@@ -251,16 +288,20 @@ async fn main_loop(
     sf_ops::supervise::Exit::Stop
 }
 
-/// True when machine CPU is above `resources.defer_when_cpu_above` (heavy kinds wait).
+/// True when heavy kinds must wait: machine CPU above the live `resources.defer_when_cpu_above`,
+/// or this process above its `resources.max_memory_mb` soft cap (v2.1).
 fn machine_busy(ctx: &JobContext) -> bool {
-    let limit = ctx.cfg.resources.defer_when_cpu_above;
+    let Some(m) = ctx.monitor.as_ref() else {
+        return false;
+    };
+    if m.memory_pressure() {
+        return true;
+    }
+    let limit = ctx.live.get().resources.defer_when_cpu_above;
     if !(limit > 0.0 && limit.is_finite()) {
         return false;
     }
-    ctx.monitor
-        .as_ref()
-        .and_then(|m| m.latest())
-        .is_some_and(|s| s.cpu_pct > limit)
+    m.latest().is_some_and(|s| s.cpu_pct > limit)
 }
 
 fn spawn_job(
@@ -321,6 +362,17 @@ async fn supervise(
     let mut cancel_at: Option<Instant> = None;
     let mut timed_out = false;
     tracing::info!(job = %id, %kind, site = ?job.site_id, attempt = job.attempts, "job started");
+    let owner = job_owner(ctx, &job).await;
+    let owner = owner.as_deref();
+    job_event(
+        ctx,
+        &job,
+        owner,
+        "started",
+        "ok",
+        None,
+        json!({"attempt": job.attempts}),
+    );
     job.info(format!("{kind} started (attempt {})", job.attempts))
         .await;
     let result = loop {
@@ -372,11 +424,29 @@ async fn supervise(
             if done {
                 notify_done(ctx, &job, &stats);
             }
+            job_event(
+                ctx,
+                &job,
+                owner,
+                "done",
+                "ok",
+                Some(started.elapsed()),
+                compact_stats(&stats),
+            );
         }
         Ok(Err(e)) if e.is_cancelled() && !timed_out => {
             let _ = ctx.queue.record_cancelled_resources(&id, resources).await;
             job.info("cancelled").await;
             tracing::info!(job = %id, %kind, "job cancelled");
+            job_event(
+                ctx,
+                &job,
+                owner,
+                "cancelled",
+                "ok",
+                Some(started.elapsed()),
+                Value::Null,
+            );
         }
         Ok(Err(e)) => {
             let msg = if timed_out {
@@ -384,13 +454,14 @@ async fn supervise(
             } else {
                 e.to_string()
             };
-            fail(ctx, &job, &msg, e.retryable && !timed_out, resources).await;
+            fail(ctx, &job, owner, &msg, e.retryable && !timed_out, resources).await;
         }
         Err(join) if join.is_panic() => {
             let msg = panic_text(join);
             fail(
                 ctx,
                 &job,
+                owner,
                 &format!("pipeline panicked: {msg}"),
                 false,
                 resources,
@@ -401,11 +472,20 @@ async fn supervise(
             // aborted after the cancel grace period
             if timed_out {
                 let msg = format!("timed out after {}s", timeout.as_secs());
-                fail(ctx, &job, &msg, false, resources).await;
+                fail(ctx, &job, owner, &msg, false, resources).await;
             } else {
                 let _ = ctx.queue.record_cancelled_resources(&id, resources).await;
                 job.warn("aborted after cancellation (no checkpoint reached in time)")
                     .await;
+                job_event(
+                    ctx,
+                    &job,
+                    owner,
+                    "cancelled",
+                    "ok",
+                    Some(started.elapsed()),
+                    json!({"aborted": true}),
+                );
             }
         }
     }
@@ -422,7 +502,90 @@ fn panic_text(e: tokio::task::JoinError) -> String {
     }
 }
 
-async fn fail(ctx: &Arc<JobContext>, job: &Job, msg: &str, retryable: bool, resources: Value) {
+/// Owner of the job's site (event-log row owner); only looked up when the event log is on.
+async fn job_owner(ctx: &JobContext, job: &Job) -> Option<String> {
+    let site = job.site_id.clone()?;
+    ctx.events.as_ref().filter(|e| e.is_enabled())?;
+    ctx.db
+        .read(move |c| {
+            use rusqlite::OptionalExtension;
+            c.query_row("SELECT user_id FROM sites WHERE id=?1", [&site], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()
+            .map_err(sf_store::err)
+        })
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+}
+
+/// One `job <kind> <what>` row in the unified event log (no-op without `ctx.events`).
+fn job_event(
+    ctx: &JobContext,
+    job: &Job,
+    owner: Option<&str>,
+    what: &str,
+    status: &str,
+    took: Option<Duration>,
+    detail: Value,
+) {
+    let Some(log) = &ctx.events else { return };
+    let mut detail = match detail {
+        Value::Object(o) => o,
+        Value::Null => serde_json::Map::new(),
+        other => {
+            let mut m = serde_json::Map::new();
+            m.insert("value".into(), other);
+            m
+        }
+    };
+    detail.insert("job_id".into(), json!(job.id));
+    let detail = Value::Object(detail);
+    let mut ev = sf_ops::eventlog::Event::job(&format!("job {} {what}", job.kind))
+        .status(status)
+        .target(Some(&job.id))
+        .site(job.site_id.as_deref())
+        .user(owner)
+        .detail(detail);
+    if let Some(d) = took {
+        ev = ev.duration(d);
+    }
+    log.record(ev);
+}
+
+/// Compact summary of a job's stats for the event log: top-level numbers, booleans and short
+/// strings only (at most 20 keys).
+pub(crate) fn compact_stats(stats: &Value) -> Value {
+    let Some(o) = stats.as_object() else {
+        return Value::Null;
+    };
+    let mut out = serde_json::Map::new();
+    for (k, v) in o {
+        if out.len() >= 20 {
+            break;
+        }
+        let keep = match v {
+            Value::Number(_) | Value::Bool(_) => true,
+            Value::String(s) => s.len() <= 80,
+            _ => false,
+        };
+        if keep {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+async fn fail(
+    ctx: &Arc<JobContext>,
+    job: &Job,
+    owner: Option<&str>,
+    msg: &str,
+    retryable: bool,
+    resources: Value,
+) {
     job.log("error", format!("failed: {msg}")).await;
     tracing::warn!(job = %job.id, kind = %job.kind, retryable, "job failed: {msg}");
     let status = match ctx.queue.fail(&job.id, msg, retryable, resources).await {
@@ -434,11 +597,29 @@ async fn fail(ctx: &Arc<JobContext>, job: &Job, msg: &str, retryable: bool, reso
     };
     if status == JobStatus::Queued {
         job.info("will retry after backoff").await;
+        job_event(
+            ctx,
+            job,
+            owner,
+            "retry",
+            "error",
+            None,
+            json!({"error": msg}),
+        );
         return;
     }
     if status != JobStatus::Failed {
         return;
     }
+    job_event(
+        ctx,
+        job,
+        owner,
+        "failed",
+        "error",
+        None,
+        json!({"error": msg}),
+    );
     ctx.errors.record_bg(
         &format!("job:{}", job.kind),
         msg,

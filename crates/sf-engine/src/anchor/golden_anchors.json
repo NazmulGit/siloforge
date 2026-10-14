@@ -1,5 +1,5 @@
 {
- "source": "site67.example pilot (D:/tmp/sf-pilot-home), 2026-10-13, cases 1-61; site48.example + site26.example v1 suggestions with unit/spec fragments or trailing adjectives (D:/tmp/sf-test-home, read-only), 2026-10-14, cases 62+; labels by hand; v2.0.2 cases 97+: brand capitalisation, generic heads, gerund leads and off-topic (low-cosine) phrases from the pilot DB, site26.example site statistics from D:/tmp/sf-test-home (read-only)",
+ "source": "site65.example pilot (D:/tmp/sf-pilot-home), 2026-10-13, cases 1-61; site46.example + site24.example v1 suggestions with unit/spec fragments or trailing adjectives (D:/tmp/sf-test-home, read-only), 2026-10-14, cases 62+; labels by hand; v2.0.2 cases 97+: brand capitalisation, generic heads, gerund leads and off-topic (low-cosine) phrases from the pilot DB, site24.example site statistics from D:/tmp/sf-test-home (read-only)",
  "case_counts": [
   [
    "a",
@@ -9459,7 +9459,7 @@
   },
   {
    "id": 62,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Drill Driver Kits Under $200 in 2026",
    "keywords": [
     "$200",
@@ -9484,7 +9484,7 @@
   },
   {
    "id": 63,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Compact Impact Drivers for 2026 (Power in Your Palm)",
    "keywords": [
     "compact",
@@ -9507,7 +9507,7 @@
   },
   {
    "id": 64,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "What is the Volume of a Water Bottle? 0.5 liters!",
    "keywords": [
     "bottle",
@@ -9527,11 +9527,11 @@
     "water bottle",
     "40 oz water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 65,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Clever Coffee Creamer Bottle Crafts to Perk Up Your Home",
    "keywords": [
     "bottle",
@@ -9553,11 +9553,11 @@
     "painted vases",
     "snowman decorations"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 66,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "40 Oz to Water Bottle: 1.18 Liters of Water!",
    "keywords": [
     "bottle",
@@ -9578,11 +9578,11 @@
     "water bottle",
     "16.9 oz water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 67,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Carry Water Bottle While Walking? 5 Easy Methods!",
    "keywords": [
     "bottle",
@@ -9601,11 +9601,11 @@
    "acceptable": [
     "water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 68,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "Where Can I Buy Diet Coke in Glass Bottles? Top 8 Stores!",
    "keywords": [
     "bottles",
@@ -9624,11 +9624,11 @@
    "acceptable": [
     "glass bottles"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 69,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "9 Best Water Bottles With Time Markings for 2026 (Stay Hydrated)",
    "keywords": [
     "bottles",
@@ -9649,11 +9649,11 @@
     "time markers",
     "leakproof straw lid"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 70,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "Blender Bottle V1 Vs V2: Which is Better!",
    "keywords": [
     "blender",
@@ -9672,11 +9672,11 @@
    "acceptable": [
     "Blender Bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 71,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "Where Can I Buy Glass Milk Bottles? Top 11 Stores!",
    "keywords": [
     "bottles",
@@ -9696,11 +9696,11 @@
     "blue glass bottles",
     "glass bottles"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 72,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "What is a Spray Bottle Called? 10 Names!",
    "keywords": [
     "bottle",
@@ -9724,11 +9724,11 @@
     "aerosol sprayers",
     "foam sprayers"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 73,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "Hot Water Bottle Vs Heat Pack? Which One Better!",
    "keywords": [
     "bottle",
@@ -9749,11 +9749,11 @@
     "rectangular hot water bottle",
     "traditional rectangular hot water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 74,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Adorable Small Alcohol Bottle Crafts for Tiny Spaces",
    "keywords": [
     "adorable",
@@ -9776,11 +9776,11 @@
     "bottle crafts",
     "wine bottle pendant lighting"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 75,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best Bottled Waters for 2026 Without Microplastics (Truly Pure)",
    "keywords": [
     "bottled",
@@ -9799,11 +9799,11 @@
    "acceptable": [
     "bottled water"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 76,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Waterproof Labels on Glass Bottles? Quick Steps!",
    "keywords": [
     "bottles",
@@ -9825,11 +9825,11 @@
     "glass surfaces",
     "clear polyester"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 77,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Keep 5 Gallon Water Jugs from Leaking?",
    "keywords": [
     "gallon",
@@ -9849,11 +9849,11 @@
     "5-gallon water jug caps",
     "water jug caps"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 78,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "18 Eco-Friendly Recycled Beer Bottle Crafts You’ll Love",
    "keywords": [
     "beer",
@@ -9874,11 +9874,11 @@
     "beer cap garlands",
     "framed wall art"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 79,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "How Many Oz in a Bottle of Water? Sizes & Capacities!",
    "keywords": [
     "bottle",
@@ -9897,11 +9897,11 @@
    "acceptable": [
     "water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 80,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "Fastest Time to Drink a Water Bottle: 5.40 Seconds",
    "keywords": [
     "bottle",
@@ -9921,11 +9921,11 @@
     "water bottle",
     "750ml water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 81,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Wash Hot Water Bottle? 10 Easy Steps",
    "keywords": [
     "bottle",
@@ -9945,11 +9945,11 @@
     "plastic water bottle",
     "500ml plastic water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 82,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "What Can I Use Instead of a Spray Bottle: 10 Alternatives!",
    "keywords": [
     "alternatives",
@@ -9968,11 +9968,11 @@
    "acceptable": [
     "spray bottle nozzles"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 83,
-   "source_title": "site26.example (sf-test-home, v1 suggestion)",
+   "source_title": "site24.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Seal Acrylic Paint on Water Bottle? 6 Easy Steps",
    "keywords": [
     "acrylic",
@@ -9992,11 +9992,11 @@
     "durable water bottle",
     "water bottle"
    ],
-   "site": "site26"
+   "site": "site24"
   },
   {
    "id": 84,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "How to Choose a Cordless Drill Driver",
    "keywords": [
     "choose",
@@ -10021,7 +10021,7 @@
   },
   {
    "id": 85,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "Hex Shank Vs Round Shank Compatibility Chart",
    "keywords": [
     "chart",
@@ -10047,7 +10047,7 @@
   },
   {
    "id": 86,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "Drill Bit Shank Types and Compatibility",
    "keywords": [
     "bit",
@@ -10072,7 +10072,7 @@
   },
   {
    "id": 87,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best High Torque Cordless Drill Drivers for 2026",
    "keywords": [
     "cordless",
@@ -10092,7 +10092,7 @@
   },
   {
    "id": 88,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Corded Die Grinders for 2026 (Power You Can Trust)",
    "keywords": [
     "corded",
@@ -10116,7 +10116,7 @@
   },
   {
    "id": 89,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best 8 Inch Bench Grinders for 2026 (Top Workshop Tools)",
    "keywords": [
     "bench",
@@ -10141,7 +10141,7 @@
   },
   {
    "id": 90,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best 12-Inch Sliding Miter Saws for 2026",
    "keywords": [
     "12-inch",
@@ -10167,7 +10167,7 @@
   },
   {
    "id": 91,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best Impact Drivers with Variable Speeds for 2026",
    "keywords": [
     "drivers",
@@ -10191,7 +10191,7 @@
   },
   {
    "id": 92,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best Cordless Jig Saws for 2026 (Power & Precision)",
    "keywords": [
     "cordless",
@@ -10214,7 +10214,7 @@
   },
   {
    "id": 93,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "10 Best 3/8 Inch Cordless Impact Wrenches for 2026",
    "keywords": [
     "3/8",
@@ -10237,7 +10237,7 @@
   },
   {
    "id": 94,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Oil-Free Air Compressors for 2026",
    "keywords": [
     "air",
@@ -10262,7 +10262,7 @@
   },
   {
    "id": 95,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Brushless Impact Driver Kits for 2026",
    "keywords": [
     "brushless",
@@ -10287,7 +10287,7 @@
   },
   {
    "id": 96,
-   "source_title": "site48.example (sf-test-home, v1 suggestion)",
+   "source_title": "site46.example (sf-test-home, v1 suggestion)",
    "target_title": "12 Best Brushless Impact Driver Kits for 2026",
    "keywords": [
     "brushless",
@@ -10311,7 +10311,7 @@
    ]
   },
   {
-   "source_title": "site67.example pilot (brand mostly capitalised site-wide)",
+   "source_title": "site65.example pilot (brand mostly capitalised site-wide)",
    "target_title": "8 Best Dry Chain Lubes for Mountain Bikes in 2026",
    "keywords": [
     "dry chain lubes",
@@ -10328,7 +10328,7 @@
    "id": 97
   },
   {
-   "source_title": "site67.example pilot (same brand written in lowercase)",
+   "source_title": "site65.example pilot (same brand written in lowercase)",
    "target_title": "8 Best Dry Chain Lubes for Mountain Bikes in 2026",
    "keywords": [
     "dry chain lubes",
@@ -10345,7 +10345,7 @@
    "id": 98
   },
   {
-   "source_title": "site67.example pilot (4-letter ALL-CAPS brand)",
+   "source_title": "site65.example pilot (4-letter ALL-CAPS brand)",
    "target_title": "7 Best Electric Dirt Bikes for Kids in 2026",
    "keywords": [
     "electric dirt bikes",
@@ -10362,7 +10362,7 @@
    "id": 99
   },
   {
-   "source_title": "site48.example (4-letter ALL-CAPS brand + product line)",
+   "source_title": "site46.example (4-letter ALL-CAPS brand + product line)",
    "target_title": "9 Best Cordless Impact Drivers Under $150",
    "keywords": [
     "cordless impact drivers",
@@ -10377,8 +10377,8 @@
    "id": 100
   },
   {
-   "source_title": "site26.example (brand + product line)",
-   "site": "site26",
+   "source_title": "site24.example (brand + product line)",
+   "site": "site24",
    "target_title": "15 Creative Glass Bottle Centerpiece Ideas",
    "keywords": [
     "bottle centerpiece",
@@ -10396,8 +10396,8 @@
    "id": 101
   },
   {
-   "source_title": "site26.example (generic head noun)",
-   "site": "site26",
+   "source_title": "site24.example (generic head noun)",
+   "site": "site24",
    "target_title": "How to Paint Wine Bottles With Acrylic Paint",
    "keywords": [
     "paint wine bottles",
@@ -10413,8 +10413,8 @@
    "id": 102
   },
   {
-   "source_title": "site26.example (gerund after an imperative)",
-   "site": "site26",
+   "source_title": "site24.example (gerund after an imperative)",
+   "site": "site24",
    "target_title": "12 Painted Glass Bottle Ideas for Spring",
    "keywords": [
     "painted glass bottles",
@@ -10430,8 +10430,8 @@
    "id": 103
   },
   {
-   "source_title": "site26.example (generic head noun)",
-   "site": "site26",
+   "source_title": "site24.example (generic head noun)",
+   "site": "site24",
    "target_title": "7 Best Insulated Water Bottles for Hiking",
    "keywords": [
     "insulated water bottles",
@@ -10447,7 +10447,7 @@
    "id": 104
   },
   {
-   "source_title": "site67.example pilot (off-topic phrase, cosine 0.014)",
+   "source_title": "site65.example pilot (off-topic phrase, cosine 0.014)",
    "target_title": "11 Best Phone Mounts for Bike in 2026 (Top Amazon Picks)",
    "keywords": [
     "top amazon picks",
@@ -10470,7 +10470,7 @@
    "id": 105
   },
   {
-   "source_title": "site67.example pilot (off-topic phrase, cosine 0.046)",
+   "source_title": "site65.example pilot (off-topic phrase, cosine 0.046)",
    "target_title": "9 Best E-Bikes With Pedals for 2026 That Power Every Ride",
    "keywords": [
     "560w 24mph ul2849",
@@ -10484,7 +10484,7 @@
     "hapleby premium bike",
     "pedals"
    ],
-   "paragraph": "site67 and its owners shall not be liable for any direct, indirect, incidental, or consequential damages arising from your use of this website or reliance on any information contained herein. Cycling involves inherent risk; always verify product specifications, torque values, and compatibility with a qualified mechanic before relying on any guidance. This site does not provide professional cycling-coach, medical, or safety advice — consult a qualified professional for any health, fitness, or safety questions.",
+   "paragraph": "site65 and its owners shall not be liable for any direct, indirect, incidental, or consequential damages arising from your use of this website or reliance on any information contained herein. Cycling involves inherent risk; always verify product specifications, torque values, and compatibility with a qualified mechanic before relying on any guidance. This site does not provide professional cycling-coach, medical, or safety advice — consult a qualified professional for any health, fitness, or safety questions.",
    "old_anchor": "safety questions",
    "acceptable": [],
    "semantic": {
@@ -10493,7 +10493,7 @@
    "id": 106
   },
   {
-   "source_title": "site67.example pilot (off-topic phrase, cosine 0.050)",
+   "source_title": "site65.example pilot (off-topic phrase, cosine 0.050)",
    "target_title": "4 Best Cycling Shoes for 2026 That Pedal Perfection Delivers",
    "keywords": [
     "pedal perfection delivers",
@@ -10516,7 +10516,7 @@
    "id": 107
   },
   {
-   "source_title": "site67.example pilot (off-topic phrase, cosine 0.122)",
+   "source_title": "site65.example pilot (off-topic phrase, cosine 0.122)",
    "target_title": "7 Best Cycling Shoes for 2026 to Conquer Winter Rides",
    "keywords": [
     "conquer winter rides",
@@ -10539,7 +10539,7 @@
    "id": 108
   },
   {
-   "source_title": "site67.example pilot (off-topic phrase, cosine 0.102)",
+   "source_title": "site65.example pilot (off-topic phrase, cosine 0.102)",
    "target_title": "12 Best Bike Inner Tubes for 2026 That Ride Smooth & Last Longer",
    "keywords": [
     "ride smooth",
@@ -10563,7 +10563,7 @@
   }
  ],
  "sites": {
-  "site26": {
+  "site24": {
    "docs": 2621,
    "df": {
     "about": 1350,

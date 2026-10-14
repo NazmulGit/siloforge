@@ -32,7 +32,13 @@ struct Rec {
     query: String,
     body: Value,
     auth: String,
+    via: String,
+    tool: String,
+    raw_body: String,
 }
+
+const POLICY_PATH: &str = "/api/v2/mcp/policy/effective";
+const USAGE_PATH: &str = "/api/v2/mcp/usage";
 
 #[derive(Default)]
 struct Stub {
@@ -40,6 +46,17 @@ struct Stub {
     logins: AtomicUsize,
     reject_next: AtomicUsize,
     polls: Mutex<HashMap<String, usize>>,
+    /// Answer of the policy endpoint (None = 404, an older server).
+    policy: Mutex<Option<(u16, Value)>>,
+    /// Per `Authorization` header overrides of `policy`.
+    policy_by_auth: Mutex<HashMap<String, (u16, Value)>>,
+    /// Bodies POSTed to the usage endpoint.
+    usage: Mutex<Vec<Value>>,
+}
+
+/// Paths that are MCP plumbing, not tool traffic.
+fn is_plumbing(path: &str) -> bool {
+    path == POLICY_PATH || path == USAGE_PATH
 }
 
 impl Stub {
@@ -47,9 +64,26 @@ impl Stub {
         self.reqs
             .lock()
             .iter()
-            .filter(|r| r.path != "/api/v1/sites" || r.method != "GET")
+            .filter(|r| (r.path != "/api/v1/sites" || r.method != "GET") && !is_plumbing(&r.path))
             .cloned()
             .collect()
+    }
+    fn policy_fetches(&self) -> usize {
+        self.reqs
+            .lock()
+            .iter()
+            .filter(|r| r.path == POLICY_PATH)
+            .count()
+    }
+    fn allow(&self, names: &[&str]) {
+        *self.policy.lock() = Some((
+            200,
+            json!({"http_enabled": true, "scope": "admin", "allowed": names, "tools": {}}),
+        ));
+    }
+    fn allow_all(&self) {
+        let names = sf_mcp::tool_names();
+        self.allow(&names);
     }
     fn site_lists(&self) -> usize {
         self.reqs
@@ -72,10 +106,17 @@ async fn handle(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    body: Bytes,
+    raw: Bytes,
 ) -> Response {
     let path = uri.path().to_string();
-    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let body: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+    let hdr = |n: &str| {
+        headers
+            .get(n)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
     if path == "/api/v1/auth/login" {
         let n = st.logins.fetch_add(1, Ordering::SeqCst) + 1;
         if body["password"] == "pw" {
@@ -100,7 +141,26 @@ async fn handle(
         query: uri.query().unwrap_or("").to_string(),
         body: body.clone(),
         auth: auth.clone(),
+        via: hdr("x-siloforge-via"),
+        tool: hdr("x-siloforge-tool"),
+        raw_body: String::from_utf8_lossy(&raw).into_owned(),
     });
+    if path == POLICY_PATH {
+        let ans = st
+            .policy_by_auth
+            .lock()
+            .get(&auth)
+            .cloned()
+            .or_else(|| st.policy.lock().clone());
+        return match ans {
+            Some((code, v)) => j(StatusCode::from_u16(code).unwrap(), v),
+            None => j(StatusCode::NOT_FOUND, json!({"error": "route not found"})),
+        };
+    }
+    if path == USAGE_PATH {
+        st.usage.lock().push(body);
+        return StatusCode::NO_CONTENT.into_response();
+    }
     if st.reject_next.load(Ordering::SeqCst) > 0 {
         st.reject_next.fetch_sub(1, Ordering::SeqCst);
         return j(StatusCode::UNAUTHORIZED, json!({"error": "unauthorized"}));
@@ -166,6 +226,18 @@ async fn handle(
         return j(
             StatusCode::OK,
             json!({"ok": true, "version": "2.0.0", "uptime_secs": 5, "jobs": {"running": 1, "queued": 2}}),
+        );
+    }
+    if path == "/api/v2/docs/intro" {
+        return j(
+            StatusCode::OK,
+            json!({"slug": "intro", "title": "Intro", "section": "Start", "markdown": "Hello **world**"}),
+        );
+    }
+    if m == "GET" && path == format!("/api/v1/dashboard/{SITE_A}") {
+        return j(
+            StatusCode::OK,
+            json!({"health_score": 81, "orphans": 3, "cannibalization_warnings": [{"keyword": "shoes"}]}),
         );
     }
     if path.starts_with("/api/v1/dashboard/")
@@ -262,6 +334,9 @@ impl Client {
     }
 }
 
+/// 28 v1/v2.0 tools + 90 v2.1 tools.
+const ALL_TOOLS: usize = 118;
+
 const V1_TOOLS: [&str; 20] = [
     "siloforge_list_sites",
     "siloforge_dashboard",
@@ -311,7 +386,9 @@ async fn tools_list_has_all_v1_and_v2_tools() {
     ] {
         assert!(names.iter().any(|x| x == n), "missing {n}");
     }
-    assert_eq!(names.len(), 28);
+    // Old server (policy endpoint 404): everything except the default-disabled escape hatch.
+    assert_eq!(names.len(), ALL_TOOLS - 1);
+    assert!(!names.iter().any(|x| x == "siloforge_api_request"));
     // v1 parameter names are kept.
     let tools = v["result"]["tools"].as_array().unwrap();
     let edges = tools
@@ -800,6 +877,7 @@ async fn stdio_ping_and_unknown_tool() {
 #[tokio::test]
 async fn hostile_arguments_never_panic() {
     let (st, url) = start_stub().await;
+    st.allow_all();
     let mut c = Client::start(cfg(&url)).await;
     let big = "x".repeat(100_000);
     let mut deep = json!(1);
@@ -817,6 +895,10 @@ async fn hostile_arguments_never_panic() {
         json!({"site": deep.clone(), "edge_ids": [1, null, "e1"], "note": deep}),
         json!({"site": "日本語.com", "edge_ids": ["e1/../../x"], "phrase": "\u{0000}"}),
         json!({"edge_ids": (0..20_000).map(|i| format!("e{i}")).collect::<Vec<_>>(), "decision": "approved"}),
+        json!({"method": "DELETE", "path": "/api/v1/../../etc", "query": {"a": {"b": 1}}, "body": [1, 2], "confirm": "maybe"}),
+        json!({"method": 7, "path": ["x"], "settings": "str", "clusters": [1, 2], "rungs": {}, "ids": ["a"], "scopes": [1]}),
+        json!({"site": "a.com", "rule_id": "../x", "token_id": "a b", "slug": "..", "backup_id": "%2e%2e", "fingerprint": "", "csv": 5}),
+        json!({"site": "a.com", "expires_in_days": null, "tool_policy": [], "price_in": "NaN", "dim": 1e300, "window": "1y", "confirm": false}),
     ];
     let names = sf_mcp::tool_names();
     for name in &names {
@@ -916,7 +998,7 @@ async fn http_transport_initialize_list_call_forwarding_token() {
     assert_eq!(status, 200, "{v}");
     assert_eq!(
         v["result"]["tools"].as_array().map(Vec::len),
-        Some(28),
+        Some(ALL_TOOLS - 1),
         "{v}"
     );
 
@@ -937,4 +1019,1224 @@ async fn http_transport_initialize_list_call_forwarding_token() {
             "caller token must be forwarded, never the configured one"
         );
     }
+}
+
+// ---------------------------------------------------------------- v2.1 tools
+
+type Case = (
+    &'static str,
+    Value,
+    &'static str,
+    String,
+    String,
+    Option<Value>,
+);
+
+fn v21_cases() -> Vec<Case> {
+    let a = SITE_A;
+    let c =
+        |tool: &'static str,
+         args: Value,
+         m: &'static str,
+         path: &str,
+         q: &str,
+         body: Option<Value>| { (tool, args, m, path.to_string(), q.to_string(), body) };
+    let site = json!({"site": "a.com"});
+    let none = Some(Value::Null);
+    let empty = Some(json!({}));
+    vec![
+        // sites
+        c(
+            "siloforge_site_get",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/sites/{a}"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_site_update",
+            json!({"site": "a.com", "settings": {"preset": "balanced"}, "mode": "sitemap"}),
+            "PATCH",
+            &format!("/api/v1/sites/{a}"),
+            "",
+            Some(json!({"settings": {"preset": "balanced"}, "mode": "sitemap"})),
+        ),
+        c(
+            "siloforge_site_set_wp_credentials",
+            json!({"site": "a.com", "wp_user": "bob", "wp_app_password": "abcd efgh"}),
+            "PATCH",
+            &format!("/api/v1/sites/{a}"),
+            "",
+            Some(json!({"settings": {"wp_user": "bob", "wp_app_password": "abcd efgh"}})),
+        ),
+        c(
+            "siloforge_site_rotate_key",
+            json!({"site": "a.com", "confirm": true}),
+            "POST",
+            &format!("/api/v1/sites/{a}/rotate-key"),
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_usage_counts",
+            json!({}),
+            "GET",
+            "/api/v1/usage",
+            "",
+            None,
+        ),
+        // runs
+        c(
+            "siloforge_archive_plan",
+            json!({"site": "a.com", "topology": "circle"}),
+            "POST",
+            &format!("/api/v1/sites/{a}/archive-plan"),
+            "",
+            Some(json!({"topology": "circle"})),
+        ),
+        c(
+            "siloforge_audit_site",
+            json!({"site": "a.com", "skip_crawl": true}),
+            "POST",
+            &format!("/api/v1/schedules/{a}/run-now"),
+            "",
+            Some(json!({"skip_crawl": true, "job_kind": "audit"})),
+        ),
+        c(
+            "siloforge_link_health_run",
+            json!({"site": "a.com", "internal_only": true}),
+            "POST",
+            &format!("/api/v1/sites/{a}/link-health"),
+            "",
+            Some(json!({"internal_only": true})),
+        ),
+        c(
+            "siloforge_gsc_status",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/sites/{a}/gsc"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_gsc_sync",
+            site.clone(),
+            "POST",
+            &format!("/api/v2/sites/{a}/gsc/sync"),
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_gsc_connect",
+            json!({"site": "a.com", "credentials_json": "{}"}),
+            "POST",
+            &format!("/api/v1/sites/{a}/gsc"),
+            "",
+            Some(json!({"credentials_json": "{}"})),
+        ),
+        c(
+            "siloforge_gsc_disconnect",
+            json!({"site": "a.com", "confirm": true}),
+            "DELETE",
+            &format!("/api/v1/sites/{a}/gsc"),
+            "",
+            none.clone(),
+        ),
+        // rules
+        c(
+            "siloforge_list_keyword_rules",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/rules/keywords/{a}"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_update_keyword_rule",
+            json!({"rule_id": "r1", "active": false}),
+            "PATCH",
+            "/api/v1/rules/keywords/r1",
+            "",
+            Some(json!({"active": false})),
+        ),
+        c(
+            "siloforge_delete_keyword_rule",
+            json!({"rule_id": "r1", "confirm": true}),
+            "DELETE",
+            "/api/v1/rules/keywords/r1",
+            "",
+            none.clone(),
+        ),
+        c(
+            "siloforge_list_ignore_keywords",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/rules/ignore/{a}"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_delete_ignore_keyword",
+            json!({"phrase_id": "p1", "confirm": true}),
+            "DELETE",
+            "/api/v1/rules/ignore/p1",
+            "",
+            none.clone(),
+        ),
+        // schedules
+        c(
+            "siloforge_list_schedules",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/schedules/{a}"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_upsert_schedule",
+            json!({"site": "a.com", "job_kind": "crawl", "cron": "0 3 * * *", "active": true}),
+            "POST",
+            &format!("/api/v1/schedules/{a}"),
+            "",
+            Some(json!({"job_kind": "crawl", "cron": "0 3 * * *", "active": true})),
+        ),
+        c(
+            "siloforge_delete_schedule",
+            json!({"schedule_id": "s1", "confirm": true}),
+            "DELETE",
+            "/api/v1/schedules/s1",
+            "",
+            none.clone(),
+        ),
+        c(
+            "siloforge_run_schedule_now",
+            json!({"site": "a.com", "job_kind": "plan"}),
+            "POST",
+            &format!("/api/v1/schedules/{a}/run-now"),
+            "",
+            Some(json!({"job_kind": "plan"})),
+        ),
+        // reports
+        c(
+            "siloforge_orphans_report",
+            json!({"site": "a.com", "limit": 10}),
+            "GET",
+            &format!("/api/v1/posts/{a}"),
+            "limit=10&is_orphan=true",
+            None,
+        ),
+        c(
+            "siloforge_cannibalization_report",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/dashboard/{a}"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_metrics_trend",
+            json!({"site": "a.com", "trend": 5}),
+            "GET",
+            &format!("/api/v1/reports/metrics/{a}"),
+            "trend=5",
+            None,
+        ),
+        c(
+            "siloforge_link_health_report",
+            json!({"site": "a.com", "offset": 100}),
+            "GET",
+            &format!("/api/v1/reports/link-health/{a}"),
+            "offset=100",
+            None,
+        ),
+        c(
+            "siloforge_link_graph",
+            json!({"site": "a.com", "max_nodes": 10}),
+            "GET",
+            &format!("/api/v1/reports/graph/{a}"),
+            "max_nodes=10",
+            None,
+        ),
+        c(
+            "siloforge_export_history_csv",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/history/{a}"),
+            "format=csv",
+            None,
+        ),
+        c(
+            "siloforge_export_link_health_csv",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/reports/link-health/{a}"),
+            "format=csv",
+            None,
+        ),
+        // silo
+        c(
+            "siloforge_export_clusters",
+            site.clone(),
+            "GET",
+            &format!("/api/v1/silo/{a}/clusters/export"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_import_clusters",
+            json!({"site": "a.com", "clusters": [{"label": "x", "pillar_url": "https://a.com/p", "member_urls": []}], "confirm": true}),
+            "POST",
+            &format!("/api/v1/silo/{a}/clusters/import"),
+            "",
+            Some(
+                json!({"clusters": [{"label": "x", "pillar_url": "https://a.com/p", "member_urls": []}]}),
+            ),
+        ),
+        // posts
+        c(
+            "siloforge_list_posts",
+            json!({"site": "a.com", "search": "shoe", "is_orphan": false, "limit": 20}),
+            "GET",
+            &format!("/api/v1/posts/{a}"),
+            "search=shoe&is_orphan=false&limit=20",
+            None,
+        ),
+        c(
+            "siloforge_import_posts_csv",
+            json!({"site": "a.com", "csv": "url,content_html\nhttps://a.com/x,<p>x</p>\n"}),
+            "POST",
+            &format!("/api/v1/csv/import/{a}"),
+            "",
+            None,
+        ),
+        // ai
+        c(
+            "siloforge_ai_status",
+            json!({}),
+            "GET",
+            "/api/v1/providers/health",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_list_ai_providers",
+            json!({}),
+            "GET",
+            "/api/v1/providers",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_get_ai_provider",
+            json!({"provider_id": "p1"}),
+            "GET",
+            "/api/v1/providers/p1",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_create_ai_provider",
+            json!({"name": "or", "kind": "openrouter", "base_url": "https://x", "api_key": "k"}),
+            "POST",
+            "/api/v1/providers",
+            "",
+            Some(
+                json!({"name": "or", "kind": "openrouter", "base_url": "https://x", "api_key": "k"}),
+            ),
+        ),
+        c(
+            "siloforge_update_ai_provider",
+            json!({"provider_id": "p1", "enabled": false}),
+            "PATCH",
+            "/api/v1/providers/p1",
+            "",
+            Some(json!({"enabled": false})),
+        ),
+        c(
+            "siloforge_delete_ai_provider",
+            json!({"provider_id": "p1", "confirm": true}),
+            "DELETE",
+            "/api/v1/providers/p1",
+            "",
+            none.clone(),
+        ),
+        c(
+            "siloforge_probe_ai_provider",
+            json!({"provider_id": "p1"}),
+            "POST",
+            "/api/v1/providers/p1/probe",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_list_ai_models",
+            json!({"provider_id": "p1"}),
+            "GET",
+            "/api/v1/models",
+            "provider_id=p1",
+            None,
+        ),
+        c(
+            "siloforge_create_ai_model",
+            json!({"provider_id": "p1", "model_id": "gpt", "role": "llm", "price_in": 0.5}),
+            "POST",
+            "/api/v1/models",
+            "",
+            Some(json!({"provider_id": "p1", "model_id": "gpt", "role": "llm", "price_in": 0.5})),
+        ),
+        c(
+            "siloforge_update_ai_model",
+            json!({"model_row_id": "m1", "label": "L"}),
+            "PATCH",
+            "/api/v1/models/m1",
+            "",
+            Some(json!({"label": "L"})),
+        ),
+        c(
+            "siloforge_delete_ai_model",
+            json!({"model_row_id": "m1", "confirm": true}),
+            "DELETE",
+            "/api/v1/models/m1",
+            "",
+            none.clone(),
+        ),
+        c(
+            "siloforge_probe_ai_model",
+            json!({"model_row_id": "m1"}),
+            "POST",
+            "/api/v1/models/m1/probe",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_list_ai_chains",
+            json!({"site_id": "global"}),
+            "GET",
+            "/api/v1/model-chains",
+            "site_id=global",
+            None,
+        ),
+        c(
+            "siloforge_create_ai_chain",
+            json!({"name": "c", "role": "llm", "site": "a.com"}),
+            "POST",
+            "/api/v1/model-chains",
+            "",
+            Some(json!({"name": "c", "role": "llm", "site_id": a})),
+        ),
+        c(
+            "siloforge_update_ai_chain",
+            json!({"chain_id": "c1", "notes": "n"}),
+            "PATCH",
+            "/api/v1/model-chains/c1",
+            "",
+            Some(json!({"notes": "n"})),
+        ),
+        c(
+            "siloforge_delete_ai_chain",
+            json!({"chain_id": "c1", "confirm": true}),
+            "DELETE",
+            "/api/v1/model-chains/c1",
+            "",
+            none.clone(),
+        ),
+        c(
+            "siloforge_activate_ai_chain",
+            json!({"chain_id": "c1"}),
+            "POST",
+            "/api/v1/model-chains/c1/activate",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_deactivate_ai_chain",
+            json!({"chain_id": "c1"}),
+            "POST",
+            "/api/v1/model-chains/c1/deactivate",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_list_ai_rungs",
+            json!({"chain_id": "c1"}),
+            "GET",
+            "/api/v1/model-chains/c1/rungs",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_add_ai_rung",
+            json!({"chain_id": "c1", "model_row_id": "m1", "max_retries": 2}),
+            "POST",
+            "/api/v1/model-chains/c1/rungs",
+            "",
+            Some(json!({"model_row_id": "m1", "max_retries": 2})),
+        ),
+        c(
+            "siloforge_replace_ai_rungs",
+            json!({"chain_id": "c1", "rungs": [{"model_row_id": "m1"}], "confirm": true}),
+            "PUT",
+            "/api/v1/model-chains/c1/rungs",
+            "",
+            Some(json!({"rungs": [{"model_row_id": "m1"}]})),
+        ),
+        c(
+            "siloforge_reorder_ai_rungs",
+            json!({"chain_id": "c1", "rung_ids": ["r2", "r1"]}),
+            "POST",
+            "/api/v1/model-chains/c1/rungs/reorder",
+            "",
+            Some(json!({"rung_ids": ["r2", "r1"]})),
+        ),
+        c(
+            "siloforge_update_ai_rung",
+            json!({"rung_id": "r1", "enabled": true}),
+            "PATCH",
+            "/api/v1/model-chain-rungs/r1",
+            "",
+            Some(json!({"enabled": true})),
+        ),
+        c(
+            "siloforge_delete_ai_rung",
+            json!({"rung_id": "r1", "confirm": true}),
+            "DELETE",
+            "/api/v1/model-chain-rungs/r1",
+            "",
+            none.clone(),
+        ),
+        // settings
+        c(
+            "siloforge_settings_get",
+            json!({}),
+            "GET",
+            "/api/v2/settings",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_settings_update",
+            json!({"resources": {"max_concurrent_jobs": 4}}),
+            "PUT",
+            "/api/v2/settings",
+            "",
+            Some(json!({"resources": {"max_concurrent_jobs": 4}})),
+        ),
+        // system
+        c(
+            "siloforge_system_stats",
+            json!({}),
+            "GET",
+            "/api/v2/system/stats",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_system_metrics",
+            json!({"window": "24h"}),
+            "GET",
+            "/api/v2/system/metrics",
+            "window=24h",
+            None,
+        ),
+        c(
+            "siloforge_system_restart",
+            json!({"confirm": true}),
+            "POST",
+            "/api/v2/system/restart",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_list_errors",
+            json!({"resolved": "false", "limit": 5}),
+            "GET",
+            "/api/v2/errors",
+            "resolved=false&limit=5",
+            None,
+        ),
+        c(
+            "siloforge_resolve_error",
+            json!({"fingerprint": "abc123"}),
+            "POST",
+            "/api/v2/errors/abc123/resolve",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_audit_log",
+            json!({"limit": 10, "before_id": 99}),
+            "GET",
+            "/api/v2/audit",
+            "limit=10&before_id=99",
+            None,
+        ),
+        // backups
+        c(
+            "siloforge_list_backups",
+            json!({"limit": 3}),
+            "GET",
+            "/api/v2/backups",
+            "limit=3",
+            None,
+        ),
+        c(
+            "siloforge_get_backup",
+            json!({"backup_id": "b1"}),
+            "GET",
+            "/api/v2/backups/b1",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_verify_backup",
+            json!({"backup_id": "b1"}),
+            "POST",
+            "/api/v2/backups/b1/verify",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_delete_backup",
+            json!({"backup_id": "b1", "confirm": true}),
+            "DELETE",
+            "/api/v2/backups/b1",
+            "",
+            none.clone(),
+        ),
+        // notifications
+        c(
+            "siloforge_mark_notifications_read",
+            json!({"ids": [1, 2]}),
+            "POST",
+            "/api/v2/notifications/read",
+            "",
+            Some(json!({"ids": [1, 2]})),
+        ),
+        c(
+            "siloforge_list_notification_channels",
+            json!({}),
+            "GET",
+            "/api/v2/notifications/channels",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_create_notification_channel",
+            json!({"name": "d", "kind": "discord", "config": {"url": "https://d"}, "events": ["job.failed"]}),
+            "POST",
+            "/api/v2/notifications/channels",
+            "",
+            Some(
+                json!({"name": "d", "kind": "discord", "config": {"url": "https://d"}, "events": ["job.failed"]}),
+            ),
+        ),
+        c(
+            "siloforge_update_notification_channel",
+            json!({"channel_id": "ch1", "enabled": false}),
+            "PATCH",
+            "/api/v2/notifications/channels/ch1",
+            "",
+            Some(json!({"enabled": false})),
+        ),
+        c(
+            "siloforge_delete_notification_channel",
+            json!({"channel_id": "ch1", "confirm": true}),
+            "DELETE",
+            "/api/v2/notifications/channels/ch1",
+            "",
+            none.clone(),
+        ),
+        c(
+            "siloforge_test_notification_channel",
+            json!({"channel_id": "ch1"}),
+            "POST",
+            "/api/v2/notifications/channels/ch1/test",
+            "",
+            empty.clone(),
+        ),
+        // tokens
+        c(
+            "siloforge_list_tokens",
+            json!({"all": true}),
+            "GET",
+            "/api/v2/tokens",
+            "all=true",
+            None,
+        ),
+        c(
+            "siloforge_create_token",
+            json!({"name": "hermes", "scopes": ["read"], "expires_in_days": 30}),
+            "POST",
+            "/api/v2/tokens",
+            "",
+            Some(json!({"name": "hermes", "scopes": ["read"], "expires_in_days": 30})),
+        ),
+        c(
+            "siloforge_update_token",
+            json!({"token_id": "t1", "scopes": ["read", "write"], "expires_in_days": null}),
+            "PATCH",
+            "/api/v2/tokens/t1",
+            "",
+            Some(json!({"scopes": ["read", "write"], "expires_in_days": null})),
+        ),
+        c(
+            "siloforge_revoke_token",
+            json!({"token_id": "t1", "confirm": true}),
+            "DELETE",
+            "/api/v2/tokens/t1",
+            "",
+            none.clone(),
+        ),
+        // mcp
+        c(
+            "siloforge_mcp_info",
+            json!({}),
+            "GET",
+            "/api/v2/mcp",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_mcp_policy_get",
+            json!({}),
+            "GET",
+            "/api/v2/mcp/policy",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_mcp_policy_update",
+            json!({"http_enabled": false, "confirm": true}),
+            "PUT",
+            "/api/v2/mcp/policy",
+            "",
+            Some(json!({"http_enabled": false})),
+        ),
+        c(
+            "siloforge_mcp_stats",
+            json!({}),
+            "GET",
+            "/api/v2/mcp/stats",
+            "",
+            None,
+        ),
+        // logs
+        c(
+            "siloforge_logs_query",
+            json!({"source": "mcp", "site": "a.com", "status": "error", "limit": 50}),
+            "GET",
+            "/api/v2/logs",
+            &format!("source=mcp&status=error&limit=50&site_id={a}"),
+            None,
+        ),
+        c(
+            "siloforge_logs_stats",
+            json!({"since": "24h"}),
+            "GET",
+            "/api/v2/logs/stats",
+            "since=24h",
+            None,
+        ),
+        // docs / downloads
+        c(
+            "siloforge_docs_list",
+            json!({}),
+            "GET",
+            "/api/v2/docs",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_docs_get",
+            json!({"slug": "intro"}),
+            "GET",
+            "/api/v2/docs/intro",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_downloads_list",
+            json!({}),
+            "GET",
+            "/api/v2/downloads",
+            "",
+            None,
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn each_v21_tool_maps_to_method_path_body_with_headers() {
+    let (st, url) = start_stub().await;
+    let mut c = Client::start(cfg(&url)).await;
+    let cases = v21_cases();
+    // Every v2.1 route tool is covered (custom ones have their own tests).
+    let covered: Vec<&str> = cases.iter().map(|c| c.0).collect();
+    let legacy: Vec<&str> = V1_TOOLS.to_vec();
+    for name in sf_mcp::tool_names() {
+        let custom = matches!(
+            name,
+            "siloforge_capabilities" | "siloforge_doctor" | "siloforge_api_request"
+        );
+        let v2_0 = sf_mcp::tools::catalogue()
+            .iter()
+            .position(|t| t.name == name)
+            .is_some_and(|i| i < 28);
+        if custom || v2_0 || legacy.contains(&name) {
+            continue;
+        }
+        assert!(covered.contains(&name), "no mapping test for {name}");
+    }
+    for (tool, args, method, path, query, body) in cases {
+        let (text, is_err, _) = c.call(tool, args.clone()).await;
+        assert!(!is_err, "{tool} {args}: {text}");
+        let r = st.last();
+        assert_eq!(
+            (r.method.as_str(), r.path.as_str(), r.query.as_str()),
+            (method, path.as_str(), query.as_str()),
+            "{tool} {args}"
+        );
+        if let Some(b) = body {
+            assert_eq!(r.body, b, "{tool} body");
+        }
+        assert_eq!(r.auth, "Bearer sfk_testtoken");
+        assert_eq!(r.via, "mcp", "{tool}");
+        assert_eq!(r.tool, tool, "{tool}");
+    }
+    // CSV import sends the CSV text as-is.
+    let csv = st
+        .api_reqs()
+        .into_iter()
+        .find(|r| r.path.starts_with("/api/v1/csv/import/"))
+        .unwrap();
+    assert!(
+        csv.raw_body.starts_with("url,content_html\n"),
+        "{}",
+        csv.raw_body
+    );
+    // Post-processing: cannibalization keeps only its keys; docs render as Markdown.
+    let (text, _, _) = c
+        .call("siloforge_cannibalization_report", json!({"site": "a.com"}))
+        .await;
+    assert!(
+        text.contains("cannibalization_warnings") && !text.contains("orphans"),
+        "{text}"
+    );
+    let (text, _, _) = c.call("siloforge_docs_get", json!({"slug": "intro"})).await;
+    assert_eq!(text, "# Intro\n\nHello **world**");
+    // Every REST request made for a tool carried the telemetry headers; plumbing did not name a tool.
+    for r in st.reqs.lock().iter() {
+        if r.path == POLICY_PATH {
+            assert_eq!(r.tool, "", "policy fetch is not a tool call");
+        } else {
+            assert_eq!(r.via, "mcp", "{} {}", r.method, r.path);
+            assert!(r.tool.starts_with("siloforge_"), "{} {}", r.method, r.path);
+        }
+    }
+}
+
+#[tokio::test]
+async fn destructive_tools_need_confirm_and_send_nothing() {
+    let (st, url) = start_stub().await;
+    let mut c = Client::start(cfg(&url)).await;
+    let gated: Vec<String> = sf_mcp::tools::catalogue()
+        .into_iter()
+        .filter(|t| sf_mcp::tools::needs_confirm(t.name))
+        .map(|t| t.name.to_string())
+        .collect();
+    for n in [
+        "siloforge_site_rotate_key",
+        "siloforge_revoke_token",
+        "siloforge_delete_backup",
+        "siloforge_system_restart",
+        "siloforge_mcp_policy_update",
+        "siloforge_delete_notification_channel",
+        "siloforge_import_clusters",
+    ] {
+        assert!(gated.iter().any(|g| g == n), "{n} must need confirm");
+    }
+    // Legacy destructive tools keep working without confirm (contract deviation, Hermes cards).
+    assert!(!sf_mcp::tools::needs_confirm("siloforge_bulk_inject"));
+    assert!(!sf_mcp::tools::needs_confirm("siloforge_bulk_undo"));
+    let before = st.reqs.lock().len();
+    for name in &gated {
+        for confirm in [json!(null), json!(false), json!("yes"), json!(1)] {
+            let args = json!({"site": SITE_A, "token_id": "t1", "backup_id": "b1", "rule_id": "r1",
+                "phrase_id": "p1", "schedule_id": "s1", "provider_id": "p1", "model_row_id": "m1",
+                "chain_id": "c1", "rung_id": "r1", "channel_id": "ch1", "http_enabled": true,
+                "clusters": [], "rungs": [], "confirm": confirm});
+            let (text, is_err, _) = c.call(name, args).await;
+            assert!(is_err && text.contains("confirm: true"), "{name}: {text}");
+        }
+    }
+    let api_calls: Vec<Rec> = st.reqs.lock()[before..]
+        .iter()
+        .filter(|r| !is_plumbing(&r.path))
+        .cloned()
+        .collect();
+    assert!(
+        api_calls.is_empty(),
+        "refused tools reached the API: {api_calls:?}"
+    );
+    // bulk inject without confirm still works.
+    let (text, is_err, _) = c
+        .call("siloforge_bulk_inject", json!({"site": "a.com"}))
+        .await;
+    assert!(!is_err, "{text}");
+}
+
+fn names_of(v: &Value) -> Vec<String> {
+    v["result"]["tools"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn stdio_policy_filters_list_and_refuses_calls() {
+    let (st, url) = start_stub().await;
+    st.allow(&[
+        "siloforge_list_sites",
+        "siloforge_capabilities",
+        "siloforge_dashboard",
+    ]);
+    let mut c = Client::start(cfg(&url)).await;
+    let v = c.request("tools/list", json!({})).await;
+    let mut names = names_of(&v);
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "siloforge_capabilities",
+            "siloforge_dashboard",
+            "siloforge_list_sites"
+        ]
+    );
+    // A disallowed tool is an MCP error (not a tool result) and never reaches the API.
+    let v = c
+        .request(
+            "tools/call",
+            json!({"name": "siloforge_crawl_site", "arguments": {"site": SITE_A}}),
+        )
+        .await;
+    assert!(v["error"].is_object(), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("policy"),
+        "{v}"
+    );
+    assert!(st.api_reqs().iter().all(|r| !r.path.ends_with("/crawl")));
+    // Allowed tools work, and the policy is cached (fetched once for the session so far).
+    let (text, is_err, _) = c.call("siloforge_dashboard", json!({"site": SITE_A})).await;
+    assert!(!is_err, "{text}");
+    assert_eq!(st.policy_fetches(), 1);
+    // capabilities reflects the caller's allowed tools.
+    let (_, is_err, res) = c.call("siloforge_capabilities", json!({})).await;
+    assert!(!is_err);
+    let s = &res["structuredContent"];
+    assert_eq!(s["policy"]["source"], "server");
+    assert_eq!(s["policy"]["tools_available"], 3);
+    assert_eq!(s["policy"]["tools_hidden"], ALL_TOOLS - 3);
+    let listed: Vec<String> = s["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["tools"].as_array().unwrap().iter())
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    assert!(s["workflow"].as_array().unwrap().len() >= 7);
+}
+
+#[tokio::test]
+async fn policy_refreshes_and_keeps_last_known_on_errors() {
+    let (st, url) = start_stub().await;
+    st.allow(&["siloforge_list_sites"]);
+    let mut conf = cfg(&url);
+    conf.policy_ttl = Duration::from_millis(1);
+    let mut c = Client::start(conf).await;
+    assert_eq!(
+        names_of(&c.request("tools/list", json!({})).await),
+        vec!["siloforge_list_sites"]
+    );
+    // A transient error keeps the last known policy (no fail-open widening).
+    *st.policy.lock() = Some((500, json!({"error": "boom"})));
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(
+        names_of(&c.request("tools/list", json!({})).await),
+        vec!["siloforge_list_sites"]
+    );
+    // A changed policy is picked up after the TTL.
+    st.allow(&["siloforge_list_sites", "siloforge_list_jobs"]);
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(names_of(&c.request("tools/list", json!({})).await).len(), 2);
+    assert!(st.policy_fetches() >= 3);
+}
+
+#[tokio::test]
+async fn unreachable_api_fails_open_without_the_escape_hatch() {
+    // Nothing listens on this port.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let mut c = Client::start(cfg(&url)).await;
+    let names = names_of(&c.request("tools/list", json!({})).await);
+    assert_eq!(names.len(), ALL_TOOLS - 1);
+    assert!(!names.iter().any(|n| n == "siloforge_api_request"));
+    let (text, is_err, _) = c.call("siloforge_list_sites", json!({})).await;
+    assert!(is_err && text.contains("unreachable"), "{text}");
+}
+
+#[tokio::test]
+async fn http_policy_is_per_bearer() {
+    let (st, url) = start_stub().await;
+    st.policy_by_auth.lock().insert(
+        "Bearer sfk_reader".into(),
+        (
+            200,
+            json!({"http_enabled": true, "scope": "read", "allowed": ["siloforge_list_sites"]}),
+        ),
+    );
+    st.policy_by_auth.lock().insert(
+        "Bearer sfk_nohttp".into(),
+        (
+            200,
+            json!({"http_enabled": false, "scope": "admin", "allowed": ["siloforge_list_sites"]}),
+        ),
+    );
+    let mcp = start_mcp_http(&url).await;
+    let http = reqwest::Client::new();
+    let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}});
+    let (_, v) = http_rpc(&http, &mcp, Some("sfk_reader"), list.clone()).await;
+    assert_eq!(names_of(&v), vec!["siloforge_list_sites"]);
+    let (_, v) = http_rpc(&http, &mcp, Some("sfk_other"), list.clone()).await;
+    assert_eq!(names_of(&v).len(), ALL_TOOLS - 1, "404 -> fail open");
+    let (_, v) = http_rpc(&http, &mcp, Some("sfk_nohttp"), list).await;
+    assert!(
+        names_of(&v).is_empty(),
+        "http_enabled=false hides every tool over HTTP"
+    );
+    let call = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "siloforge_crawl_site", "arguments": {"site": SITE_A}}});
+    let (status, v) = http_rpc(&http, &mcp, Some("sfk_reader"), call.clone()).await;
+    assert_eq!(status, 200);
+    assert!(v["error"].is_object(), "{v}");
+    assert!(st.api_reqs().iter().all(|r| !r.path.ends_with("/crawl")));
+    let (_, v) = http_rpc(&http, &mcp, Some("sfk_other"), call).await;
+    assert_ne!(v["result"]["isError"], true, "{v}");
+    let crawl = st
+        .api_reqs()
+        .into_iter()
+        .find(|r| r.path.ends_with("/crawl"))
+        .unwrap();
+    assert_eq!(crawl.auth, "Bearer sfk_other");
+    assert_eq!(
+        (crawl.via.as_str(), crawl.tool.as_str()),
+        ("mcp", "siloforge_crawl_site")
+    );
+}
+
+async fn wait_usage(st: &Stub, n: usize) -> Vec<Value> {
+    for _ in 0..200 {
+        let u = st.usage.lock().clone();
+        if u.len() >= n {
+            return u;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    st.usage.lock().clone()
+}
+
+#[tokio::test]
+async fn usage_is_reported_after_each_call() {
+    let (st, url) = start_stub().await;
+    st.allow_all();
+    let mut c = Client::start(cfg(&url)).await;
+    let (_, is_err, _) = c.call("siloforge_dashboard", json!({"site": SITE_A})).await;
+    assert!(!is_err);
+    let (_, is_err, _) = c
+        .call("siloforge_dashboard", json!({"site": "nope.com"}))
+        .await;
+    assert!(is_err);
+    let usage = wait_usage(&st, 2).await;
+    assert_eq!(usage.len(), 2, "{usage:?}");
+    assert_eq!(usage[0]["tool"], "siloforge_dashboard");
+    assert_eq!(usage[0]["ok"], true);
+    assert!(usage[0]["duration_ms"].is_u64());
+    assert_eq!(usage[0]["error"], Value::Null);
+    assert_eq!(usage[1]["ok"], false);
+    assert!(
+        usage[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("site not found")
+    );
+    let rec = st
+        .reqs
+        .lock()
+        .iter()
+        .find(|r| r.path == USAGE_PATH)
+        .cloned()
+        .unwrap();
+    assert_eq!(rec.auth, "Bearer sfk_testtoken");
+    assert_eq!(rec.tool, "siloforge_dashboard");
+}
+
+#[tokio::test]
+async fn old_server_gets_no_usage_reports() {
+    let (st, url) = start_stub().await;
+    let mut c = Client::start(cfg(&url)).await;
+    let (_, is_err, _) = c.call("siloforge_list_sites", json!({})).await;
+    assert!(!is_err);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(st.usage.lock().is_empty());
+}
+
+#[tokio::test]
+async fn api_request_is_validated_and_default_disabled() {
+    let (st, url) = start_stub().await;
+    // Default policy (fail-open): the escape hatch is hidden and refused.
+    let mut c = Client::start(cfg(&url)).await;
+    let v = c
+        .request("tools/call", json!({"name": "siloforge_api_request", "arguments": {"method": "GET", "path": "/api/v2/system"}}))
+        .await;
+    assert!(v["error"].is_object(), "{v}");
+    assert!(st.api_reqs().is_empty());
+
+    st.allow_all();
+    let mut c = Client::start(cfg(&url)).await;
+    for path in [
+        "/api/v1/../v1/auth/login",
+        "http://127.0.0.1:8600/api/v1/sites",
+        "//evil/api/v1/sites",
+        "/api/v1/sites?x=1",
+        "/api/v1/sites/%2e%2e/x",
+        "/api/v3/x",
+        "/health",
+        "/api/v1/auth/login",
+        "/api/v1/sync",
+        "/api/v2/backups/b1/download",
+    ] {
+        let (text, is_err, _) = c
+            .call(
+                "siloforge_api_request",
+                json!({"method": "POST", "path": path, "confirm": true}),
+            )
+            .await;
+        assert!(is_err, "{path} accepted: {text}");
+    }
+    let (text, is_err, _) = c
+        .call("siloforge_api_request", json!({"method": "POST", "path": "/api/v2/tokens", "body": {"name": "x"}, "confirm": true}))
+        .await;
+    assert!(is_err && text.contains("minting"), "{text}");
+    // Non-GET needs confirm.
+    let (text, is_err, _) = c
+        .call(
+            "siloforge_api_request",
+            json!({"method": "DELETE", "path": "/api/v2/backups/b1"}),
+        )
+        .await;
+    assert!(is_err && text.contains("confirm: true"), "{text}");
+    assert!(st.api_reqs().is_empty(), "{:?}", st.api_reqs());
+    // Valid requests go through with query and body.
+    let (text, is_err, _) = c
+        .call("siloforge_api_request", json!({"method": "get", "path": "/api/v2/jobs", "query": {"status": "running", "limit": 5}}))
+        .await;
+    assert!(!is_err, "{text}");
+    let r = st.last();
+    assert_eq!(
+        (r.method.as_str(), r.path.as_str()),
+        ("GET", "/api/v2/jobs")
+    );
+    let mut qp: Vec<&str> = r.query.split('&').collect();
+    qp.sort_unstable();
+    assert_eq!(qp, vec!["limit=5", "status=running"]);
+    assert_eq!(r.tool, "siloforge_api_request");
+    let (text, is_err, _) = c
+        .call("siloforge_api_request", json!({"method": "PATCH", "path": "/api/v1/sites/s1", "body": {"mode": "sitemap"}, "confirm": true}))
+        .await;
+    assert!(!is_err, "{text}");
+    let r = st.last();
+    assert_eq!(
+        (r.method.as_str(), r.path.as_str()),
+        ("PATCH", "/api/v1/sites/s1")
+    );
+    assert_eq!(r.body, json!({"mode": "sitemap"}));
+}
+
+#[tokio::test]
+async fn capabilities_and_doctor() {
+    let (_st, url) = start_stub().await;
+    let mut c = Client::start(cfg(&url)).await;
+    let (text, is_err, res) = c.call("siloforge_capabilities", json!({})).await;
+    assert!(!is_err, "{text}");
+    let s = &res["structuredContent"];
+    assert!(
+        s["policy"]["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("fail-open")
+    );
+    assert_eq!(s["policy"]["tools_available"], ALL_TOOLS - 1);
+    let cats: Vec<&str> = s["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["category"].as_str().unwrap())
+        .collect();
+    for want in [
+        "sites", "runs", "edges", "inject", "reports", "ai", "settings", "tokens", "mcp", "logs",
+        "docs",
+    ] {
+        assert!(cats.contains(&want), "missing category {want}: {cats:?}");
+    }
+    assert!(
+        !cats.contains(&"api"),
+        "escape hatch hidden by the default policy"
+    );
+    assert!(text.contains("crawl") && text.contains("undo"));
+    let (text, is_err, res) = c.call("siloforge_doctor", json!({})).await;
+    assert!(!is_err, "{text}");
+    assert_eq!(res["structuredContent"]["ok"], true, "{text}");
+    assert!(res["structuredContent"]["checks"]["health"]["ok"] == true);
+}
+
+#[test]
+fn catalogue_metadata_for_the_server() {
+    let all = sf_mcp::tools::catalogue();
+    assert_eq!(all.len(), ALL_TOOLS);
+    for n in V1_TOOLS {
+        assert!(all.iter().any(|t| t.name == n), "{n}");
+    }
+    let api = all
+        .iter()
+        .find(|t| t.name == "siloforge_api_request")
+        .unwrap();
+    assert!(!api.default_enabled && api.min_scope == "admin" && api.category == "api");
+    assert_eq!(all.iter().filter(|t| !t.default_enabled).count(), 1);
+    for t in &all {
+        assert!(!t.category.is_empty(), "{}", t.name);
+        if t.read_only {
+            assert!(!t.destructive, "{}", t.name);
+        }
+    }
+    let admin = |n: &str| all.iter().find(|t| t.name == n).unwrap().min_scope == "admin";
+    for n in [
+        "siloforge_settings_update",
+        "siloforge_system_restart",
+        "siloforge_list_backups",
+        "siloforge_revoke_token",
+        "siloforge_mcp_policy_update",
+        "siloforge_logs_query",
+        "siloforge_create_ai_model",
+    ] {
+        assert!(admin(n), "{n} must be admin");
+    }
+    assert!(!admin("siloforge_list_sites") && !admin("siloforge_docs_get"));
 }

@@ -82,7 +82,16 @@ impl SiteInfo {
     /// site's admin-only `allow_private_host` is set. Every other destination (external links,
     /// redirect targets, sitemap children) must resolve to public addresses (SSRF H-02).
     pub fn http_client(&self, ctx: &JobContext) -> JobResult<sf_crawl::HttpClient> {
-        let mut cfg = ctx.http.clone();
+        self.http_client_from(ctx.http_config())
+    }
+
+    /// HTTP client for WordPress REST writes (inject/undo writers): like
+    /// [`SiteInfo::http_client`] with `[wordpress] request_timeout_ms`.
+    pub fn wp_http_client(&self, ctx: &JobContext) -> JobResult<sf_crawl::HttpClient> {
+        self.http_client_from(ctx.wp_http_config())
+    }
+
+    fn http_client_from(&self, mut cfg: sf_crawl::HttpConfig) -> JobResult<sf_crawl::HttpClient> {
         let hosts = self.allow_hosts();
         if self.private_host_allowed() {
             cfg.allow_hosts.extend(hosts.iter().cloned());
@@ -218,6 +227,7 @@ pub async fn load_site(ctx: &JobContext, site_id: &str) -> JobResult<SiteInfo> {
     if let Some(o) = settings.as_object_mut() {
         o.remove("wp_app_password");
     }
+    apply_wordpress_defaults(&mut settings, &ctx.live.get().wordpress);
     Ok(SiteInfo {
         id,
         domain,
@@ -226,6 +236,40 @@ pub async fn load_site(ctx: &JobContext, site_id: &str) -> JobResult<SiteInfo> {
         settings,
         secrets,
     })
+}
+
+/// Fills keys a site leaves unset from the install-wide `[wordpress]` defaults (v2.1). The
+/// defaults equal the engine defaults, so an untouched section changes nothing. In memory only.
+pub fn apply_wordpress_defaults(settings: &mut Value, wp: &sf_core::config::WordpressCfg) {
+    let Some(o) = settings.as_object_mut() else {
+        return;
+    };
+    let mut fill = |k: &str, v: Value| {
+        if o.get(k).is_none_or(Value::is_null) {
+            o.insert(k.to_string(), v);
+        }
+    };
+    fill(
+        "max_links_per_post",
+        Value::from(wp.default_max_links_per_post),
+    );
+    fill(
+        "min_links_per_post",
+        Value::from(wp.default_min_links_per_post),
+    );
+    fill(
+        "max_new_links_per_pass",
+        Value::from(wp.max_new_links_per_pass),
+    );
+    if !wp.default_insert_modules.is_empty() {
+        fill(
+            "insert_modules",
+            Value::from(wp.default_insert_modules.clone()),
+        );
+    }
+    if !wp.verify_after_inject {
+        fill("skip_inject_verify", Value::Bool(true));
+    }
 }
 
 /// v2 content hash: SHA-256 of the rendered HTML (v1-compatible when there is no raw source),

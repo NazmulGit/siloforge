@@ -178,6 +178,14 @@ pub async fn login(
     rate_guard(&st, "login", &ip)?;
     let email = b.email.trim().to_lowercase();
     if let Some(d) = lockout(&st).locked_for(&email) {
+        crate::eventlog::log(&st).record_auth(
+            "anonymous",
+            "login refused (account locked)",
+            "denied",
+            None,
+            Some(&email),
+            json!({"ip": ip.clone()}),
+        );
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             format!(
@@ -217,15 +225,40 @@ pub async fn login(
     let ok = bcrypt_verify(pw.clone(), hash).await;
     let Some((id, email, name, role, old_hash, tv)) = row.filter(|_| ok) else {
         rate_fail(&st, "login", &ip);
+        let ev = crate::eventlog::log(&st);
+        ev.record_auth(
+            "anonymous",
+            "login failed",
+            "denied",
+            None,
+            Some(&account),
+            json!({"ip": ip.clone()}),
+        );
         if let Some(d) = lockout(&st).fail(&account) {
             tracing::warn!(
                 lock_secs = d.as_secs(),
                 "login: account locked after repeated failures"
             );
+            ev.record_auth(
+                "anonymous",
+                "account locked",
+                "denied",
+                None,
+                Some(&account),
+                json!({"ip": ip.clone(), "lock_secs": d.as_secs()}),
+            );
         }
         return Err(ApiError::unauthorized("invalid email or password"));
     };
     lockout(&st).success(&account);
+    crate::eventlog::log(&st).record_auth(
+        &format!("user:{id}"),
+        "login ok",
+        "ok",
+        Some(&id),
+        Some(&id),
+        json!({"ip": ip.clone()}),
+    );
     // L-15: upgrade a weaker (v1 cost 10) hash in the background; the session is unaffected.
     if crypto::password_needs_rehash(&old_hash) {
         let (st2, uid) = (st.clone(), id.clone());

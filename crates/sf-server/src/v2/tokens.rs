@@ -53,6 +53,27 @@ pub async fn list(
             Ok(rows)
         })
         .await?;
+    let policy = super::mcp::load_policy(&st).await.unwrap_or_default();
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .map(|mut r| {
+            let id = r
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if let Some(o) = r.as_object_mut() {
+                o.insert(
+                    "tool_policy".into(),
+                    policy
+                        .per_token
+                        .get(&id)
+                        .map_or(Value::Null, |p| json!({"allow": p.allow})),
+                );
+            }
+            r
+        })
+        .collect();
     Ok(Json(json!({ "tokens": rows })))
 }
 
@@ -76,7 +97,7 @@ fn caller_covers(u: &User, scope: &str) -> bool {
 }
 
 /// The calling API token's row (id, scopes, expires_at), looked up by the bearer's hash.
-async fn caller_token(
+pub(crate) async fn caller_token(
     st: &AppState,
     headers: &HeaderMap,
 ) -> ApiResult<(String, Vec<String>, Option<String>)> {
@@ -215,6 +236,14 @@ pub async fn create(
         json!({"name": name, "scopes": scopes, "parent_id": parent_id}),
     )
     .await;
+    crate::eventlog::log(&st).record_auth(
+        &u.actor(),
+        "token create",
+        "ok",
+        Some(&u.user_id),
+        Some(&id),
+        json!({"name": name, "scopes": scopes, "parent_id": parent_id}),
+    );
     Ok(Json(json!({
         "token": token,
         "id": id,
@@ -277,7 +306,288 @@ pub async fn revoke(
         json!({ "descendants_revoked": cascaded }),
     )
     .await;
+    crate::eventlog::log(&st).record_auth(
+        &u.actor(),
+        "token revoke",
+        "ok",
+        Some(&u.user_id),
+        Some(&id),
+        json!({ "descendants_revoked": cascaded }),
+    );
     Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+/// Does a token holding `parent` scopes cover `scope`? (`*` covers all; admin/write imply read.)
+fn parent_covers(parent: &[String], scope: &str) -> bool {
+    parent.iter().any(|p| p == "*" || p == scope)
+        || (scope == "read" && parent.iter().any(|p| p == "write" || p == "admin"))
+        || (scope == "write" && parent.iter().any(|p| p == "admin"))
+}
+
+#[derive(Deserialize)]
+pub struct PatchBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    /// `null` = never expires (still capped by the parent), a number = days from now.
+    #[serde(default, deserialize_with = "double_option")]
+    expires_in_days: Option<Option<i64>>,
+    /// `{allow: [...] | null}`: MCP tools this token may use (`null` = all its scope allows).
+    #[serde(default, deserialize_with = "double_option")]
+    tool_policy: Option<Option<super::mcp::TokenRule>>,
+}
+
+/// Distinguishes a missing field (`None`) from an explicit `null` (`Some(None)`).
+fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+type TokenRow = (String, String, Vec<String>, Option<String>, Option<String>);
+
+async fn token_row(st: &AppState, id: &str) -> ApiResult<Option<TokenRow>> {
+    let id = id.to_string();
+    let row = st
+        .db
+        .read(move |c| {
+            c.query_row(
+                "SELECT id, user_id, scopes, expires_at, parent_id FROM api_tokens WHERE id=?1 AND revoked_at IS NULL",
+                [&id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(err)
+        })
+        .await?;
+    Ok(row.map(|(id, uid, scopes, exp, parent)| {
+        let scopes: Vec<String> = serde_json::from_str(&scopes).unwrap_or_default();
+        (id, uid, scopes, exp, parent)
+    }))
+}
+
+/// `PATCH /tokens/{id}` (owner or admin): `{name?, scopes?, expires_in_days?: number|null,
+/// tool_policy?: {allow: [...]|null}|null}` -> the updated row. Scopes are a subset of
+/// `*, read, write, admin`; `*` and `admin` only for admins; a token is never raised above its
+/// parent's scopes or expiry; descendants are capped to the new scopes (revoked when nothing
+/// remains). The auth cache is cleared so the change applies to the next request.
+pub async fn patch(
+    State(st): State<AppState>,
+    u: User,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    crate::v1::common::JsonBody(b): crate::v1::common::JsonBody<PatchBody>,
+) -> ApiResult<Json<Value>> {
+    let Some((tid, owner, old_scopes, old_exp, parent_id)) = token_row(&st, &id).await? else {
+        return Err(ApiError::not_found("token not found"));
+    };
+    if owner != u.user_id && !u.is_admin() {
+        return Err(ApiError::not_found("token not found"));
+    }
+    // An API token may only edit tokens when it is a full/admin token (same rule as create).
+    if u.token.is_some() {
+        let (_, pscopes, _) = caller_token(&st, &headers).await?;
+        if !pscopes.iter().any(|s| s == "*" || s == "admin") {
+            return Err(ApiError::forbidden(
+                "API tokens can only edit tokens when they have the * or admin scope",
+            ));
+        }
+    }
+    let parent = match &parent_id {
+        Some(pid) => token_row(&st, pid).await?,
+        None => None,
+    };
+    let name = match b.name {
+        Some(n) => {
+            let n = n.trim().to_string();
+            if n.is_empty() || n.chars().count() > 100 {
+                return Err(ApiError::bad("name is required (max 100 chars)"));
+            }
+            Some(n)
+        }
+        None => None,
+    };
+    let scopes = match b.scopes {
+        Some(mut s) => {
+            s.sort();
+            s.dedup();
+            if s.is_empty() || s.len() > SCOPES.len() {
+                return Err(ApiError::bad(
+                    "scopes must be a non-empty subset of *, read, write, admin",
+                ));
+            }
+            for x in &s {
+                if !SCOPES.contains(&x.as_str()) {
+                    return Err(ApiError::bad(format!(
+                        "unknown scope '{x}' (allowed: *, read, write, admin)"
+                    )));
+                }
+                if (x == "admin" || x == "*") && !u.is_admin() {
+                    return Err(ApiError::forbidden(format!(
+                        "only admins can grant the '{x}' scope"
+                    )));
+                }
+                if !caller_covers(&u, x) {
+                    return Err(ApiError::forbidden(format!(
+                        "your token cannot grant the '{x}' scope"
+                    )));
+                }
+                if let Some((_, _, pscopes, _, _)) = &parent
+                    && !parent_covers(pscopes, x)
+                {
+                    return Err(ApiError::forbidden(format!(
+                        "scope '{x}' is above the parent token's scopes"
+                    )));
+                }
+            }
+            Some(s)
+        }
+        None => None,
+    };
+    let pexp = parent.as_ref().and_then(|p| p.3.clone());
+    let expires_at: Option<Option<String>> = match b.expires_in_days {
+        None => None,
+        Some(None) => Some(pexp.clone()),
+        Some(Some(d)) if (1..=3650).contains(&d) => {
+            let e = (chrono::Utc::now() + chrono::Duration::days(d))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            if let Some(p) = &pexp
+                && e.as_str() > p.as_str()
+            {
+                return Err(ApiError::bad(
+                    "expires_in_days would outlive the parent token",
+                ));
+            }
+            Some(Some(e))
+        }
+        Some(Some(_)) => return Err(ApiError::bad("expires_in_days must be 1..3650 or null")),
+    };
+    if let Some(Some(rule)) = &b.tool_policy
+        && let Some(a) = &rule.allow
+        && a.len() > 500
+    {
+        return Err(ApiError::bad("tool_policy.allow: too many tools"));
+    }
+    // validate tool names before writing anything
+    if let Some(Some(rule)) = &b.tool_policy {
+        super::mcp::check_tool_names(&st, rule.allow.as_deref().unwrap_or(&[]))?;
+    }
+    let (tid2, name2, scopes2, exp2) = (
+        tid.clone(),
+        name.clone(),
+        scopes.clone(),
+        expires_at.clone(),
+    );
+    let capped = st
+        .db
+        .write(move |t| {
+            if let Some(n) = &name2 {
+                t.execute("UPDATE api_tokens SET name=?2 WHERE id=?1", params![tid2, n])
+                    .map_err(err)?;
+            }
+            if let Some(e) = &exp2 {
+                t.execute("UPDATE api_tokens SET expires_at=?2 WHERE id=?1", params![tid2, e])
+                    .map_err(err)?;
+            }
+            let mut capped = 0usize;
+            if let Some(s) = &scopes2 {
+                let js = serde_json::to_string(s).unwrap_or_else(|_| "[\"read\"]".into());
+                t.execute("UPDATE api_tokens SET scopes=?2 WHERE id=?1", params![tid2, js])
+                    .map_err(err)?;
+                // cap descendants (breadth first, each against its own parent's new scopes)
+                let mut frontier: Vec<(String, Vec<String>)> = vec![(tid2.clone(), s.clone())];
+                let now = sf_core::now_rfc3339();
+                let mut guard = 0usize;
+                while let Some((pid, pscopes)) = frontier.pop() {
+                    guard += 1;
+                    if guard > 10_000 {
+                        break;
+                    }
+                    let kids: Vec<(String, String)> = {
+                        let mut stmt = t
+                            .prepare("SELECT id, scopes FROM api_tokens WHERE parent_id=?1 AND revoked_at IS NULL")
+                            .map_err(err)?;
+                        stmt.query_map([&pid], |r| Ok((r.get(0)?, r.get(1)?)))
+                            .map_err(err)?
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                            .map_err(err)?
+                    };
+                    for (kid, ks) in kids {
+                        let ks: Vec<String> = serde_json::from_str(&ks).unwrap_or_default();
+                        let kept: Vec<String> =
+                            ks.iter().filter(|x| parent_covers(&pscopes, x)).cloned().collect();
+                        if kept.is_empty() {
+                            t.execute(
+                                "UPDATE api_tokens SET revoked_at=?2 WHERE id=?1",
+                                params![kid, now],
+                            )
+                            .map_err(err)?;
+                            capped += 1;
+                            continue;
+                        }
+                        if kept.len() != ks.len() {
+                            let js = serde_json::to_string(&kept).unwrap_or_default();
+                            t.execute("UPDATE api_tokens SET scopes=?2 WHERE id=?1", params![kid, js])
+                                .map_err(err)?;
+                            capped += 1;
+                        }
+                        frontier.push((kid, kept));
+                    }
+                }
+            }
+            Ok(capped)
+        })
+        .await?;
+    if let Some(tp) = b.tool_policy {
+        super::mcp::set_token_rule(&st, &tid, tp).await?;
+    }
+    st.auth_cache.clear();
+    audit(
+        &st,
+        &u.actor(),
+        u.via(),
+        "token.update",
+        Some(&tid),
+        json!({
+            "name": name, "scopes": scopes, "old_scopes": old_scopes,
+            "expires_changed": expires_at.is_some(), "old_expires_at": old_exp,
+            "descendants_capped": capped,
+        }),
+    )
+    .await;
+    let tid3 = tid.clone();
+    let row = st
+        .db
+        .read(move |c| {
+            c.query_row(
+                &format!("SELECT {COLS} FROM api_tokens WHERE id=?1"),
+                [&tid3],
+                |r| Ok(row_to_json(r, &["scopes"], &[])),
+            )
+            .map_err(err)
+        })
+        .await?;
+    let mut row = row;
+    if let Some(o) = row.as_object_mut() {
+        let rule = super::mcp::token_rule(&st, &tid).await;
+        o.insert(
+            "tool_policy".into(),
+            rule.map_or(Value::Null, |r| json!({"allow": r.allow})),
+        );
+        o.insert("descendants_capped".into(), json!(capped));
+    }
+    Ok(Json(row))
 }
 
 #[derive(Deserialize, Default)]

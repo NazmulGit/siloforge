@@ -969,7 +969,7 @@ async fn cluster_site(
 
 /// Replace the site's auto clusters. An auto cluster whose member set is unchanged keeps its id
 /// (label/pillar refreshed) and its posts are not touched: every `posts` UPDATE rewrites the whole
-/// row (content + embedding, ~40 KB on site26), and the old delete-all (FK SET NULL) +
+/// row (content + embedding, ~40 KB on site24), and the old delete-all (FK SET NULL) +
 /// re-assign rewrote every post twice per plan. k-means is seeded, so a re-plan of an unchanged
 /// site now writes no post rows here.
 fn write_clusters(

@@ -108,13 +108,32 @@ pub async fn mcp_info(State(st): State<AppState>, _u: User) -> ApiResult<Json<Va
     let args = vec!["mcp".to_string()];
     // A1: SILOFORGE_API_URL is the server origin; the MCP client appends /api/v1/... itself.
     let api_url = format!("http://{bind}");
-    let tools: Vec<Value> = st
-        .services
-        .get::<crate::state::McpTools>()
-        .map(|t| t.0.clone())
-        .unwrap_or_default();
+    // v2.1 §3: each tool carries its effective policy (enabled, min_scope) and category.
+    let policy = super::mcp::load_policy(&st).await?;
+    let tools: Vec<Value> = super::mcp::catalogue(&st)
+        .into_iter()
+        .map(|t| {
+            let rule = policy.tools.get(&t.name);
+            let mut v = t.info.clone();
+            if let Some(o) = v.as_object_mut() {
+                o.insert(
+                    "enabled".into(),
+                    json!(rule.and_then(|r| r.enabled).unwrap_or(t.default_enabled)),
+                );
+                o.insert(
+                    "min_scope".into(),
+                    json!(
+                        rule.and_then(|r| r.min_scope.clone())
+                            .unwrap_or(t.min_scope)
+                    ),
+                );
+            }
+            v
+        })
+        .collect();
     Ok(Json(json!({
         "enabled": true,
+        "http_enabled": policy.http_enabled,
         "stdio_command": exe,
         "stdio_args": args,
         "http_url": url,

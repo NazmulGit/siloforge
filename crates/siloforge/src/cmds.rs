@@ -43,7 +43,14 @@ pub async fn start_jobs(
     ctx.notifier = Some(notifier);
     ctx.errors = errors;
     ctx.monitor = Some(monitor);
+    ctx.live = state.live.clone();
+    ctx.events = state
+        .services
+        .get::<sf_ops::eventlog::EventLog>()
+        .map(|e| (*e).clone());
     let ctx = Arc::new(ctx);
+    // v2.1: vector cache budget, memory-cap shrinking and the live compute-thread limit
+    ctx.start_resource_watch();
     let runner = sf_jobs::Runner::start(ctx.clone());
     let scheduler = sf_jobs::Scheduler::start(ctx);
     tracing::info!("job runner and scheduler started");

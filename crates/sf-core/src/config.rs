@@ -22,6 +22,10 @@ pub struct Config {
     pub crawl: CrawlCfg,
     pub backup: BackupCfg,
     pub monitor: MonitorCfg,
+    /// Install-wide WordPress defaults (v2.1): used when a site has no own value.
+    pub wordpress: WordpressCfg,
+    /// Release downloads offered by `GET /api/v2/downloads` (v2.1).
+    pub downloads: DownloadsCfg,
     /// Never serialised (secret), see [`GscCfg`].
     #[serde(skip_serializing)]
     pub gsc: GscCfg,
@@ -129,6 +133,9 @@ pub struct ResourcesCfg {
     pub low_priority_jobs: bool,
     /// Do not start a heavy job while machine CPU is above this percent (0 = disabled).
     pub defer_when_cpu_above: f32,
+    /// Soft cap on this process' resident memory, MB (0 = off). Above it the vector cache is
+    /// shrunk, heavy jobs are deferred and one notification is sent (v2.1).
+    pub max_memory_mb: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -152,6 +159,12 @@ pub struct EmbedCfg {
     pub onnx_runtime_dir: String,
     /// Try the GPU (DirectML on Windows) for the onnx rung.
     pub gpu: bool,
+    /// `auto` (GPU if available else CPU) | `gpu` | `cpu` | `hybrid` (GPU and CPU share each job) |
+    /// `remote` (remote rungs first). v2.1.
+    pub mode: String,
+    /// Share of the work the GPU takes in `hybrid` mode (0.1..0.9); the GPU may steal more when
+    /// the CPU is slower.
+    pub hybrid_gpu_share: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +225,48 @@ pub struct MonitorCfg {
     pub notifications_retain_days: u32,
     /// Audit log (0 = never).
     pub audit_log_retain_days: u32,
+    /// Unified `event_log` rows (0 = never). v2.1.
+    pub event_log_retain_days: u32,
+    /// Also record successful GET API requests in the event log (non-GET, MCP and errors are
+    /// always recorded).
+    pub log_reads: bool,
+}
+
+/// Install-wide WordPress defaults. Per-site settings win; these fill in what a site leaves unset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WordpressCfg {
+    pub default_insert_modules: Vec<String>,
+    /// Verify the live page after injecting (a site's `skip_inject_verify` still wins).
+    pub verify_after_inject: bool,
+    pub default_max_links_per_post: u32,
+    pub default_min_links_per_post: u32,
+    pub max_new_links_per_pass: u32,
+    /// Timeout for WordPress REST reads/writes, ms.
+    pub request_timeout_ms: u64,
+}
+
+impl Default for WordpressCfg {
+    fn default() -> Self {
+        // Same values as the engine defaults (sf_engine::density::LINK_DENSITY), so an untouched
+        // section changes nothing.
+        Self {
+            default_insert_modules: vec!["native".into()],
+            verify_after_inject: true,
+            default_max_links_per_post: 10,
+            default_min_links_per_post: 3,
+            max_new_links_per_pass: 5,
+            request_timeout_ms: 20_000,
+        }
+    }
+}
+
+/// Where release zips are listed from.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DownloadsCfg {
+    /// Empty = `<exe dir>/../releases` (the installed layout `app\` + `releases\`).
+    pub dir: String,
 }
 
 impl Default for Config {
@@ -226,6 +281,8 @@ impl Default for Config {
             crawl: CrawlCfg::default(),
             backup: BackupCfg::default(),
             monitor: MonitorCfg::default(),
+            wordpress: WordpressCfg::default(),
+            downloads: DownloadsCfg::default(),
             gsc: GscCfg::default(),
         }
     }
@@ -261,6 +318,7 @@ impl Default for ResourcesCfg {
             vector_cache_mb: 512,
             low_priority_jobs: true,
             defer_when_cpu_above: 0.0,
+            max_memory_mb: 0,
         }
     }
 }
@@ -285,6 +343,8 @@ impl Default for EmbedCfg {
             model_dir: String::new(),
             onnx_runtime_dir: String::new(),
             gpu: true,
+            mode: "auto".into(),
+            hybrid_gpu_share: 0.5,
         }
     }
 }
@@ -341,6 +401,8 @@ impl Default for MonitorCfg {
             errors_retain_days: 90,
             notifications_retain_days: 90,
             audit_log_retain_days: 365,
+            event_log_retain_days: 90,
+            log_reads: false,
         }
     }
 }
@@ -492,6 +554,21 @@ impl Config {
             PathBuf::from(&self.backup.dir)
         }
     }
+    /// Release downloads directory (`downloads.dir`, else `<exe dir>/../releases`).
+    pub fn downloads_dir(&self) -> PathBuf {
+        if !self.downloads.dir.trim().is_empty() {
+            return PathBuf::from(self.downloads.dir.trim());
+        }
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                p.parent()
+                    .and_then(Path::parent)
+                    .map(|d| d.join("releases"))
+            })
+            .unwrap_or_else(|| self.home.join("releases"))
+    }
+
     pub fn cpu_threads(&self) -> usize {
         if self.resources.cpu_threads > 0 {
             return self.resources.cpu_threads;

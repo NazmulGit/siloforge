@@ -2,7 +2,7 @@
 //! per-site vector cache.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use sf_ai::Ai;
 use sf_core::types::{JobKind, blob_to_vec};
-use sf_core::{Config, EMBED_DIM, Error};
+use sf_core::{Config, EMBED_DIM, Error, LiveConfig};
 use sf_crawl::{CrawlError, HttpClient, HttpConfig, LinkCheckOptions, VerifyOptions};
 use sf_embed::EmbedChain;
 use sf_engine::nlp::SiteTerms;
@@ -104,7 +104,11 @@ impl From<sf_engine::pool::ComputeError> for JobError {
 /// let scheduler = Scheduler::start(ctx.clone());
 /// ```
 pub struct JobContext {
+    /// Configuration at boot. Values that may change live are read from [`JobContext::live`].
     pub cfg: Arc<Config>,
+    /// Current configuration (v2.1 settings): runner limits, defer thresholds, crawl/WP client
+    /// settings, WordPress defaults, vector cache budget and memory cap are read from here.
+    pub live: LiveConfig,
     pub db: Db,
     pub queue: JobQueue,
     /// Base HTTP config for crawler/writer clients (site hosts are added per job).
@@ -127,6 +131,8 @@ pub struct JobContext {
     pub verify: VerifyOptions,
     /// Link-health checker options.
     pub link_check: LinkCheckOptions,
+    /// Unified event log (§9): job started/done/failed/cancelled rows (None = not recorded).
+    pub events: Option<sf_ops::eventlog::EventLog>,
 }
 
 impl JobContext {
@@ -147,6 +153,7 @@ impl JobContext {
         let phrases = PhraseCache::default();
         spawn_idle_sweeper(&vectors, &terms, &phrases, CACHE_IDLE_TTL);
         Self {
+            live: LiveConfig::from_arc(cfg.clone()),
             http: HttpConfig::from_crawl_cfg(&cfg.crawl),
             errors: ErrorTracker::new(db.clone()),
             vectors,
@@ -162,12 +169,92 @@ impl JobContext {
             monitor: None,
             verify: VerifyOptions::default(),
             link_check: LinkCheckOptions::default(),
+            events: None,
         }
+    }
+
+    /// Base HTTP config for new clients: [`JobContext::http`] with the live `[crawl]` values laid
+    /// over it once settings were changed at runtime (so tests that tune `http` keep their values).
+    pub fn http_config(&self) -> HttpConfig {
+        let mut cfg = self.http.clone();
+        if self.live.generation() > 0 {
+            let live = HttpConfig::from_crawl_cfg(&self.live.get().crawl);
+            cfg.user_agent = live.user_agent;
+            cfg.timeout = live.timeout;
+            cfg.per_host_concurrency = live.per_host_concurrency;
+            cfg.private_site_hosts = live.private_site_hosts;
+            cfg.host_aliases = live.host_aliases;
+        }
+        cfg
+    }
+
+    /// Like [`JobContext::http_config`] with the `[wordpress] request_timeout_ms` timeout, for
+    /// WordPress REST writers.
+    pub fn wp_http_config(&self) -> HttpConfig {
+        let mut cfg = self.http_config();
+        if self.live.generation() > 0 {
+            let ms = self.live.get().wordpress.request_timeout_ms;
+            if ms > 0 {
+                cfg.timeout = Duration::from_millis(ms.clamp(1_000, 600_000));
+            }
+        }
+        cfg
+    }
+
+    /// Applies the live resource settings: vector cache budget (`vector_cache_mb`, quartered
+    /// while the monitor reports memory pressure, which also drops idle caches at once) and the
+    /// live compute-thread limit (`cpu_threads`). Run every 5 s by [`JobContext::start_resource_watch`].
+    pub fn apply_resources(&self) {
+        let cfg = self.live.get();
+        let mut budget = cfg
+            .resources
+            .vector_cache_mb
+            .max(16)
+            .saturating_mul(1024 * 1024);
+        let pressure = self.monitor.as_ref().is_some_and(Monitor::memory_pressure);
+        if pressure {
+            budget /= 4;
+        }
+        let before = self.vectors.cached_bytes();
+        self.vectors.set_budget(budget);
+        if pressure {
+            let short = Duration::from_secs(30);
+            let n = self.vectors.evict_idle(short) + self.terms.evict_idle(short);
+            let np = evict_idle_phrases(&self.phrases.inner, short);
+            let after = self.vectors.cached_bytes();
+            if n + np > 0 || after < before {
+                tracing::info!(
+                    entries = n,
+                    phrases = np,
+                    freed_mb = before.saturating_sub(after) / (1024 * 1024),
+                    "memory cap: caches shrunk"
+                );
+            }
+        }
+        if self.live.generation() > 0 {
+            sf_engine::pool::set_live_limit(cfg.resources.cpu_threads);
+        }
+    }
+
+    /// Spawns the loop that calls [`JobContext::apply_resources`] every 5 s (ends when the
+    /// context is dropped).
+    pub fn start_resource_watch(self: &Arc<Self>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let weak = Arc::downgrade(self);
+        handle.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let Some(ctx) = weak.upgrade() else { break };
+                ctx.apply_resources();
+            }
+        });
     }
 
     /// HTTP client allowed to reach `hosts` (site hosts / URLs) even when they resolve privately.
     pub fn http_client(&self, hosts: &[String]) -> JobResult<HttpClient> {
-        let mut cfg = self.http.clone();
+        let mut cfg = self.http_config();
         cfg.allow_hosts.extend(hosts.iter().cloned());
         HttpClient::from_http_config(cfg).map_err(JobError::from)
     }
@@ -364,7 +451,7 @@ struct CacheEntry {
 }
 
 /// Caches unused this long are dropped so idle RAM falls back to the baseline (perf open item:
-/// the site26 vectors kept about 270 MB resident after a plan).
+/// the site24 vectors kept about 270 MB resident after a plan).
 pub const CACHE_IDLE_TTL: Duration = Duration::from_secs(600);
 /// How often the idle sweeper looks.
 const SWEEP_EVERY: Duration = Duration::from_secs(60);
@@ -373,7 +460,8 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60);
 /// after [`CACHE_IDLE_TTL`] without use.
 pub struct VectorCache {
     db: Db,
-    budget: usize,
+    /// Bytes; live-adjustable ([`VectorCache::set_budget`]).
+    budget: AtomicUsize,
     clock: AtomicU64,
     entries: Arc<Mutex<Vec<CacheEntry>>>,
 }
@@ -382,7 +470,7 @@ impl VectorCache {
     pub fn new(db: Db, budget_bytes: usize) -> Self {
         Self {
             db,
-            budget: budget_bytes,
+            budget: AtomicUsize::new(budget_bytes),
             clock: AtomicU64::new(0),
             entries: Arc::new(Mutex::new(Vec::new())),
         }
@@ -391,6 +479,17 @@ impl VectorCache {
     /// Drop entries unused for `ttl` (running jobs keep their own `Arc`). Returns how many.
     pub fn evict_idle(&self, ttl: Duration) -> usize {
         evict_idle_vectors(&self.entries, ttl)
+    }
+
+    /// Change the byte budget; entries beyond it are evicted least recently used first.
+    pub fn set_budget(&self, bytes: usize) {
+        self.budget.store(bytes, Ordering::Relaxed);
+        let mut entries = self.entries.lock();
+        evict_over_budget(&mut entries, bytes, None);
+    }
+
+    pub fn budget(&self) -> usize {
+        self.budget.load(Ordering::Relaxed)
     }
 
     /// Drop a site's vectors (call after embeddings change).
@@ -426,25 +525,30 @@ impl VectorCache {
             last: Instant::now(),
         });
         // Evict least recently used entries (never the one just loaded) until within budget.
-        loop {
-            let total: usize = entries.iter().map(|e| e.bytes).sum();
-            if total <= self.budget || entries.len() <= 1 {
-                break;
-            }
-            let victim = entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| e.site != site_id)
-                .min_by_key(|(_, e)| e.used)
-                .map(|(i, _)| i);
-            match victim {
-                Some(i) => {
-                    entries.remove(i);
-                }
-                None => break,
-            }
-        }
+        evict_over_budget(&mut entries, self.budget(), Some(site_id));
         Ok(data)
+    }
+}
+
+/// LRU eviction down to `budget` bytes; `keep` is never evicted, and the last entry stays.
+fn evict_over_budget(entries: &mut Vec<CacheEntry>, budget: usize, keep: Option<&str>) {
+    loop {
+        let total: usize = entries.iter().map(|e| e.bytes).sum();
+        if total <= budget || entries.len() <= 1 {
+            break;
+        }
+        let victim = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| keep != Some(e.site.as_str()))
+            .min_by_key(|(_, e)| e.used)
+            .map(|(i, _)| i);
+        match victim {
+            Some(i) => {
+                entries.remove(i);
+            }
+            None => break,
+        }
     }
 }
 

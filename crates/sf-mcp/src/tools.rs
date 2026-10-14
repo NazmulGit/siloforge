@@ -1,6 +1,8 @@
 //! Tool catalogue and dispatch. The 20 v1 tool names, parameter names and semantics are kept
-//! exactly (Hermes kanban cards and skills reference them, R17); v2 adds job/system tools.
+//! exactly (Hermes kanban cards and skills reference them, R17); v2 adds job/system tools and
+//! v2.1 (contract §8, [`crate::extra`]) adds the rest of the admin surface.
 
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use reqwest::Method;
@@ -21,6 +23,7 @@ pub enum Out {
 }
 
 /// Static description of one tool.
+#[derive(Clone, Debug)]
 pub struct ToolDef {
     pub name: &'static str,
     pub title: &'static str,
@@ -28,17 +31,45 @@ pub struct ToolDef {
     pub schema: Value,
     pub read_only: bool,
     pub destructive: bool,
+    /// Lowest token scope that can use the tool: `"read"`, `"write"` or `"admin"`.
+    pub min_scope: &'static str,
+    /// Enabled in a fresh MCP policy (false only for `siloforge_api_request`).
+    pub default_enabled: bool,
+    /// Category (sites, runs, edges, inject, rules, schedules, reports, silo, posts, ai, settings,
+    /// system, jobs, backups, notifications, tokens, mcp, logs, docs, downloads, api): UI grouping
+    /// and `siloforge_capabilities`.
+    pub category: &'static str,
 }
 
-const SITE_DESC: &str = "site id or domain (e.g. example.com)";
+impl ToolDef {
+    pub(crate) fn admin(mut self) -> Self {
+        self.min_scope = "admin";
+        self
+    }
+
+    pub(crate) fn in_category(mut self, category: &'static str) -> Self {
+        self.category = category;
+        self
+    }
+
+    pub(crate) fn disabled_by_default(mut self) -> Self {
+        self.default_enabled = false;
+        self
+    }
+}
+
+pub(crate) const SITE_DESC: &str = "site id or domain (e.g. example.com)";
 const EDGE_STATUSES: &str = "suggested|approved|applied|reverted|rejected|failed";
-const ANCHOR_TYPES: &[&str] = &[
+pub(crate) const ANCHOR_TYPES: &[&str] = &[
     "exact", "partial", "branded", "generic", "lsi", "naked", "cta",
 ];
 /// All five server topologies (v2 accepts `bidirectional`, fixing v1 B3; pilot 2026-10-13 found MCP still refused it).
-const TOPOLOGIES: &[&str] = &["reverse", "serial", "priority", "circle", "bidirectional"];
+pub(crate) const TOPOLOGIES: &[&str] =
+    &["reverse", "serial", "priority", "circle", "bidirectional"];
 const DECISIONS: &[&str] = &["approved", "rejected"];
-const MAX_STR: usize = 4096;
+pub(crate) const MAX_STR: usize = 4096;
+/// Destructive v1 tools that keep working without `confirm` (Hermes cards call them as-is).
+const LEGACY_NO_CONFIRM: &[&str] = &["siloforge_bulk_inject", "siloforge_bulk_undo"];
 const MAX_IDS: usize = 10_000;
 const WAIT_MAX_SECS: u64 = 900;
 const PIPELINE_MAX_SECS: u64 = 1800;
@@ -63,7 +94,7 @@ fn job_only(extra: &str) -> Value {
     json!({"type":"object","properties":{"job_id":{"type":"string","description":format!("job run id (job_run_id){extra}")}},"required":["job_id"]})
 }
 
-fn def(
+pub(crate) fn def(
     name: &'static str,
     title: &'static str,
     description: &'static str,
@@ -78,11 +109,111 @@ fn def(
         schema,
         read_only,
         destructive,
+        min_scope: if read_only { "read" } else { "write" },
+        default_enabled: true,
+        category: "",
     }
 }
 
-/// All tools, v1 first (in v1 order), then v2.
+static CATALOGUE: LazyLock<Vec<ToolDef>> = LazyLock::new(build_catalogue);
+
+/// All tools: v1 first (in v1 order), then v2, then v2.1.
 pub fn catalogue() -> Vec<ToolDef> {
+    CATALOGUE.clone()
+}
+
+/// Borrowed view of [`catalogue`] (no clone).
+pub(crate) fn catalogue_ref() -> &'static [ToolDef] {
+    CATALOGUE.as_slice()
+}
+
+/// The definition of one tool.
+pub fn find(name: &str) -> Option<&'static ToolDef> {
+    catalogue_ref().iter().find(|t| t.name == name)
+}
+
+fn confirm_gated(t: &ToolDef) -> bool {
+    t.destructive && !LEGACY_NO_CONFIRM.contains(&t.name) && t.name != crate::extra::API_REQUEST
+}
+
+/// True when the tool refuses to run without `confirm: true` (destructive v2.1 tools).
+pub fn needs_confirm(name: &str) -> bool {
+    find(name).is_some_and(confirm_gated)
+}
+
+fn legacy_category(name: &str) -> &'static str {
+    match name {
+        "siloforge_list_sites" | "siloforge_add_site" => "sites",
+        "siloforge_crawl_site"
+        | "siloforge_plan_site"
+        | "siloforge_run_pipeline"
+        | "siloforge_run_keyword_linker" => "runs",
+        "siloforge_list_edges"
+        | "siloforge_decide_edge"
+        | "siloforge_bulk_decide"
+        | "siloforge_edit_anchor" => "edges",
+        "siloforge_bulk_inject" | "siloforge_bulk_undo" => "inject",
+        "siloforge_add_keyword_rule" | "siloforge_add_ignore_keyword" => "rules",
+        "siloforge_list_clusters" => "silo",
+        "siloforge_list_jobs"
+        | "siloforge_job_status"
+        | "siloforge_job_logs"
+        | "siloforge_cancel_job"
+        | "siloforge_wait_for_job" => "jobs",
+        "siloforge_system_status" => "system",
+        "siloforge_create_backup" => "backups",
+        "siloforge_list_notifications" => "notifications",
+        _ => "reports",
+    }
+}
+
+fn build_catalogue() -> Vec<ToolDef> {
+    let mut all: Vec<ToolDef> = legacy_catalogue()
+        .into_iter()
+        .map(|t| {
+            let g = legacy_category(t.name);
+            let t = t.in_category(g);
+            // These two call admin-only API routes.
+            if matches!(
+                t.name,
+                "siloforge_create_backup" | "siloforge_list_notifications"
+            ) {
+                t.admin()
+            } else {
+                t
+            }
+        })
+        .collect();
+    all.extend(crate::extra::defs());
+    for t in &mut all {
+        if confirm_gated(t) {
+            add_confirm(&mut t.schema);
+        }
+    }
+    all
+}
+
+/// Adds the required `confirm: true` argument to a destructive tool's schema.
+fn add_confirm(schema: &mut Value) {
+    let Value::Object(m) = schema else {
+        return;
+    };
+    if let Some(Value::Object(props)) = m.get_mut("properties") {
+        props.insert(
+            "confirm".into(),
+            json!({"type":"boolean","description":"must be true: confirms this destructive action (nothing is sent without it)"}),
+        );
+    }
+    match m.get_mut("required") {
+        Some(Value::Array(req)) => req.push(json!("confirm")),
+        _ => {
+            m.insert("required".into(), json!(["confirm"]));
+        }
+    }
+}
+
+/// The v1 + v2.0 tools (names, params and semantics frozen).
+fn legacy_catalogue() -> Vec<ToolDef> {
     vec![
         // ---------------- v1 read ----------------
         def(
@@ -387,14 +518,14 @@ pub fn catalogue() -> Vec<ToolDef> {
 
 // ---------------------------------------------------------------- argument parsing
 
-struct Args<'a>(&'a Map<String, Value>);
+pub(crate) struct Args<'a>(pub(crate) &'a Map<String, Value>);
 
-fn bad(msg: String) -> ToolError {
+pub(crate) fn bad(msg: String) -> ToolError {
     ToolError::new(format!("invalid arguments: {msg}"))
 }
 
 impl Args<'_> {
-    fn raw(&self, k: &str) -> Option<&Value> {
+    pub(crate) fn raw(&self, k: &str) -> Option<&Value> {
         let v = self.0.get(k).filter(|v| !v.is_null());
         // Enqueue tools return `job_run_id`; agents echo that name back (pilot 2026-10-13).
         if v.is_none() && k == "job_id" {
@@ -403,7 +534,7 @@ impl Args<'_> {
         v
     }
 
-    fn str_opt(&self, k: &str) -> ToolResult<Option<String>> {
+    pub(crate) fn str_opt(&self, k: &str) -> ToolResult<Option<String>> {
         match self.raw(k) {
             None => Ok(None),
             Some(Value::String(s)) if s.len() > MAX_STR => {
@@ -414,14 +545,14 @@ impl Args<'_> {
         }
     }
 
-    fn str_req(&self, k: &str) -> ToolResult<String> {
+    pub(crate) fn str_req(&self, k: &str) -> ToolResult<String> {
         match self.str_opt(k)? {
             Some(s) if !s.trim().is_empty() => Ok(s),
             _ => Err(bad(format!("`{k}` is required (string)"))),
         }
     }
 
-    fn enum_opt(&self, k: &str, allowed: &[&str]) -> ToolResult<Option<String>> {
+    pub(crate) fn enum_opt(&self, k: &str, allowed: &[&str]) -> ToolResult<Option<String>> {
         match self.str_opt(k)? {
             None => Ok(None),
             Some(s) if allowed.contains(&s.as_str()) => Ok(Some(s)),
@@ -429,12 +560,12 @@ impl Args<'_> {
         }
     }
 
-    fn enum_req(&self, k: &str, allowed: &[&str]) -> ToolResult<String> {
+    pub(crate) fn enum_req(&self, k: &str, allowed: &[&str]) -> ToolResult<String> {
         self.enum_opt(k, allowed)?
             .ok_or_else(|| bad(format!("`{k}` is required ({})", allowed.join("|"))))
     }
 
-    fn int_opt(&self, k: &str, min: i64, max: i64) -> ToolResult<Option<i64>> {
+    pub(crate) fn int_opt(&self, k: &str, min: i64, max: i64) -> ToolResult<Option<i64>> {
         let n = match self.raw(k) {
             None => return Ok(None),
             Some(Value::Number(n)) => n.as_i64().or_else(|| {
@@ -453,7 +584,7 @@ impl Args<'_> {
         }
     }
 
-    fn bool_opt(&self, k: &str) -> ToolResult<Option<bool>> {
+    pub(crate) fn bool_opt(&self, k: &str) -> ToolResult<Option<bool>> {
         match self.raw(k) {
             None => Ok(None),
             Some(Value::Bool(b)) => Ok(Some(*b)),
@@ -463,12 +594,12 @@ impl Args<'_> {
         }
     }
 
-    fn id_req(&self, k: &str) -> ToolResult<String> {
+    pub(crate) fn id_req(&self, k: &str) -> ToolResult<String> {
         let s = self.str_req(k)?;
         check_id(k, s.trim())
     }
 
-    fn ids_opt(&self, k: &str) -> ToolResult<Option<Vec<String>>> {
+    pub(crate) fn ids_opt(&self, k: &str) -> ToolResult<Option<Vec<String>>> {
         let Some(v) = self.raw(k) else {
             return Ok(None);
         };
@@ -490,7 +621,7 @@ impl Args<'_> {
 }
 
 /// Ids are interpolated into URL paths: only `[A-Za-z0-9_-]`, 1..=128 chars.
-fn check_id(k: &str, s: &str) -> ToolResult<String> {
+pub(crate) fn check_id(k: &str, s: &str) -> ToolResult<String> {
     let ok = !s.is_empty()
         && s.len() <= 128
         && s.bytes()
@@ -502,7 +633,7 @@ fn check_id(k: &str, s: &str) -> ToolResult<String> {
     }
 }
 
-fn query(pairs: &[(&str, Option<String>)]) -> String {
+pub(crate) fn query(pairs: &[(&str, Option<String>)]) -> String {
     let mut ser = url::form_urlencoded::Serializer::new(String::new());
     let mut any = false;
     for (k, v) in pairs {
@@ -519,7 +650,7 @@ fn query(pairs: &[(&str, Option<String>)]) -> String {
 }
 
 /// Builds a JSON object from optional fields, dropping `None` (like JSON.stringify drops undefined).
-fn body(pairs: Vec<(&str, Option<Value>)>) -> Value {
+pub(crate) fn body(pairs: Vec<(&str, Option<Value>)>) -> Value {
     let mut m = Map::new();
     for (k, v) in pairs {
         if let Some(v) = v {
@@ -533,7 +664,7 @@ fn body(pairs: Vec<(&str, Option<Value>)>) -> Value {
 
 /// True when `name` is one of our tools.
 pub fn is_known(name: &str) -> bool {
-    catalogue().iter().any(|t| t.name == name)
+    find(name).is_some()
 }
 
 /// Runs one tool. `Err` = the tool failed (rendered as `Error: ...` with isError).
@@ -544,6 +675,15 @@ pub async fn call(
     ct: &CancellationToken,
 ) -> ToolResult<Out> {
     let a = Args(args);
+    if needs_confirm(name) && a.bool_opt("confirm").ok().flatten() != Some(true) {
+        return Err(ToolError::new(format!(
+            "{} is destructive: call it again with `confirm: true` to proceed (nothing was sent)",
+            crate::output::truncate_str(name, 100)
+        )));
+    }
+    if crate::extra::handles(name) {
+        return crate::extra::call(api, name, &a, ct).await;
+    }
     let out = match name {
         "siloforge_list_sites" => Out::Json(api.get("/api/v1/sites").await?),
         "siloforge_dashboard" => site_get(api, &a, "/api/v1/dashboard/", "").await?,
@@ -740,7 +880,7 @@ pub async fn call(
     Ok(out)
 }
 
-async fn site_id(api: &Api, a: &Args<'_>) -> ToolResult<String> {
+pub(crate) async fn site_id(api: &Api, a: &Args<'_>) -> ToolResult<String> {
     let site = a.str_req("site")?;
     let id = api.resolve_site(&site).await?;
     check_id("site", &id)

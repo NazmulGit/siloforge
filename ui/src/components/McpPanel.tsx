@@ -11,7 +11,7 @@ function yamlStr(s: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(s) ? s : `'${s.replace(/'/g, "''")}'`;
 }
 
-function CopyBlock({ text, label }: { text: string; label: string }) {
+export function CopyBlock({ text, label }: { text: string; label: string }) {
   const toast = useToast();
   return (
     <div className="code-block">
@@ -33,7 +33,7 @@ function CopyBlock({ text, label }: { text: string; label: string }) {
 }
 
 /** Settings → Integrations: how to connect Hermes Agent / MCP clients to this server. */
-export function McpPanel() {
+export function McpPanel({ showTools = true }: { showTools?: boolean } = {}) {
   const [info, setInfo] = useState<McpInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -112,7 +112,7 @@ export function McpPanel() {
         <div className="card-title">Hermes Agent</div>
         <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
           Paste this into the profile&apos;s <code>config.yaml</code>, then replace the token with one from{' '}
-          <Link to="/settings?section=tokens">API tokens</Link> (scopes <code>read</code> + <code>write</code> are enough
+          <Link to="/settings?section=api">API tokens</Link> (scopes <code>read</code> + <code>write</code> are enough
           for linking work; <code>siloforge_list_notifications</code>, <code>siloforge_create_backup</code> and the full{' '}
           <code>siloforge_system_status</code> need an admin user&apos;s token with the <code>admin</code> scope). Restart
           the Hermes gateway afterwards.
@@ -120,7 +120,7 @@ export function McpPanel() {
         <CopyBlock text={hermesYaml} label="Hermes config" />
       </div>
 
-      {info.tools && info.tools.length > 0 && (
+      {showTools && info.tools && info.tools.length > 0 && (
         <div className="card">
           <div className="card-title">Tools ({info.tools.length})</div>
           <div className="tbl-wrap">

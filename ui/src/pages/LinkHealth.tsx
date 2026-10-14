@@ -5,6 +5,7 @@
 // read-only — the only write is enqueuing the crawl itself.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { HelpButton } from '../docs';
 import { ApiError, downloadLinkHealthCsv, fetchLinkHealth, runLinkHealth } from '../api';
 import { PostLink } from '../components/PostLink';
 import { EmptyState, Skeleton } from '../components/Skeleton';
@@ -472,12 +473,12 @@ export function LinkHealthPage() {
     void load();
   }, [load]);
 
-  async function runCheck() {
+  async function runCheck(internalOnly = false) {
     if (!siteId || busy) return;
     setBusy(true);
     try {
-      const { job_run_id } = await runLinkHealth(siteId);
-      track(siteId, job_run_id, 'Link health check', () => void load());
+      const { job_run_id } = await runLinkHealth(siteId, { internal_only: internalOnly });
+      track(siteId, job_run_id, internalOnly ? 'Internal link check' : 'Link health check', () => void load());
     } catch (e) {
       toast.push(e instanceof Error ? e.message : 'Link health check failed to start', 'error');
     } finally {
@@ -529,6 +530,15 @@ export function LinkHealthPage() {
           data-hint="Download every checked link — status, redirect chain, rel and placement — as a CSV file."
         >
           Export CSV
+        </button>
+        <HelpButton />
+        <button
+          className="btn"
+          disabled={busy}
+          onClick={() => void runCheck(true)}
+          data-hint="Checks only links that point at this site's own pages. Much faster than a full check; external links keep their last result."
+        >
+          Check internal links only
         </button>
         <button
           className="btn btn-primary"

@@ -6,6 +6,8 @@
 //! * [`RemoteEmbedder`]: OpenAI-compatible `/embeddings` (OpenRouter), retries with backoff.
 //! * `OnnxEmbedder` (feature `onnx`, default): ONNX Runtime loaded at runtime (`onnxruntime.dll`),
 //!   DirectML EP when asked and available, CPU EP otherwise.
+//! * `HybridEmbedder` (feature `onnx`, `embed.mode = "hybrid"`): DirectML and CPU sessions share
+//!   each batch through a work-stealing queue.
 //! * `CandleEmbedder` (feature `candle`): pure Rust, no DLL, slow.
 //! * [`EmbedChain`]: ordered rungs with a circuit breaker, a per-batch deadline and streaming batches.
 //! * [`runtime`]: opt-in downloads of the ONNX Runtime DLLs and the model files (SHA-256 verified).
@@ -30,14 +32,20 @@ mod tok;
 #[cfg(feature = "onnx")]
 pub mod onnx;
 
+#[cfg(feature = "onnx")]
+pub mod hybrid;
+
 #[cfg(feature = "candle")]
 pub mod candle;
 
+pub use batching::HybridSplit;
 pub use budget::CpuBudget;
 pub use chain::{BatchDone, ChainOptions, EmbedChain, RungStatus};
 pub use remote::RemoteEmbedder;
 pub use selftest::{SelfTest, reference_text, reference_vector, self_test};
 
+#[cfg(feature = "onnx")]
+pub use hybrid::HybridEmbedder;
 #[cfg(feature = "onnx")]
 pub use onnx::{OnnxEmbedder, OnnxOptions};
 

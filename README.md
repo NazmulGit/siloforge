@@ -225,7 +225,7 @@ migrated copy of the production data. The machine was busy with other work durin
 about ±30 %; the order of magnitude is solid, exact ratios are not. Sources:
 [docs/testing/performance.md](docs/testing/performance.md), [docs/testing/contract-diff.md](docs/testing/contract-diff.md).
 
-Plan pipeline, largest site (site26.example: 2,621 posts, 112,706 paragraphs):
+Plan pipeline, largest site (site24.example: 2,621 posts, 112,706 paragraphs):
 
 | Run | v1 | v2 |
 |---|---|---|
@@ -240,7 +240,7 @@ CPU with 6 threads 204 texts/s; cosine vs the stored v1 vectors 0.999999+ for pa
 REST API (203 requests over 66 endpoint templates and 4 sites): **0 real contract mismatches**. After the read-path
 pass (covering indexes, concurrent reads), every heavy read on the largest site is at or below v1 (curl p50, ms):
 
-| Endpoint (site26.example) | v1 | v2 |
+| Endpoint (site24.example) | v1 | v2 |
 |---|---|---|
 | `/reports/link-health?limit=250` | 43.0 | 27.2 |
 | `/reports/link-health?format=csv` (46k rows) | 1037.9 | 203.4 |

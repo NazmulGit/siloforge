@@ -24,13 +24,22 @@
 //! down a pool thread or the process.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Upper bound on pool threads, whatever the config says.
 pub const MAX_THREADS: usize = 256;
 
 static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+/// Live "compute threads in use" limit (v2.1). rayon pools cannot be resized, so a limit below
+/// the pool size routes new work to a smaller pool built on demand (0 = no limit). Raising the
+/// size above the boot pool needs a restart.
+static LIVE_LIMIT: AtomicUsize = AtomicUsize::new(0);
+/// Smaller pools built for live limits (few distinct sizes; oldest dropped beyond 3).
+static LIMITED: Mutex<Vec<(usize, Arc<rayon::ThreadPool>)>> = Mutex::new(Vec::new());
+const MAX_LIMITED_POOLS: usize = 3;
 
 type StartHandler = Box<dyn Fn(usize) + Send + Sync>;
 static START_HANDLER: OnceLock<StartHandler> = OnceLock::new();
@@ -132,11 +141,79 @@ pub fn threads() -> usize {
     pool().map_or(1, rayon::ThreadPool::current_num_threads)
 }
 
+/// Set the live limit on compute threads used by new work (0 = the whole pool). Values at or
+/// above the pool size mean "no limit". Returns the threads new work will use.
+pub fn set_live_limit(threads: usize) -> usize {
+    LIVE_LIMIT.store(threads.min(MAX_THREADS), Ordering::SeqCst);
+    threads_in_use()
+}
+
+/// Threads new compute work runs on right now (the live limit, capped by the pool size).
+pub fn threads_in_use() -> usize {
+    let base = threads();
+    match LIVE_LIMIT.load(Ordering::SeqCst) {
+        0 => base,
+        n => n.min(base).max(1),
+    }
+}
+
+enum PoolRef {
+    Base(&'static rayon::ThreadPool),
+    Limited(Arc<rayon::ThreadPool>),
+}
+
+impl PoolRef {
+    fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        match self {
+            Self::Base(p) => p.install(f),
+            Self::Limited(p) => p.install(f),
+        }
+    }
+    fn spawn(&self, f: impl FnOnce() + Send + 'static) {
+        match self {
+            Self::Base(p) => p.spawn(f),
+            Self::Limited(p) => p.spawn(f),
+        }
+    }
+}
+
+/// The pool new work should use (the base pool, or a smaller one under a live limit).
+fn active() -> Option<PoolRef> {
+    let base = pool()?;
+    let limit = LIVE_LIMIT.load(Ordering::SeqCst);
+    if limit == 0 || limit >= base.current_num_threads() {
+        return Some(PoolRef::Base(base));
+    }
+    let mut cache = match LIMITED.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if let Some((_, p)) = cache.iter().find(|(n, _)| *n == limit) {
+        return Some(PoolRef::Limited(p.clone()));
+    }
+    match build(limit) {
+        Ok(p) => {
+            let p = Arc::new(p);
+            if cache.len() >= MAX_LIMITED_POOLS {
+                // running work keeps its own Arc; the pool's threads end when it is idle
+                cache.remove(0);
+            }
+            cache.push((limit, p.clone()));
+            tracing::info!(threads = limit, "compute work limited live");
+            Some(PoolRef::Limited(p))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "limited compute pool failed; using the full pool");
+            Some(PoolRef::Base(base))
+        }
+    }
+}
+
 /// Run `f` inside the pool and block the caller until it returns. Rayon parallel iterators
 /// inside `f` use this pool. A panic in `f` propagates to the caller (same as calling `f`
 /// directly); use [`try_install`] to catch it. Do not call from a tokio worker thread.
 pub fn install<R: Send>(f: impl FnOnce() -> R + Send) -> R {
-    match pool() {
+    match active() {
         Some(p) => p.install(f),
         None => f(),
     }
@@ -171,7 +248,7 @@ pub fn spawn_with_callback<R: Send + 'static>(
             tracing::error!("compute completion callback panicked");
         }
     };
-    match pool() {
+    match active() {
         Some(p) => p.spawn(job),
         None => job(),
     }
@@ -205,6 +282,23 @@ mod tests {
             init(3),
             Err(ComputeError::AlreadyInitialized { .. })
         ));
+    }
+
+    #[test]
+    fn live_limit_routes_work_to_a_smaller_pool() {
+        let base = threads();
+        assert_eq!(set_live_limit(0), base);
+        if base >= 2 {
+            assert_eq!(set_live_limit(1), 1);
+            let n = install(rayon::current_num_threads);
+            assert_eq!(n, 1);
+            let rx = spawn_compute(rayon::current_num_threads);
+            assert_eq!(rx.recv().ok(), Some(Ok(1)));
+        }
+        // above the pool size = no limit
+        assert_eq!(set_live_limit(base + 10), base);
+        assert_eq!(install(rayon::current_num_threads), base);
+        set_live_limit(0);
     }
 
     #[test]

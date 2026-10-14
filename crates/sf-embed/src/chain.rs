@@ -1,11 +1,11 @@
 //! The embedding chain: ordered rungs, circuit breaker, per-batch deadline, streaming batches.
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use sf_core::config::EmbedCfg;
 use sf_core::{Error, Result};
@@ -103,9 +103,60 @@ struct Rung {
     st: Mutex<RungState>,
 }
 
+/// Everything the rungs are built from. A change in any of these rebuilds the rungs on
+/// [`EmbedChain::reconfigure`]; batch size and deadline are applied without a rebuild. Holds the
+/// remote keys, so it has no `Debug`.
+#[derive(Clone, PartialEq)]
+struct BuildKey {
+    chain: Vec<String>,
+    mode: String,
+    gpu: bool,
+    share_bits: u32,
+    remote_url: String,
+    remote_model: String,
+    remote_key: String,
+    remote_key2: String,
+    timeout_ms: u64,
+    retries: u32,
+    model_dir: String,
+    onnx_runtime_dir: String,
+    max_chars: usize,
+    home: PathBuf,
+    budget: CpuBudget,
+}
+
+impl BuildKey {
+    fn new(cfg: &EmbedCfg, home: &Path, budget: CpuBudget) -> Self {
+        Self {
+            chain: cfg.chain.clone(),
+            mode: normalize_mode(&cfg.mode).0,
+            gpu: cfg.gpu,
+            share_bits: cfg.hybrid_gpu_share.to_bits(),
+            remote_url: cfg.remote_url.clone(),
+            remote_model: cfg.remote_model.clone(),
+            remote_key: cfg.remote_key.clone(),
+            remote_key2: cfg.remote_key2.clone(),
+            timeout_ms: cfg.timeout_ms,
+            retries: cfg.retries,
+            model_dir: cfg.model_dir.clone(),
+            onnx_runtime_dir: cfg.onnx_runtime_dir.clone(),
+            max_chars: cfg.max_chars,
+            home: home.to_path_buf(),
+            budget,
+        }
+    }
+}
+
+/// The embedding chain. Shared as `Arc<EmbedChain>`; [`EmbedChain::reconfigure`] swaps the rungs
+/// and options at runtime. Every batch works on a snapshot, so a running batch is unaffected.
 pub struct EmbedChain {
-    rungs: Vec<Rung>,
-    opts: ChainOptions,
+    rungs: RwLock<Arc<Vec<Rung>>>,
+    opts: RwLock<ChainOptions>,
+    /// What the rungs were built from (None for [`EmbedChain::new`]).
+    key: Mutex<Option<BuildKey>>,
+    mode: RwLock<String>,
+    /// Rung id that served the last successful batch.
+    last: Mutex<Option<String>>,
 }
 
 fn kind_of(name: &str) -> EmbedderKind {
@@ -116,8 +167,146 @@ fn kind_of(name: &str) -> EmbedderKind {
     }
 }
 
+/// `embed.mode` lower-cased and checked. Unknown values become `auto` (second value false).
+fn normalize_mode(raw: &str) -> (String, bool) {
+    let m = raw.trim().to_ascii_lowercase();
+    match m.as_str() {
+        "" => ("auto".into(), true),
+        "auto" | "gpu" | "cpu" | "hybrid" | "remote" => (m, true),
+        _ => ("auto".into(), false),
+    }
+}
+
+/// How the onnx rung is built for a mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnnxPlan {
+    /// One session; DirectML first when `gpu`.
+    Single { gpu: bool },
+    /// DirectML and CPU sessions sharing each batch.
+    Hybrid,
+}
+
+fn onnx_plan(mode: &str, cfg_gpu: bool) -> OnnxPlan {
+    match mode {
+        "gpu" => OnnxPlan::Single { gpu: true },
+        "cpu" => OnnxPlan::Single { gpu: false },
+        "hybrid" => OnnxPlan::Hybrid,
+        // auto and remote keep the configured `embed.gpu`
+        _ => OnnxPlan::Single { gpu: cfg_gpu },
+    }
+}
+
+/// Rung names from `embed.chain` (aliases folded, duplicates dropped), reordered for `mode`.
+fn rung_names(chain: &[String], mode: &str) -> Vec<String> {
+    let raw: Vec<String> = if chain.is_empty() {
+        vec!["onnx".into(), "local".into()]
+    } else {
+        chain.to_vec()
+    };
+    let mut names: Vec<String> = Vec::new();
+    for r in raw {
+        let name = match r.trim().to_ascii_lowercase().as_str() {
+            "openrouter" | "openrouter1" | "remote" => "remote".to_string(),
+            "openrouter2" | "remote2" => "remote2".to_string(),
+            "candle" | "local" => "local".to_string(),
+            other => other.to_string(),
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    if mode == "remote" {
+        // stable partition: remote rungs first, the rest keep their order
+        let (mut front, rest): (Vec<String>, Vec<String>) = names
+            .into_iter()
+            .partition(|n| n == "remote" || n == "remote2");
+        front.extend(rest);
+        names = front;
+    }
+    names
+}
+
+fn resolve_threads(cpu_threads: usize) -> usize {
+    if cpu_threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| (n.get() / 2).max(1))
+            .unwrap_or(4)
+    } else {
+        cpu_threads
+    }
+}
+
+/// Build the rungs for `cfg` (never fails; broken rungs are kept as unavailable). Returns the
+/// rungs and the normalised mode.
+fn build_rungs(cfg: &EmbedCfg, home: &Path, budget: CpuBudget) -> (Vec<Rung>, String) {
+    let (mode, known) = normalize_mode(&cfg.mode);
+    if !known {
+        tracing::warn!(mode = %cfg.mode, "unknown embed.mode, using auto");
+    }
+    let timeout = Duration::from_millis(cfg.timeout_ms.max(1_000));
+    let mut rungs = Vec::new();
+    for name in rung_names(&cfg.chain, &mode) {
+        let built: std::result::Result<Arc<dyn Embedder>, String> = match name.as_str() {
+            "remote" | "remote2" => {
+                let (key, field) = if name == "remote" {
+                    (&cfg.remote_key, "remote_key")
+                } else {
+                    (&cfg.remote_key2, "remote_key2")
+                };
+                if key.trim().is_empty() {
+                    Err(format!("no API key (embed.{field})"))
+                } else {
+                    RemoteEmbedder::new(
+                        name.clone(),
+                        &cfg.remote_url,
+                        &cfg.remote_model,
+                        key.trim(),
+                        timeout,
+                        cfg.retries,
+                        cfg.max_chars,
+                    )
+                    .map(|e| Arc::new(e) as Arc<dyn Embedder>)
+                    .map_err(|e| e.to_string())
+                }
+            }
+            "onnx" => onnx_rung(cfg, home, budget, onnx_plan(&mode, cfg.gpu)),
+            "local" => candle_rung(cfg, home, budget),
+            other => Err(format!("unknown embed rung `{other}`")),
+        };
+        let (embedder, err) = match built {
+            Ok(e) => (Some(e), None),
+            Err(e) => (None, Some(e)),
+        };
+        rungs.push(Rung {
+            kind: kind_of(&name),
+            id: name,
+            embedder,
+            st: Mutex::new(RungState {
+                last_error: err,
+                ..RungState::default()
+            }),
+        });
+    }
+    (rungs, mode)
+}
+
 impl EmbedChain {
-    /// Chain from explicit backends (tests, custom setups).
+    fn from_parts(
+        rungs: Vec<Rung>,
+        opts: ChainOptions,
+        key: Option<BuildKey>,
+        mode: String,
+    ) -> Self {
+        Self {
+            rungs: RwLock::new(Arc::new(rungs)),
+            opts: RwLock::new(opts),
+            key: Mutex::new(key),
+            mode: RwLock::new(mode),
+            last: Mutex::new(None),
+        }
+    }
+
+    /// Chain from explicit backends (tests, custom setups). `mode()` reports `custom`.
     pub fn new(embedders: Vec<Arc<dyn Embedder>>, opts: ChainOptions) -> Self {
         let rungs = embedders
             .into_iter()
@@ -128,7 +317,7 @@ impl EmbedChain {
                 st: Mutex::new(RungState::default()),
             })
             .collect();
-        Self { rungs, opts }
+        Self::from_parts(rungs, opts, None, "custom".into())
     }
 
     /// Chain from config. Never fails: rungs that cannot run (no key, feature not compiled, unknown
@@ -140,102 +329,115 @@ impl EmbedChain {
 
     /// [`Self::from_config`] plus `resources.low_priority_jobs`: local rungs then run their
     /// inference threads below normal priority without busy-wait spinning (R11).
+    ///
+    /// `embed.mode`: `auto` (onnx follows `embed.gpu`), `gpu` (DirectML forced on), `cpu`
+    /// (DirectML off), `hybrid` (the onnx rung runs DirectML and CPU sessions together),
+    /// `remote` (remote rungs moved to the front). Unknown modes act as `auto`.
     pub fn from_config_budget(
         cfg: &EmbedCfg,
         home: &Path,
         cpu_threads: usize,
         low_priority: bool,
     ) -> Self {
-        let threads = if cpu_threads == 0 {
-            std::thread::available_parallelism()
-                .map(|n| (n.get() / 2).max(1))
-                .unwrap_or(4)
-        } else {
-            cpu_threads
-        };
-        let names: Vec<String> = if cfg.chain.is_empty() {
-            vec!["onnx".into(), "local".into()]
-        } else {
-            cfg.chain.clone()
-        };
-        let timeout = Duration::from_millis(cfg.timeout_ms.max(1_000));
-        let mut rungs = Vec::new();
-        for raw in names {
-            let name = match raw.trim().to_ascii_lowercase().as_str() {
-                "openrouter" | "openrouter1" | "remote" => "remote".to_string(),
-                "openrouter2" | "remote2" => "remote2".to_string(),
-                "candle" | "local" => "local".to_string(),
-                other => other.to_string(),
-            };
-            if rungs.iter().any(|r: &Rung| r.id == name) {
-                continue;
-            }
-            let built: std::result::Result<Arc<dyn Embedder>, String> = match name.as_str() {
-                "remote" | "remote2" => {
-                    let key = if name == "remote" {
-                        &cfg.remote_key
-                    } else {
-                        &cfg.remote_key2
-                    };
-                    if key.trim().is_empty() {
-                        Err(format!(
-                            "no API key (embed.{})",
-                            if name == "remote" {
-                                "remote_key"
-                            } else {
-                                "remote_key2"
-                            }
-                        ))
-                    } else {
-                        RemoteEmbedder::new(
-                            name.clone(),
-                            &cfg.remote_url,
-                            &cfg.remote_model,
-                            key.trim(),
-                            timeout,
-                            cfg.retries,
-                            cfg.max_chars,
-                        )
-                        .map(|e| Arc::new(e) as Arc<dyn Embedder>)
-                        .map_err(|e| e.to_string())
-                    }
-                }
-                "onnx" => onnx_rung(cfg, home, CpuBudget::new(threads, low_priority)),
-                "local" => candle_rung(cfg, home, CpuBudget::new(threads, low_priority)),
-                other => Err(format!("unknown embed rung `{other}`")),
-            };
-            let (embedder, err) = match built {
-                Ok(e) => (Some(e), None),
-                Err(e) => (None, Some(e)),
-            };
-            rungs.push(Rung {
-                kind: kind_of(&name),
-                id: name,
-                embedder,
-                st: Mutex::new(RungState {
-                    last_error: err,
-                    ..RungState::default()
-                }),
-            });
-        }
-        Self {
+        let budget = CpuBudget::new(resolve_threads(cpu_threads), low_priority);
+        let (rungs, mode) = build_rungs(cfg, home, budget);
+        Self::from_parts(
             rungs,
-            opts: ChainOptions::from_config(cfg),
-        }
+            ChainOptions::from_config(cfg),
+            Some(BuildKey::new(cfg, home, budget)),
+            mode,
+        )
     }
 
-    pub fn options(&self) -> &ChainOptions {
-        &self.opts
+    /// Apply new settings at runtime. Batch size and deadline always change; the rungs are
+    /// rebuilt only when something they are built from changed (chain, mode, gpu,
+    /// hybrid_gpu_share, remote url/model/keys/timeout/retries, model_dir, onnx_runtime_dir,
+    /// max_chars, home, budget). Batches already running finish on the old rungs. Rebuilt rungs
+    /// keep the ok/fail counters of the rung with the same id; their circuit breaker is reset.
+    /// `budget.threads` is used as given (resolve `cpu_threads = 0` before calling).
+    pub fn reconfigure(&self, cfg: &EmbedCfg, home: &Path, budget: CpuBudget) {
+        let fresh = ChainOptions::from_config(cfg);
+        {
+            let mut o = self.opts.write();
+            o.batch_size = fresh.batch_size;
+            o.deadline = fresh.deadline;
+        }
+        let key = BuildKey::new(cfg, home, budget);
+        let mut current = self.key.lock();
+        if current.as_ref() == Some(&key) {
+            return;
+        }
+        let (rungs, mode) = build_rungs(cfg, home, budget);
+        let old = self.rungs.read().clone();
+        for r in &rungs {
+            if let Some(prev) = old.iter().find(|o| o.id == r.id) {
+                let p = prev.st.lock();
+                let mut st = r.st.lock();
+                st.ok = p.ok;
+                st.fail = p.fail;
+                if r.embedder.is_some() {
+                    st.last_error.clone_from(&p.last_error);
+                }
+            }
+        }
+        let ids: Vec<&str> = rungs.iter().map(|r| r.id.as_str()).collect();
+        tracing::info!(mode = %mode, rungs = ?ids, threads = budget.threads, low_priority = budget.low_priority, "embed chain rebuilt");
+        *self.rungs.write() = Arc::new(rungs);
+        *self.mode.write() = mode;
+        *self.last.lock() = None;
+        *current = Some(key);
+    }
+
+    /// Current options (a copy; [`Self::reconfigure`] may change them).
+    pub fn options(&self) -> ChainOptions {
+        self.opts.read().clone()
+    }
+
+    /// Normalised `embed.mode` (`auto`, `gpu`, `cpu`, `hybrid`, `remote`; `custom` for
+    /// [`Self::new`]).
+    pub fn mode(&self) -> String {
+        self.mode.read().clone()
+    }
+
+    fn snapshot(&self) -> Arc<Vec<Rung>> {
+        self.rungs.read().clone()
+    }
+
+    /// Device of the rung that served the last batch; else of the first available rung (not
+    /// cooling down, if any); else `none`.
+    pub fn active_device(&self) -> String {
+        let rungs = self.snapshot();
+        let last = self.last.lock().clone();
+        if let Some(id) = last
+            && let Some(e) = rungs
+                .iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.embedder.as_ref())
+        {
+            return e.device();
+        }
+        let now = Instant::now();
+        let healthy = rungs.iter().find(|r| {
+            r.embedder.is_some()
+                && r.st
+                    .lock()
+                    .cooldown_until
+                    .is_none_or(|(until, _)| until <= now)
+        });
+        healthy
+            .or_else(|| rungs.iter().find(|r| r.embedder.is_some()))
+            .and_then(|r| r.embedder.as_ref())
+            .map_or_else(|| "none".to_string(), |e| e.device())
     }
 
     /// True when at least one rung is configured and compiled in.
     pub fn has_available(&self) -> bool {
-        self.rungs.iter().any(|r| r.embedder.is_some())
+        self.snapshot().iter().any(|r| r.embedder.is_some())
     }
 
     pub fn status(&self) -> Vec<RungStatus> {
         let now = Instant::now();
-        self.rungs
+        self.snapshot()
             .iter()
             .map(|r| {
                 let st = r.st.lock();
@@ -260,40 +462,25 @@ impl EmbedChain {
             .collect()
     }
 
+    fn batch_size(&self) -> usize {
+        self.opts.read().batch_size.max(1)
+    }
+
     /// Embed everything (internally in `batch_size` chunks). Vectors come back in input order.
     pub async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut out = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(self.opts.batch_size.max(1)) {
-            let (v, _) = self.embed_batch(chunk).await?;
-            out.extend(v);
-        }
-        Ok(out)
+        self.embed_cap(texts, crate::MAX_TOKENS).await
     }
 
     /// Embed in `batch_size` chunks and hand each finished chunk to `on_batch` before starting the
     /// next one, so a late failure never loses earlier work. Stops at the first error (from the
     /// chain or from the callback). Returns the number of texts embedded.
-    pub async fn embed_batched<F, Fut>(&self, texts: &[String], mut on_batch: F) -> Result<usize>
+    pub async fn embed_batched<F, Fut>(&self, texts: &[String], on_batch: F) -> Result<usize>
     where
         F: FnMut(BatchDone) -> Fut,
         Fut: Future<Output = Result<()>>,
     {
-        let total = texts.len();
-        let mut done = 0usize;
-        for chunk in texts.chunks(self.opts.batch_size.max(1)) {
-            let (vectors, rung) = self.embed_batch(chunk).await?;
-            let offset = done;
-            done += chunk.len();
-            on_batch(BatchDone {
-                offset,
-                vectors,
-                rung,
-                done,
-                total,
-            })
-            .await?;
-        }
-        Ok(done)
+        self.embed_batched_cap(texts, crate::MAX_TOKENS, on_batch)
+            .await
     }
 
     /// Embed the reference paragraph through the chain (first healthy rung) and compare it with the
@@ -302,7 +489,7 @@ impl EmbedChain {
         let t = Instant::now();
         let (v, rung) = self.embed_batch(&[reference_text().to_string()]).await?;
         let device = self
-            .rungs
+            .snapshot()
             .iter()
             .find(|r| r.id == rung)
             .and_then(|r| r.embedder.as_ref())
@@ -328,7 +515,7 @@ impl EmbedChain {
     {
         let total = texts.len();
         let mut done = 0usize;
-        for chunk in texts.chunks(self.opts.batch_size.max(1)) {
+        for chunk in texts.chunks(self.batch_size()) {
             let (vectors, rung) = self.embed_batch_cap(chunk, max_tokens).await?;
             let offset = done;
             done += chunk.len();
@@ -347,7 +534,7 @@ impl EmbedChain {
     /// [`EmbedChain::embed`] with a word-piece cap.
     pub async fn embed_cap(&self, texts: &[String], max_tokens: usize) -> Result<Vec<Vec<f32>>> {
         let mut out = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(self.opts.batch_size.max(1)) {
+        for chunk in texts.chunks(self.batch_size()) {
             let (v, _) = self.embed_batch_cap(chunk, max_tokens).await?;
             out.extend(v);
         }
@@ -368,10 +555,13 @@ impl EmbedChain {
         if texts.is_empty() {
             return Ok((Vec::new(), String::new()));
         }
+        // Snapshot: a reconfigure during this batch does not affect it.
+        let rungs = self.snapshot();
+        let opts = self.options();
         let start = Instant::now();
-        let deadline = start + self.opts.deadline;
+        let deadline = start + opts.deadline;
         let mut errors: Vec<String> = Vec::new();
-        for r in &self.rungs {
+        for r in rungs.iter() {
             let Some(e) = r.embedder.as_ref() else {
                 continue;
             };
@@ -399,26 +589,24 @@ impl EmbedChain {
             match tokio::time::timeout(remaining, call).await {
                 Ok(Ok(v)) => match check_output(texts.len(), v) {
                     Ok(v) => {
-                        self.record_ok(r);
+                        record_ok(r);
+                        *self.last.lock() = Some(r.id.clone());
                         return Ok((v, r.id.clone()));
                     }
                     Err(err) => {
                         let msg = format!("invalid output: {err}");
-                        self.record_fail(r, &msg);
+                        record_fail(&opts, r, &msg);
                         errors.push(format!("{}: {msg}", r.id));
                     }
                 },
                 Ok(Err(err)) => {
                     let msg = err.to_string();
-                    self.record_fail(r, &msg);
+                    record_fail(&opts, r, &msg);
                     errors.push(format!("{}: {msg}", r.id));
                 }
                 Err(_) => {
-                    let msg = format!(
-                        "timed out (batch deadline {}s)",
-                        self.opts.deadline.as_secs()
-                    );
-                    self.record_fail(r, &msg);
+                    let msg = format!("timed out (batch deadline {}s)", opts.deadline.as_secs());
+                    record_fail(&opts, r, &msg);
                     errors.push(format!("{}: {msg}", r.id));
                     break;
                 }
@@ -433,32 +621,28 @@ impl EmbedChain {
             errors.join("; ")
         )))
     }
+}
 
-    fn record_ok(&self, r: &Rung) {
-        let mut st = r.st.lock();
-        st.ok = st.ok.saturating_add(1);
-        st.consecutive = 0;
-        st.trips = 0;
-        st.cooldown_until = None;
-    }
+fn record_ok(r: &Rung) {
+    let mut st = r.st.lock();
+    st.ok = st.ok.saturating_add(1);
+    st.consecutive = 0;
+    st.trips = 0;
+    st.cooldown_until = None;
+}
 
-    fn record_fail(&self, r: &Rung, msg: &str) {
-        let mut st = r.st.lock();
-        st.fail = st.fail.saturating_add(1);
-        st.consecutive = st.consecutive.saturating_add(1);
-        st.last_error = Some(msg.chars().take(500).collect());
-        tracing::warn!(rung = %r.id, error = %msg, "embed rung failed");
-        if st.consecutive >= self.opts.fail_threshold.max(1) {
-            let factor = 1u32 << st.trips.min(16);
-            let cd = self
-                .opts
-                .cooldown
-                .saturating_mul(factor)
-                .min(self.opts.max_cooldown);
-            st.trips = st.trips.saturating_add(1);
-            st.cooldown_until = Some((Instant::now() + cd, SystemTime::now() + cd));
-            tracing::warn!(rung = %r.id, secs = cd.as_secs(), "embed rung in cooldown");
-        }
+fn record_fail(opts: &ChainOptions, r: &Rung, msg: &str) {
+    let mut st = r.st.lock();
+    st.fail = st.fail.saturating_add(1);
+    st.consecutive = st.consecutive.saturating_add(1);
+    st.last_error = Some(msg.chars().take(500).collect());
+    tracing::warn!(rung = %r.id, error = %msg, "embed rung failed");
+    if st.consecutive >= opts.fail_threshold.max(1) {
+        let factor = 1u32 << st.trips.min(16);
+        let cd = opts.cooldown.saturating_mul(factor).min(opts.max_cooldown);
+        st.trips = st.trips.saturating_add(1);
+        st.cooldown_until = Some((Instant::now() + cd, SystemTime::now() + cd));
+        tracing::warn!(rung = %r.id, secs = cd.as_secs(), "embed rung in cooldown");
     }
 }
 
@@ -467,10 +651,19 @@ fn onnx_rung(
     cfg: &EmbedCfg,
     home: &Path,
     budget: CpuBudget,
+    plan: OnnxPlan,
 ) -> std::result::Result<Arc<dyn Embedder>, String> {
-    Ok(Arc::new(crate::onnx::OnnxEmbedder::from_config_budget(
-        cfg, home, budget,
-    )))
+    let mut opts = crate::onnx::OnnxOptions::from_config_budget(cfg, home, budget);
+    Ok(match plan {
+        OnnxPlan::Single { gpu } => {
+            opts.gpu = gpu;
+            Arc::new(crate::onnx::OnnxEmbedder::new(opts))
+        }
+        OnnxPlan::Hybrid => Arc::new(crate::hybrid::HybridEmbedder::new(
+            opts,
+            cfg.hybrid_gpu_share,
+        )),
+    })
 }
 
 #[cfg(not(feature = "onnx"))]
@@ -478,6 +671,7 @@ fn onnx_rung(
     _cfg: &EmbedCfg,
     _home: &Path,
     _budget: CpuBudget,
+    _plan: OnnxPlan,
 ) -> std::result::Result<Arc<dyn Embedder>, String> {
     Err("built without the `onnx` feature".into())
 }
@@ -538,6 +732,9 @@ mod tests {
         }
         fn kind(&self) -> EmbedderKind {
             EmbedderKind::Remote
+        }
+        fn device(&self) -> String {
+            format!("dev-{}", self.id)
         }
         fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
             Box::pin(async move {
@@ -760,5 +957,166 @@ mod tests {
         let json = serde_json::to_string(&st).unwrap();
         assert!(!json.contains("\"k\""));
         assert!(ChainOptions::from_config(&cfg).deadline >= Duration::from_secs(30));
+    }
+
+    fn cfg_with(mode: &str, chain: &[&str]) -> EmbedCfg {
+        EmbedCfg {
+            chain: chain.iter().map(|s| (*s).to_string()).collect(),
+            remote_key: "k".into(),
+            remote_key2: "k2".into(),
+            mode: mode.into(),
+            ..EmbedCfg::default()
+        }
+    }
+
+    fn ids(chain: &EmbedChain) -> Vec<String> {
+        chain.status().into_iter().map(|s| s.id).collect()
+    }
+
+    #[test]
+    fn mode_remote_moves_remote_rungs_first() {
+        let home = Path::new("D:/tmp/sf-none");
+        let c = EmbedChain::from_config(
+            &cfg_with("remote", &["onnx", "remote2", "local", "openrouter"]),
+            home,
+            2,
+        );
+        assert_eq!(ids(&c), ["remote2", "remote", "onnx", "local"]);
+        assert_eq!(c.mode(), "remote");
+        for m in ["auto", "gpu", "cpu", "hybrid"] {
+            let c = EmbedChain::from_config(
+                &cfg_with(m, &["onnx", "remote2", "local", "openrouter"]),
+                home,
+                2,
+            );
+            assert_eq!(ids(&c), ["onnx", "remote2", "local", "remote"], "{m}");
+            assert_eq!(c.mode(), m);
+        }
+        // unknown mode -> auto; mixed case is accepted
+        let c = EmbedChain::from_config(&cfg_with("turbo", &["onnx"]), home, 2);
+        assert_eq!(c.mode(), "auto");
+        let c = EmbedChain::from_config(&cfg_with(" Hybrid ", &["onnx"]), home, 2);
+        assert_eq!(c.mode(), "hybrid");
+        assert_eq!(
+            EmbedChain::new(Vec::new(), ChainOptions::default()).mode(),
+            "custom"
+        );
+    }
+
+    #[test]
+    fn mode_picks_the_onnx_device_plan() {
+        assert_eq!(onnx_plan("auto", true), OnnxPlan::Single { gpu: true });
+        assert_eq!(onnx_plan("auto", false), OnnxPlan::Single { gpu: false });
+        assert_eq!(onnx_plan("remote", false), OnnxPlan::Single { gpu: false });
+        assert_eq!(onnx_plan("gpu", false), OnnxPlan::Single { gpu: true });
+        assert_eq!(onnx_plan("cpu", true), OnnxPlan::Single { gpu: false });
+        assert_eq!(onnx_plan("hybrid", false), OnnxPlan::Hybrid);
+        assert_eq!(normalize_mode(""), ("auto".to_string(), true));
+        assert_eq!(normalize_mode("GPU"), ("gpu".to_string(), true));
+        assert_eq!(normalize_mode("x"), ("auto".to_string(), false));
+    }
+
+    #[test]
+    fn reconfigure_updates_options_and_rebuilds_only_when_needed() {
+        let home = Path::new("D:/tmp/sf-none");
+        let budget = CpuBudget::new(2, false);
+        let mut cfg = cfg_with("auto", &["onnx", "remote"]);
+        let c = EmbedChain::from_config_budget(&cfg, home, 2, false);
+        assert_eq!(c.options().batch_size, 64);
+        let before = c.snapshot();
+
+        // batch size only: no rebuild
+        cfg.batch_size = 16;
+        c.reconfigure(&cfg, home, budget);
+        assert_eq!(c.options().batch_size, 16);
+        assert!(Arc::ptr_eq(&before, &c.snapshot()));
+
+        // mode change: rebuilt, new order
+        cfg.mode = "remote".into();
+        c.reconfigure(&cfg, home, budget);
+        assert!(!Arc::ptr_eq(&before, &c.snapshot()));
+        assert_eq!(ids(&c), ["remote", "onnx"]);
+        assert_eq!(c.mode(), "remote");
+        let after_mode = c.snapshot();
+
+        // same settings again: nothing rebuilt
+        c.reconfigure(&cfg, home, budget);
+        assert!(Arc::ptr_eq(&after_mode, &c.snapshot()));
+
+        // budget, share and key changes rebuild too
+        c.reconfigure(&cfg, home, CpuBudget::new(3, true));
+        let s1 = c.snapshot();
+        assert!(!Arc::ptr_eq(&after_mode, &s1));
+        cfg.hybrid_gpu_share = 0.6;
+        c.reconfigure(&cfg, home, CpuBudget::new(3, true));
+        let s2 = c.snapshot();
+        assert!(!Arc::ptr_eq(&s1, &s2));
+        cfg.remote_key = String::new();
+        c.reconfigure(&cfg, home, CpuBudget::new(3, true));
+        let st = c.status();
+        assert!(!st[0].available);
+        assert!(st[0].last_error.as_deref().unwrap_or("").contains("key"));
+    }
+
+    #[tokio::test]
+    async fn reconfigure_keeps_counters_and_resets_breaker() {
+        let a = Arc::new(Fake {
+            always_fail: true,
+            ..Fake::new("bogus", 1)
+        });
+        let chain = EmbedChain::new(vec![a], opts());
+        for _ in 0..3 {
+            let _ = chain.embed_batch(&texts(1)).await;
+        }
+        assert_eq!(chain.status()[0].fail_count, 2);
+        // rebuild from config: rung `bogus` keeps its counters but is now unavailable
+        let cfg = cfg_with("auto", &["bogus"]);
+        chain.reconfigure(&cfg, Path::new("D:/tmp/sf-none"), CpuBudget::new(1, false));
+        let st = chain.status();
+        assert_eq!(st[0].fail_count, 2);
+        assert_eq!(st[0].consecutive_failures, 0);
+        assert!(st[0].cooldown_until.is_none());
+        assert!(!st[0].available);
+        assert_eq!(chain.active_device(), "none");
+    }
+
+    #[tokio::test]
+    async fn running_batch_is_unaffected_by_reconfigure() {
+        let slow = Arc::new(Fake {
+            sleep: Duration::from_millis(300),
+            ..Fake::new("slow", 1)
+        });
+        let chain = Arc::new(EmbedChain::new(vec![slow], opts()));
+        let c2 = chain.clone();
+        let running = tokio::spawn(async move { c2.embed_batch(&texts(3)).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let cfg = EmbedCfg {
+            batch_size: 7,
+            ..cfg_with("cpu", &["bogus"])
+        };
+        chain.reconfigure(&cfg, Path::new("D:/tmp/sf-none"), CpuBudget::new(1, false));
+        let (v, rung) = running.await.unwrap().unwrap();
+        assert_eq!((v.len(), rung.as_str()), (3, "slow"));
+        // new batches see the new rungs and options
+        assert!(chain.embed_batch(&texts(1)).await.is_err());
+        assert_eq!(chain.options().batch_size, 7);
+        assert_eq!(chain.mode(), "cpu");
+    }
+
+    #[tokio::test]
+    async fn active_device_follows_the_serving_rung() {
+        let a = Arc::new(Fake {
+            always_fail: true,
+            ..Fake::new("a", 1)
+        });
+        let b = Arc::new(Fake::new("b", 2));
+        let chain = EmbedChain::new(vec![a, b], opts());
+        // nothing served yet: first available rung
+        assert_eq!(chain.active_device(), "dev-a");
+        chain.embed_batch(&texts(1)).await.unwrap();
+        assert_eq!(chain.active_device(), "dev-b");
+        assert_eq!(chain.last.lock().as_deref(), Some("b"));
+        let empty = EmbedChain::new(Vec::new(), opts());
+        assert_eq!(empty.active_device(), "none");
     }
 }

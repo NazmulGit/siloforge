@@ -1,8 +1,9 @@
-import { lazy, Suspense } from 'react';
-import { BrowserRouter, Navigate, Outlet, Route, Routes, useMatch } from 'react-router-dom';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { getToken } from './api';
 import { ToastProvider } from './toast';
 import { SitesProvider } from './sites';
+import { DocsProvider } from './docs';
 import { UserProvider } from './user';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
@@ -22,10 +23,13 @@ const IntegrationsPage = lazy(() => import('./pages/Integrations').then((m) => (
 const JobsPage = lazy(() => import('./pages/Jobs').then((m) => ({ default: m.JobsPage })));
 const SystemPage = lazy(() => import('./pages/System').then((m) => ({ default: m.SystemPage })));
 const AllJobsPage = lazy(() => import('./pages/AllJobs').then((m) => ({ default: m.AllJobsPage })));
+const DownloadsPage = lazy(() => import('./pages/Downloads').then((m) => ({ default: m.DownloadsPage })));
+const DocsPage = lazy(() => import('./pages/Docs').then((m) => ({ default: m.DocsPage })));
+const LogsPage = lazy(() => import('./pages/Logs').then((m) => ({ default: m.LogsPage })));
 const SettingsPage = lazy(() => import('./pages/Settings').then((m) => ({ default: m.SettingsPage })));
 
 function RouteFallback() {
-  return <div className="card">Loading section...</div>;
+  return <div className="route-loading" role="status">Loading…</div>;
 }
 
 function RequireAuth() {
@@ -34,19 +38,26 @@ function RequireAuth() {
 }
 
 function Layout() {
-  const match = useMatch('/site/:siteId/*');
-  const siteId = match?.params.siteId;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+  // Close the small-screen menu after every navigation.
+  useEffect(() => setMenuOpen(false), [location.pathname, location.search]);
   return (
     <SitesProvider>
-      <div className="layout">
-        <Sidebar siteId={siteId} />
-        <div className="main">
-          <Topbar siteId={siteId} />
-          <div className="content">
-            <Outlet />
+      <DocsProvider>
+        <div className="layout">
+          <Sidebar open={menuOpen} onNavigate={() => setMenuOpen(false)} />
+          {menuOpen && <div className="sidebar-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+          <div className="main">
+            <Topbar onMenu={() => setMenuOpen((v) => !v)} />
+            <main className="content">
+              <Suspense fallback={<RouteFallback />}>
+                <Outlet />
+              </Suspense>
+            </main>
           </div>
         </div>
-      </div>
+      </DocsProvider>
     </SitesProvider>
   );
 }
@@ -67,6 +78,10 @@ export default function App() {
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/system" element={<SystemPage />} />
                   <Route path="/jobs" element={<AllJobsPage />} />
+                  <Route path="/logs" element={<LogsPage />} />
+                  <Route path="/downloads" element={<DownloadsPage />} />
+                  <Route path="/docs" element={<DocsPage />} />
+                  <Route path="/docs/:slug" element={<DocsPage />} />
                   <Route path="/site/:siteId/dashboard" element={<DashboardPage />} />
                   <Route path="/site/:siteId/tools" element={<ToolsPage />} />
                   <Route path="/site/:siteId/reports" element={<ReportsPage />} />

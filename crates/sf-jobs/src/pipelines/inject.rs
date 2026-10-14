@@ -1488,7 +1488,7 @@ pub async fn reconcile_for_job(ctx: &JobContext, job: &Job, site: &SiteInfo) -> 
     if pending == 0 || !site.has_wp_credentials() {
         return Ok(Value::Null);
     }
-    let writer = WpWriter::new(site.http_client(ctx)?, site.wp_site(true)?)?;
+    let writer = WpWriter::new(site.wp_http_client(ctx)?, site.wp_site(true)?)?;
     let rep = reconcile_site(ctx, Some(job), &site.id, &writer).await?;
     job.info(format!(
         "reconciled {} unfinished WordPress write(s): {} landed, {} did not, {} unreadable",

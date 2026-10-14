@@ -211,6 +211,8 @@ struct Inner {
     http: reqwest::Client,
     rate: Mutex<HashMap<String, (Instant, u32)>>,
     suppressed: AtomicU64,
+    /// Unified event log (§9): one `notify` row per delivered notification.
+    events: Mutex<crate::eventlog::EventLog>,
 }
 
 impl Notifier {
@@ -231,6 +233,7 @@ impl Notifier {
             http,
             rate: Mutex::new(HashMap::new()),
             suppressed: AtomicU64::new(0),
+            events: Mutex::new(crate::eventlog::EventLog::disabled()),
         });
         let worker = inner.clone();
         // R8: supervised; the receiver is shared so a restarted loop keeps draining the queue.
@@ -275,6 +278,11 @@ impl Notifier {
         }
     }
 
+    /// Records every delivered notification in the unified event log from now on.
+    pub fn set_events(&self, log: crate::eventlog::EventLog) {
+        *self.inner.events.lock() = log;
+    }
+
     /// Notifications dropped by the rate limiter or a full queue since start.
     pub fn suppressed(&self) -> u64 {
         self.inner.suppressed.load(Ordering::Relaxed)
@@ -295,6 +303,7 @@ impl Notifier {
         self.inner
             .save_deliveries(id, std::slice::from_ref(&d))
             .await?;
+        self.inner.log_sent(&n, std::slice::from_ref(&d));
         Ok(d)
     }
 
@@ -322,6 +331,33 @@ impl Inner {
         }
         e.1 += 1;
         true
+    }
+
+    /// One `notify` event per sent notification (never the body; channel ids/kinds only).
+    fn log_sent(&self, n: &Notification, ds: &[Delivery]) {
+        let log = self.events.lock().clone();
+        if !log.is_enabled() {
+            return;
+        }
+        let failed: Vec<&str> = ds
+            .iter()
+            .filter(|d| !d.ok)
+            .map(|d| d.kind.as_str())
+            .collect();
+        let kinds: Vec<&str> = ds.iter().map(|d| d.kind.as_str()).collect();
+        log.record(
+            crate::eventlog::Event::new(
+                crate::eventlog::source::NOTIFY,
+                "system",
+                &format!("notify {}", n.event),
+            )
+            .ok(failed.is_empty())
+            .site(n.site_id.as_deref())
+            .target(n.job_run_id.as_deref())
+            .detail(json!({
+                "level": n.level, "title": n.title, "channels": kinds, "failed": failed,
+            })),
+        );
     }
 
     async fn store(&self, n: &Notification) -> Result<i64> {
@@ -392,6 +428,7 @@ impl Inner {
                 results.push(d);
             }
         }
+        self.log_sent(&n, &results);
         self.save_deliveries(id, &results).await
     }
 
@@ -665,6 +702,9 @@ $x.Item(1).AppendChild($t.CreateTextNode($env:SF_TOAST_BODY)) | Out-Null;\
 $n=[Windows.UI.Notifications.ToastNotification]::new($t);\
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($n)";
     let res = std::process::Command::new(powershell_exe())
+        // On this PC PowerShell hangs at startup when either variable is set (see skill powershell-startup-hang).
+        .env_remove("ALLUSERSPROFILE")
+        .env_remove("SYSTEMDRIVE")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1105,6 +1145,8 @@ mod tests {
         .unwrap();
         assert_eq!(ch.public_json()["config"]["headers"], "***");
         let n = Notifier::start(db.clone(), key.clone(), fast());
+        let evlog = crate::eventlog::EventLog::start(db.clone(), Default::default());
+        n.set_events(evlog.clone());
         assert!(
             n.notify(Notification::new(events::JOB_FAILED, "Crawl failed", "boom").job(Some("j1")))
         );
@@ -1147,11 +1189,37 @@ mod tests {
         .unwrap();
         let d = n.test_channel(&h.id).await.unwrap();
         assert!(d.ok, "{d:?}");
-        let bodies = stub2.bodies.lock();
-        let (hd, body) = bodies.last().unwrap();
-        let ts = hd.get("x-webhook-timestamp").unwrap().to_str().unwrap();
-        let sig = hd.get("x-webhook-signature-v2").unwrap().to_str().unwrap();
-        assert_eq!(sig, hermes_signature("s3cr3t", ts, body));
+        {
+            let bodies = stub2.bodies.lock();
+            let (hd, body) = bodies.last().unwrap();
+            let ts = hd.get("x-webhook-timestamp").unwrap().to_str().unwrap();
+            let sig = hd.get("x-webhook-signature-v2").unwrap().to_str().unwrap();
+            assert_eq!(sig, hermes_signature("s3cr3t", ts, body));
+        }
+        // §9: sent notifications are in the unified log (no body, no secrets)
+        evlog.flush().await;
+        let rows: Vec<(String, String, String, Option<String>)> = db
+            .read(|c| {
+                let mut st = c
+                    .prepare("SELECT source, action, status, detail FROM event_log ORDER BY id")
+                    .map_err(err)?;
+                let v = st
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                    .map_err(err)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(err)?;
+                Ok(v)
+            })
+            .await
+            .unwrap();
+        let actions: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+        assert!(actions.contains(&"notify job.failed"), "{rows:?}");
+        assert!(actions.contains(&"notify test"), "{rows:?}");
+        assert!(rows.iter().all(|r| r.0 == "notify" && r.2 == "ok"));
+        assert!(
+            rows.iter()
+                .all(|r| !r.3.as_deref().unwrap_or("").contains("s3cr3t"))
+        );
         db.close();
         let _ = std::fs::remove_dir_all(dir);
     }

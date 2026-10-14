@@ -59,7 +59,7 @@ sf-ops: monitor (sysinfo) · notifier (webhook/ntfy/telegram/hermes/desktop) · 
 | 5 Backup/migration | sf-ops backup (zip: db snapshot + config + secrets, optional passphrase), restore, `migrate from-postgres`, portable home |
 | 6 Monitoring | sf-ops monitor, job_logs, errors table, notifications, `/api/v2/system/*`, UI System page |
 | 7 Database | SQLite schema (sf-store), indexes per access path, batched writes, ANALYZE/optimize job, retention |
-| 8 Testing | unit + golden + hostile input, integration test against a stub WP, load test on the site26 copy (112k paragraphs), MCP smoke, Hermes run |
+| 8 Testing | unit + golden + hostile input, integration test against a stub WP, load test on the site24 copy (112k paragraphs), MCP smoke, Hermes run |
 
 ## 5. Work packets
 Phase 1 (lead, done): workspace, sf-core, sf-store schema, AGENTS.md, PLAN, ADR.

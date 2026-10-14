@@ -12,6 +12,18 @@ import type {
   BackupKind,
   BackupRow,
   BackupVerifyResult,
+  DocMeta,
+  LogRow,
+  LogsPage,
+  LogsQuery,
+  LogStats,
+  DocPage,
+  DownloadItem,
+  DownloadsList,
+  McpPolicy,
+  McpToolStat,
+  ServerSettings,
+  SettingsPatch,
   ChannelInput,
   ChannelTestResult,
   ErrorRow,
@@ -225,6 +237,13 @@ export function createToken(body: { name: string; scopes: TokenScope[]; expires_
   return v2<ApiTokenCreated>('/tokens', { method: 'POST', body });
 }
 
+export function patchToken(
+  id: string,
+  body: { name?: string; scopes?: TokenScope[]; expires_in_days?: number | null },
+): Promise<ApiTokenRow> {
+  return v2<ApiTokenRow>(`/tokens/${encodeURIComponent(id)}`, { method: 'PATCH', body }, { item: true });
+}
+
 export function revokeToken(id: string): Promise<unknown> {
   return v2<unknown>(`/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }, { item: true });
 }
@@ -239,4 +258,131 @@ export function fetchMcpInfo(): Promise<McpInfo> {
 
 export async function fetchAudit(limit = 100): Promise<AuditRow[]> {
   return listOf<AuditRow>(await v2<unknown>(`/audit${qs({ limit })}`), 'entries', 'audit');
+}
+
+// ---- v2.1: server settings ----
+
+export function fetchServerSettings(): Promise<ServerSettings> {
+  return v2<ServerSettings>('/settings');
+}
+
+export function putServerSettings(patch: SettingsPatch): Promise<ServerSettings> {
+  return v2<ServerSettings>('/settings', { method: 'PUT', body: patch });
+}
+
+export function restartServer(): Promise<unknown> {
+  return v2<unknown>('/system/restart', { method: 'POST', body: {} });
+}
+
+/** GET /health (outside /api). Resolves true when the server answers 2xx. */
+export async function pingHealth(): Promise<boolean> {
+  try {
+    const res = await fetch('/health', { cache: 'no-store' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ---- v2.1: MCP management ----
+
+export function fetchMcpPolicy(): Promise<McpPolicy> {
+  return v2<McpPolicy>('/mcp/policy');
+}
+
+export function putMcpPolicy(policy: McpPolicy): Promise<McpPolicy> {
+  return v2<McpPolicy>('/mcp/policy', { method: 'PUT', body: policy });
+}
+
+export async function fetchMcpStats(): Promise<McpToolStat[]> {
+  return listOf<McpToolStat>(await v2<unknown>('/mcp/stats'), 'tools', 'stats');
+}
+
+// ---- v2.1: docs ----
+
+export async function fetchDocs(): Promise<DocMeta[]> {
+  return listOf<DocMeta>(await v2<unknown>('/docs'), 'docs');
+}
+
+export function fetchDoc(slug: string): Promise<DocPage> {
+  return v2<DocPage>(`/docs/${encodeURIComponent(slug)}`, {}, { item: true });
+}
+
+// ---- v2.1: downloads ----
+
+export async function fetchDownloads(): Promise<DownloadsList> {
+  const res = await v2<unknown>('/downloads');
+  const downloads = listOf<DownloadItem>(res, 'downloads');
+  const current =
+    res && typeof res === 'object' && !Array.isArray(res) ? (res as { current_version?: unknown }).current_version : undefined;
+  return { downloads, current_version: typeof current === 'string' ? current : undefined };
+}
+
+/** Download a release file with the auth header (fetch + blob). */
+export async function downloadRelease(file: string): Promise<void> {
+  const token = getToken();
+  let res: Response;
+  try {
+    res = await fetch(`${V2}/downloads/${encodeURIComponent(file)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch {
+    throw new ApiError(0, 'Network error — is the API reachable?');
+  }
+  if (res.status === 401) handleUnauthorized();
+  if (res.status === 503) throw new FeatureUnavailableError(503);
+  if (!res.ok) throw new ApiError(res.status, `Download failed (${res.status})`);
+  saveBlob(await res.blob(), file);
+}
+
+// ---- v2.1: unified logs ----
+
+export async function fetchLogs(query: LogsQuery): Promise<LogsPage> {
+  const res = await v2<unknown>(`/logs${qs({ ...query })}`);
+  const logs = listOf<LogRow>(res, 'logs');
+  const nb = res && typeof res === 'object' && !Array.isArray(res) ? (res as { next_before_id?: unknown }).next_before_id : null;
+  return { logs, next_before_id: typeof nb === 'number' ? nb : null };
+}
+
+function countMap(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (Array.isArray(v)) {
+    for (const r of v) {
+      if (r && typeof r === 'object') {
+        const o = r as Record<string, unknown>;
+        const k = o.key ?? o.name ?? o.source ?? o.status;
+        const n = o.count ?? o.n;
+        if (typeof k === 'string' && typeof n === 'number') out[k] = n;
+      }
+    }
+  } else if (v && typeof v === 'object') {
+    for (const [k, n] of Object.entries(v as Record<string, unknown>)) if (typeof n === 'number') out[k] = n;
+  }
+  return out;
+}
+
+export async function fetchLogStats(since?: string): Promise<LogStats> {
+  const res = (await v2<unknown>(`/logs/stats${qs({ since })}`)) as Record<string, unknown> | null;
+  const o = res ?? {};
+  return {
+    total: typeof o.total === 'number' ? o.total : undefined,
+    by_source: countMap(o.by_source ?? o.sources),
+    by_status: countMap(o.by_status ?? o.statuses),
+  };
+}
+
+export async function downloadLogsCsv(query: LogsQuery): Promise<void> {
+  const token = getToken();
+  let res: Response;
+  try {
+    res = await fetch(`${V2}/logs/export${qs({ ...query, limit: undefined, before_id: undefined, after_id: undefined })}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch {
+    throw new ApiError(0, 'Network error — is the API reachable?');
+  }
+  if (res.status === 401) handleUnauthorized();
+  if (res.status === 404 || res.status === 503) throw new FeatureUnavailableError(res.status);
+  if (!res.ok) throw new ApiError(res.status, `Export failed (${res.status})`);
+  saveBlob(await res.blob(), `siloforge-logs-${new Date().toISOString().slice(0, 10)}.csv`);
 }

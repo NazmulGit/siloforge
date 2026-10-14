@@ -159,7 +159,7 @@ async fn crawl_sitemap(
     pct: (f64, f64),
 ) -> JobResult<CrawlTotals> {
     let opts = SitemapOptions {
-        max_urls: ctx.cfg.crawl.max_pages.clamp(1, 200_000),
+        max_urls: ctx.live.get().crawl.max_pages.clamp(1, 200_000),
         ..SitemapOptions::default()
     };
     let crawler = SitemapCrawler::new(client, &site.base_url(), opts)?;

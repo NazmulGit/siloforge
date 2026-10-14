@@ -22,11 +22,11 @@ use crate::tok::Tok;
 use crate::{EmbedFuture, Embedder, EmbedderKind, check_output, paths};
 
 /// Sub-batch size on the CPU EP (sorted small batches minimise padding work).
-const CPU_BATCH: usize = 8;
+pub(crate) const CPU_BATCH: usize = 8;
 /// Sub-batch size on DirectML.
-const GPU_BATCH: usize = 64;
+pub(crate) const GPU_BATCH: usize = 64;
 /// Pad sequence length to a multiple of this on DirectML (fewer distinct shapes to compile).
-const GPU_PAD_TO: usize = 32;
+pub(crate) const GPU_PAD_TO: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct OnnxOptions {
@@ -190,7 +190,8 @@ fn base_builder(threads: usize, gpu: bool, low_priority: bool) -> Result<Session
         .map_err(ort_err("directml"))
 }
 
-fn open(opts: &OnnxOptions) -> Result<State> {
+/// Load `onnxruntime.dll` (once per process) and the tokenizer; returns the model path.
+pub(crate) fn prepare(opts: &OnnxOptions) -> Result<(PathBuf, Tok)> {
     let dylib = paths::find_dylib(opts.dylib.as_deref(), &opts.runtime_dir, &opts.home)
         .map_err(Error::internal)?;
     let model = paths::onnx_model(&opts.model_dir).ok_or_else(|| {
@@ -206,35 +207,49 @@ fn open(opts: &OnnxOptions) -> Result<State> {
         .map_err(|e| Error::internal(format!("load {}: {e}", dylib.display())))?
         .with_name("siloforge")
         .commit();
+    Ok((model, tok))
+}
 
-    let mut attempt = if opts.gpu {
-        base_builder(opts.threads, true, opts.low_priority)
-            .and_then(|mut b| {
-                b.commit_from_file(&model)
-                    .map_err(|e| Error::internal(format!("onnx directml session: {e}")))
-            })
-            .map(|s| (s, Device::DirectMl))
+/// One session: DirectML (`gpu`, fails instead of silently falling back) or the CPU EP.
+pub(crate) fn session(
+    model: &Path,
+    threads: usize,
+    gpu: bool,
+    low_priority: bool,
+) -> Result<Session> {
+    let mut b = base_builder(threads, gpu, low_priority)?;
+    b.commit_from_file(model).map_err(|e| {
+        let what = if gpu { "directml session" } else { "session" };
+        Error::internal(format!("onnx {what} {}: {e}", model.display()))
+    })
+}
+
+/// Does the model take `token_type_ids`?
+pub(crate) fn has_token_type(s: &Session) -> bool {
+    s.inputs().iter().any(|i| i.name() == "token_type_ids")
+}
+
+fn open(opts: &OnnxOptions) -> Result<State> {
+    let (model, tok) = prepare(opts)?;
+    let attempt = if opts.gpu {
+        session(&model, opts.threads, true, opts.low_priority)
             .map_err(|e| {
                 tracing::warn!(error = %e, "DirectML unavailable, using the CPU execution provider");
                 e
             })
             .ok()
+            .map(|s| (s, Device::DirectMl))
     } else {
         None
     };
-    if attempt.is_none() {
-        let mut b = base_builder(opts.threads, false, opts.low_priority)?;
-        let s = b
-            .commit_from_file(&model)
-            .map_err(|e| Error::internal(format!("onnx session {}: {e}", model.display())))?;
-        attempt = Some((s, Device::Cpu));
-    }
-    let (session, device) =
-        attempt.ok_or_else(|| Error::internal("onnx session could not be created"))?;
-    let has_token_type = session
-        .inputs()
-        .iter()
-        .any(|i| i.name() == "token_type_ids");
+    let (session, device) = match attempt {
+        Some(x) => x,
+        None => (
+            session(&model, opts.threads, false, opts.low_priority)?,
+            Device::Cpu,
+        ),
+    };
+    let has_token_type = has_token_type(&session);
     Ok(State {
         session,
         tok,
@@ -243,7 +258,7 @@ fn open(opts: &OnnxOptions) -> Result<State> {
     })
 }
 
-fn hidden(
+pub(crate) fn hidden(
     s: &mut Session,
     has_tt: bool,
     ids: &[i64],

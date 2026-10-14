@@ -11,3 +11,4 @@ ui/node_modules
 ui/dist
 *.bak
 *.log
+wordpress/siloforge-connect/releases/

@@ -16,7 +16,7 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
         .unwrap_or_default();
     let opts = BackupOptions {
         kind,
-        passphrase: configured_passphrase(&ctx.cfg),
+        passphrase: configured_passphrase(&ctx.live.get()),
         note: job
             .payload_str("note", "note")
             .unwrap_or_else(|| "job".into()),
@@ -24,8 +24,8 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
         include_secrets: false,
     };
     job.progress("backup", 10.0).await;
-    let info = create(&ctx.cfg, &ctx.db, opts).await?;
-    let pruned = prune(&ctx.cfg, &ctx.db).await.unwrap_or(0);
+    let info = create(&ctx.live.get(), &ctx.db, opts).await?;
+    let pruned = prune(&ctx.live.get(), &ctx.db).await.unwrap_or(0);
     job.info(format!(
         "backup {} written ({} bytes)",
         info.path.display(),

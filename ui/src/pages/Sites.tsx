@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createSite, triggerCrawl, triggerPlan } from '../api';
 import { Modal } from '../components/Modal';
+import { WpCredentialsForm } from '../components/WpCredentialsForm';
 import { EmptyState, Skeleton } from '../components/Skeleton';
 import { fmtDate } from '../format';
 import { useJobTracker } from '../hooks';
@@ -46,6 +47,7 @@ export function SitesPage() {
   const [createdSite, setCreatedSite] = useState<Site | null>(null);
   const [copied, setCopied] = useState(false);
   const [busyRow, setBusyRow] = useState<string | null>(null);
+  const [connSite, setConnSite] = useState<SiteListItem | null>(null);
 
   async function submitAdd(e: FormEvent) {
     e.preventDefault();
@@ -186,6 +188,13 @@ export function SitesPage() {
                       >
                         Dashboard
                       </button>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => setConnSite(s)}
+                        data-hint="WordPress username and application password used to place links, plus the verify-after-inject switch."
+                      >
+                        {s.has_wp_credentials === false ? 'Connect WP' : 'Connection'}
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -193,6 +202,18 @@ export function SitesPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {connSite && (
+        <Modal
+          title={`WordPress connection: ${connSite.domain}`}
+          onClose={() => {
+            setConnSite(null);
+            void reload();
+          }}
+        >
+          <WpCredentialsForm siteId={connSite.id} compact />
+        </Modal>
       )}
 
       {showAdd && (

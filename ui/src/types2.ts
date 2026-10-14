@@ -226,6 +226,9 @@ export interface ApiTokenRow {
   last_used_at: string | null;
   expires_at: string | null;
   revoked_at: string | null;
+  /** v2.1: token this one was derived from (scopes can never exceed the parent's). */
+  parent_id?: string | null;
+  tool_policy?: { allow?: string[] | null } | null;
 }
 
 /** POST /api/v2/tokens response: the row plus the plaintext token, shown once. */
@@ -250,7 +253,9 @@ export interface McpInfo {
   http_url: string;
   /** Base URL clients should use for SILOFORGE_API_URL. */
   api_url?: string;
-  tools?: McpTool[];
+  /** v2.1: streamable HTTP transport switched on. */
+  http_enabled?: boolean;
+  tools?: McpToolInfo[];
 }
 
 // ---- audit ----
@@ -263,4 +268,185 @@ export interface AuditRow {
   action: string;
   target: string | null;
   detail: Record<string, unknown> | string | null;
+}
+
+// ---- v2.1: server settings (GET/PUT /api/v2/settings) ----
+
+export type EmbedMode = 'auto' | 'gpu' | 'cpu' | 'hybrid' | 'remote';
+
+export interface ResourcesSettings {
+  cpu_threads: number;
+  cpu_threads_effective?: number;
+  logical_cpus?: number;
+  max_concurrent_jobs: number;
+  vector_cache_mb: number;
+  max_memory_mb: number;
+  low_priority_jobs: boolean;
+  defer_when_cpu_above: number;
+  mem_total_mb?: number;
+}
+
+export interface ComputeSettings {
+  embed_mode: EmbedMode | string;
+  gpu_enabled?: boolean;
+  gpu_available?: boolean;
+  gpu_name?: string | null;
+  hybrid_gpu_share: number;
+  embed_batch_size: number;
+  embed_chain?: string[];
+  remote_model?: string;
+  remote_key_set?: boolean;
+  remote_key2_set?: boolean;
+  active_device?: string | null;
+}
+
+export interface WordpressSettings {
+  default_insert_modules: string[];
+  verify_after_inject: boolean;
+  default_max_links_per_post: number;
+  default_min_links_per_post: number;
+  max_new_links_per_pass: number;
+  request_timeout_ms: number;
+  user_agent: string;
+}
+
+export interface CrawlSettings {
+  concurrency: number;
+  timeout_ms: number;
+  max_pages: number;
+  allow_private_hosts: boolean;
+}
+
+export interface LlmSettings {
+  fallback_url: string;
+  fallback_models: string[];
+  timeout_ms: number;
+}
+
+export interface ServerSettingsSection {
+  binds?: string[];
+  cors_origins?: string[];
+  allow_registration?: boolean;
+  mcp_http_enabled?: boolean;
+}
+
+export interface ServerSettings {
+  resources?: ResourcesSettings;
+  compute?: ComputeSettings;
+  wordpress?: WordpressSettings;
+  crawl?: CrawlSettings;
+  llm?: LlmSettings;
+  server?: ServerSettingsSection;
+  backup?: { dir?: string; keep?: number; schedule?: string; passphrase_set?: boolean };
+  monitor?: Record<string, number>;
+  restart_required?: string[];
+  restart_supported?: boolean;
+}
+
+/** PUT body: any subset `{ section: { key: value } }`. */
+export type SettingsPatch = Partial<Record<string, Record<string, unknown>>>;
+
+// ---- v2.1: MCP management ----
+
+export type MinScope = 'read' | 'write' | 'admin';
+
+export interface McpToolInfo extends McpTool {
+  title?: string;
+  read_only?: boolean;
+  destructive?: boolean;
+  min_scope?: MinScope | string;
+  enabled?: boolean;
+  /** Optional grouping from the server; the UI derives one from the name otherwise. */
+  category?: string;
+  group?: string;
+}
+
+export interface McpPolicy {
+  http_enabled: boolean;
+  tools: Record<string, { enabled: boolean; min_scope: MinScope | string }>;
+  per_token: Record<string, { allow: string[] | null }>;
+}
+
+export interface McpToolStat {
+  name: string;
+  calls_24h: number;
+  errors_24h: number;
+  last_called_at: string | null;
+}
+
+// ---- v2.1: docs ----
+
+export interface DocMeta {
+  slug: string;
+  title: string;
+  section?: string;
+  order?: number;
+}
+
+export interface DocPage {
+  slug: string;
+  title: string;
+  section?: string;
+  markdown: string;
+}
+
+// ---- v2.1: downloads ----
+
+export interface DownloadItem {
+  file: string;
+  kind: 'app' | 'wp-plugin' | string;
+  version: string;
+  size_bytes: number;
+  sha256: string;
+  created_at: string | null;
+  latest: boolean;
+}
+
+export interface DownloadsList {
+  downloads: DownloadItem[];
+  current_version?: string;
+}
+
+// ---- v2.1: unified event log (§9) ----
+
+export type LogSource = 'ui' | 'api' | 'mcp' | 'job' | 'system' | 'auth' | 'notify';
+export type LogStatus = 'ok' | 'error' | 'denied';
+
+export interface LogRow {
+  id: number;
+  ts: string;
+  source: LogSource | string;
+  actor: string | null;
+  action: string;
+  target: string | null;
+  site_id: string | null;
+  status: LogStatus | string;
+  http_status?: number | null;
+  duration_ms?: number | null;
+  detail?: unknown;
+}
+
+export interface LogsQuery {
+  source?: string;
+  actor?: string;
+  site_id?: string;
+  status?: string;
+  q?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  before_id?: number;
+  after_id?: number;
+}
+
+export interface LogsPage {
+  logs: LogRow[];
+  next_before_id: number | null;
+}
+
+/** GET /api/v2/logs/stats: counts by source and by status (shape read defensively). */
+export interface LogStats {
+  total?: number;
+  by_source: Record<string, number>;
+  by_status: Record<string, number>;
 }

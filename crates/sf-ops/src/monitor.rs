@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::{Value, json};
-use sf_core::{Config, Result};
+use sf_core::{Config, LiveConfig, Result};
 use sf_store::{Db, err, row_to_json};
 use sysinfo::{Disks, Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -152,7 +152,11 @@ struct AlertState {
 
 struct Inner {
     db: Db,
-    cfg: Arc<Config>,
+    /// Read on every use, so `PUT /api/v2/settings` changes apply live (v2.1).
+    cfg: LiveConfig,
+    /// Process RSS above `resources.max_memory_mb` (with 10 % hysteresis on the way down).
+    memory_pressure: AtomicBool,
+    memory_alert_last: Mutex<Option<Instant>>,
     notifier: Option<Notifier>,
     sampler: Mutex<Option<Sampler>>,
     ring: Mutex<VecDeque<Sample>>,
@@ -170,11 +174,13 @@ pub struct Monitor {
 
 impl Monitor {
     /// Creates a monitor without starting the background task (tests, CLI `doctor`).
-    pub fn new(cfg: Arc<Config>, db: Db, notifier: Option<Notifier>) -> Self {
+    pub fn new(cfg: impl Into<LiveConfig>, db: Db, notifier: Option<Notifier>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 db,
-                cfg,
+                cfg: cfg.into(),
+                memory_pressure: AtomicBool::new(false),
+                memory_alert_last: Mutex::new(None),
                 notifier,
                 sampler: Mutex::new(None),
                 ring: Mutex::new(VecDeque::new()),
@@ -188,7 +194,7 @@ impl Monitor {
 
     /// Creates the monitor and spawns its sampling loop (and a one-off GPU name probe on Windows).
     /// Must be called inside a tokio runtime.
-    pub fn start(cfg: Arc<Config>, db: Db, notifier: Option<Notifier>) -> Self {
+    pub fn start(cfg: impl Into<LiveConfig>, db: Db, notifier: Option<Notifier>) -> Self {
         let m = Self::new(cfg, db, notifier);
         let me = m.clone();
         tokio::spawn(async move {
@@ -201,12 +207,11 @@ impl Monitor {
         crate::supervise::spawn("monitor", Some(db), move || {
             let me = me0.clone();
             async move {
-                let every = Duration::from_secs(me.inner.cfg.monitor.sample_secs.clamp(1, 3600));
-                let mut tick = tokio::time::interval(every);
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut last_prune = Instant::now() - Duration::from_secs(7200);
                 loop {
-                    tick.tick().await;
+                    // live: a changed `monitor.sample_secs` applies from the next tick
+                    let every = me.inner.cfg.get().monitor.sample_secs.clamp(1, 3600);
+                    tokio::time::sleep(Duration::from_secs(every)).await;
                     if let Err(e) = me.sample_now().await {
                         tracing::debug!(error = %e, "monitor sample failed");
                     }
@@ -227,7 +232,8 @@ impl Monitor {
         let inner = self.inner.clone();
         let mut s = tokio::task::spawn_blocking(move || {
             let mut guard = inner.sampler.lock();
-            let sampler = guard.get_or_insert_with(|| Sampler::new(&inner.cfg.home));
+            let home = inner.cfg.get().home.clone();
+            let sampler = guard.get_or_insert_with(|| Sampler::new(&home));
             sampler.sample()
         })
         .await
@@ -235,6 +241,7 @@ impl Monitor {
         let (running, queued) = job_counts(&self.inner.db).await.unwrap_or((0, 0));
         s.jobs_running = running;
         s.jobs_queued = queued;
+        self.check_memory_cap(&s);
         self.push(s.clone()).await?;
         Ok(s)
     }
@@ -243,7 +250,8 @@ impl Monitor {
         {
             let mut ring = self.inner.ring.lock();
             ring.push_back(s.clone());
-            let cap = (RAW_WINDOW.as_secs() / self.inner.cfg.monitor.sample_secs.max(1)) as usize;
+            let cap =
+                (RAW_WINDOW.as_secs() / self.inner.cfg.get().monitor.sample_secs.max(1)) as usize;
             while ring.len() > cap.max(12) {
                 ring.pop_front();
             }
@@ -295,8 +303,63 @@ impl Monitor {
             .await
     }
 
+    /// `resources.max_memory_mb` soft cap: sets [`Monitor::memory_pressure`] while the process
+    /// RSS is above the cap (cleared below 90 % of it) and sends one `system.alert` per 30 min.
+    /// The job layer reacts (shrinks the vector cache, defers heavy jobs).
+    fn check_memory_cap(&self, s: &Sample) {
+        let cap = self.inner.cfg.get().resources.max_memory_mb;
+        let was = self.inner.memory_pressure.load(Ordering::SeqCst);
+        let now = memory_over_cap(s.proc_rss_mb, cap, was);
+        self.inner.memory_pressure.store(now, Ordering::SeqCst);
+        if now && !was {
+            tracing::warn!(
+                rss_mb = s.proc_rss_mb,
+                cap_mb = cap,
+                "memory cap exceeded: shrinking caches, deferring heavy jobs"
+            );
+            let fire = {
+                let mut last = self.inner.memory_alert_last.lock();
+                let fire = last.is_none_or(|t| t.elapsed() >= ALERT_DEBOUNCE);
+                if fire {
+                    *last = Some(Instant::now());
+                }
+                fire
+            };
+            if fire && let Some(n) = &self.inner.notifier {
+                n.notify(
+                    Notification::new(
+                        events::SYSTEM_ALERT,
+                        "SiloForge memory cap alert",
+                        format!(
+                            "SiloForge uses {} MB, above its {} MB cap: vector caches are shrunk and heavy jobs wait",
+                            s.proc_rss_mb, cap
+                        ),
+                    )
+                    .data(json!({"kind": "memory_cap", "rss_mb": s.proc_rss_mb, "cap_mb": cap})),
+                );
+            }
+        } else if was && !now {
+            tracing::info!(
+                rss_mb = s.proc_rss_mb,
+                cap_mb = cap,
+                "memory back under the cap"
+            );
+        }
+    }
+
+    /// True while the process is above `resources.max_memory_mb` (always false when the cap is 0).
+    pub fn memory_pressure(&self) -> bool {
+        self.inner.memory_pressure.load(Ordering::SeqCst)
+    }
+
+    /// GPU name from the one-off probe (None until it finished, or when there is none).
+    pub fn gpu_name(&self) -> Option<String> {
+        self.inner.gpu.lock().clone()
+    }
+
     fn check_alerts(&self, a: &Sample) {
-        let m = &self.inner.cfg.monitor;
+        let cfg = self.inner.cfg.get();
+        let m = &cfg.monitor;
         let mem_pct = if a.mem_total_mb > 0 {
             a.mem_used_mb as f32 * 100.0 / a.mem_total_mb as f32
         } else {
@@ -375,7 +438,7 @@ impl Monitor {
             c.gpu = self.inner.gpu.lock().clone();
             return c;
         }
-        let c = compute_capacity(&self.inner.cfg, self.inner.gpu.lock().clone());
+        let c = compute_capacity(&self.inner.cfg.get(), self.inner.gpu.lock().clone());
         *self.inner.capacity_cache.lock() = Some((Instant::now(), c.clone()));
         c
     }
@@ -388,7 +451,7 @@ impl Monitor {
 
     /// Deletes `system_metrics` rows older than `monitor.retain_days`.
     pub async fn prune(&self) -> Result<usize> {
-        let days = i64::from(self.inner.cfg.monitor.retain_days.max(1));
+        let days = i64::from(self.inner.cfg.get().monitor.retain_days.max(1));
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(days))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         self.inner
@@ -398,6 +461,18 @@ impl Monitor {
                     .map_err(err)
             })
             .await
+    }
+}
+
+/// Memory-cap state machine: over when `rss > cap`; once over, stays over until `rss < 90 % cap`.
+pub fn memory_over_cap(rss_mb: u64, cap_mb: u64, was_over: bool) -> bool {
+    if cap_mb == 0 {
+        return false;
+    }
+    if was_over {
+        rss_mb.saturating_mul(10) >= cap_mb.saturating_mul(9)
+    } else {
+        rss_mb > cap_mb
     }
 }
 
@@ -488,6 +563,9 @@ pub async fn detect_gpu() -> Option<String> {
         return None;
     }
     let fut = tokio::process::Command::new(crate::notify::powershell_exe())
+        // On this PC PowerShell hangs at startup when either variable is set (see skill powershell-startup-hang).
+        .env_remove("ALLUSERSPROFILE")
+        .env_remove("SYSTEMDRIVE")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -740,6 +818,69 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(ok);
+        db.close();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn memory_cap_hysteresis() {
+        assert!(!memory_over_cap(10_000, 0, false), "0 = off");
+        assert!(!memory_over_cap(10_000, 0, true));
+        assert!(!memory_over_cap(1000, 1000, false));
+        assert!(memory_over_cap(1001, 1000, false));
+        assert!(memory_over_cap(950, 1000, true), "stays over until < 90 %");
+        assert!(!memory_over_cap(899, 1000, true));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn memory_cap_is_live_and_notifies_once() {
+        let dir = std::env::temp_dir().join(format!("sf-ops-mon-{}", sf_core::new_id()));
+        let db = Db::open(&dir.join("t.db")).unwrap();
+        let mut cfg = Config::default();
+        cfg.home = dir.clone();
+        let live = LiveConfig::new(cfg.clone());
+        let key = Arc::new([1u8; 32]);
+        let n = Notifier::start(db.clone(), key, Default::default());
+        let m = Monitor::new(live.clone(), db.clone(), Some(n));
+        let mut s = Sample {
+            ts: sf_core::now_rfc3339(),
+            cpu_pct: 1.0,
+            proc_cpu_pct: 1.0,
+            mem_used_mb: 1,
+            mem_total_mb: 100,
+            proc_rss_mb: 600,
+            disk_free_mb: Some(100_000),
+            jobs_running: 0,
+            jobs_queued: 0,
+        };
+        m.check_memory_cap(&s);
+        assert!(!m.memory_pressure(), "cap off by default");
+        cfg.resources.max_memory_mb = 512;
+        live.set(cfg.clone());
+        m.check_memory_cap(&s);
+        assert!(m.memory_pressure());
+        s.proc_rss_mb = 300;
+        m.check_memory_cap(&s);
+        assert!(!m.memory_pressure());
+        s.proc_rss_mb = 700;
+        m.check_memory_cap(&s); // over again: debounced, no second notification
+        assert!(m.memory_pressure());
+        let mut rows = Vec::new();
+        for _ in 0..100 {
+            rows = crate::notify::list_notifications(&db, false, 10)
+                .await
+                .unwrap();
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let rows2 = crate::notify::list_notifications(&db, false, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows2.len(), 1);
         db.close();
         let _ = std::fs::remove_dir_all(dir);
     }

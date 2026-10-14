@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(clean_title("", 6), "");
     }
 
-    /// Pilot 2026-10-13 (site67 titles): no year holes, parentheses or dangling stop words.
+    /// Pilot 2026-10-13 (site65 titles): no year holes, parentheses or dangling stop words.
     #[test]
     fn clean_title_pilot_regressions() {
         let cases = [
@@ -1200,7 +1200,7 @@ mod tests {
         assert_ne!(alt.anchor, "steel bike lock");
     }
 
-    /// v2.0.1: unit / spec fragments and trailing adjectives (Hermes acceptance, site48.example).
+    /// v2.0.1: unit / spec fragments and trailing adjectives (Hermes acceptance, site46.example).
     #[test]
     fn fragments_are_never_natural_or_picked() {
         let t = TargetProfile::new(

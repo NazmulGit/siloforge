@@ -24,6 +24,8 @@ vector_cache_mb = 512
 low_priority_jobs = true
 # Don't start heavy jobs while total CPU is above this percent (0 = off).
 defer_when_cpu_above = 0.0
+# Soft cap on SiloForge's own RAM (MB, 0 = off): above it the vector cache shrinks and heavy jobs wait.
+max_memory_mb = 0
 
 [embed]
 # Tried in order: remote (OpenRouter key 1), remote2 (key 2), onnx (ONNX Runtime: DirectML GPU, else CPU), local (candle, if built in).
@@ -37,6 +39,10 @@ retries = 2
 model_dir = ""          # default <home>/models/all-MiniLM-L6-v2
 onnx_runtime_dir = ""   # default: next to the exe, then <home>/runtime
 gpu = true
+# auto (GPU if available, else CPU) | gpu | cpu | hybrid (GPU + CPU share each job) | remote (remote rungs first)
+mode = "auto"
+# hybrid only: share of the work the GPU takes (0.1..0.9); it steals more when the CPU is slower.
+hybrid_gpu_share = 0.5
 
 [llm]
 # Used when no model chain is active in Settings → Models (OpenAI-compatible; v1 used dario).
@@ -76,3 +82,19 @@ snapshot_retain_days = 180
 errors_retain_days = 90
 notifications_retain_days = 90
 audit_log_retain_days = 365
+# Unified event log (Logs page): retention in days (0 = keep forever), and whether successful
+# GET requests are logged too (non-GET, MCP calls and errors always are).
+event_log_retain_days = 90
+log_reads = false
+
+[wordpress]
+# Install-wide defaults; a site's own settings win.
+default_insert_modules = ["native"]
+verify_after_inject = true
+default_max_links_per_post = 10
+default_min_links_per_post = 3
+max_new_links_per_pass = 5
+request_timeout_ms = 20000
+
+[downloads]
+dir = ""   # release zips for the Downloads page; default <exe dir>\..\releases

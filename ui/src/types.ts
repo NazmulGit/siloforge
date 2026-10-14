@@ -96,6 +96,10 @@ export interface SiteSettings {
   ai_anchor_refine_timeout_s?: number;
   /** v2: turn off semantic phrase scoring (on by default when vectors exist). */
   anchor_semantic_off?: boolean;
+  /** Write-only: WP username for the REST writer (moved to encrypted storage by the server). */
+  wp_user?: string;
+  /** Write-only: WP application password (never returned). */
+  wp_app_password?: string;
 }
 
 // ---- Rules layer (LinkBoss parity) ----
@@ -133,6 +137,10 @@ export interface Site {
   settings: SiteSettings;
   created_at: string;
   last_sync_at: string | null;
+  /** v2: WP application-password credentials are stored (encrypted, never returned). */
+  has_wp_credentials?: boolean;
+  /** v2: the stored WP username (the password is never returned). */
+  wp_user?: string | null;
 }
 
 /** GET /sites returns Site[] "with post/edge counts" — field names tolerated defensively. */

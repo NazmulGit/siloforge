@@ -489,8 +489,11 @@ export function bulkUndo(siteId: string, edgeIds?: string[]): Promise<{ job_run_
 // ---- link health (checklist E) ----
 
 /** Enqueue a crawl of every published link for the site. */
-export function runLinkHealth(siteId: string): Promise<{ job_run_id: string }> {
-  return request<{ job_run_id: string }>(`/sites/${siteId}/link-health`, { method: 'POST', body: {} });
+export function runLinkHealth(siteId: string, opts: { internal_only?: boolean } = {}): Promise<{ job_run_id: string }> {
+  return request<{ job_run_id: string }>(`/sites/${siteId}/link-health`, {
+    method: 'POST',
+    body: opts.internal_only ? { internal_only: true } : {},
+  });
 }
 
 export function fetchLinkHealth(

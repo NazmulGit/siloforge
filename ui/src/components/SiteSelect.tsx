@@ -1,53 +1,34 @@
-import { useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { useSites } from '../sites';
-import { ACTIVE_SITE_KEY } from '../activeSite';
+import { sitePostCount } from '../types';
+import { Icon } from './Icon';
 
-export function SiteSelect({ siteId }: { siteId?: string }) {
-  const { sites, loading } = useSites();
-  const navigate = useNavigate();
+/**
+ * Top-bar site switcher. Shows the current (URL or remembered) site; clicking opens the
+ * searchable site picker. On a site page the pick keeps the same section.
+ */
+export function SiteSelect() {
+  const { sites, loading, currentSiteId, pickSite } = useSites();
   const location = useLocation();
-
-  const sectionMatch = location.pathname.match(/^\/site\/[^/]+\/(\w+)/);
-  const section = sectionMatch?.[1] ?? 'dashboard';
-
-  // Remember the active site so the global /settings page can scope its
-  // site-specific panels to the last site the user was looking at.
-  useEffect(() => {
-    if (!siteId) return;
-    try {
-      localStorage.setItem(ACTIVE_SITE_KEY, siteId);
-    } catch {
-      /* storage unavailable — ignore */
-    }
-  }, [siteId]);
+  const section = /^\/site\/[^/]+\/([\w-]+)/.exec(location.pathname)?.[1];
+  const current = sites.find((s) => s.id === currentSiteId);
 
   return (
-    <select
-      className="site-select"
-      aria-label="Selected site"
-      data-hint="Switch the active site. Every page (Dashboard, Tools, Reports…) then shows data for the site you pick."
-      value={siteId ?? ''}
-      onChange={(e) => {
-        const id = e.target.value;
-        if (id) {
-          try {
-            localStorage.setItem(ACTIVE_SITE_KEY, id);
-          } catch {
-            /* storage unavailable — ignore */
-          }
-          navigate(`/site/${id}/${section}`);
-        }
-      }}
+    <button
+      type="button"
+      className="site-switch"
+      aria-label={current ? `Current site ${current.domain}. Switch site` : 'Choose a site'}
+      data-hint="Switch the active site. Site pages (Dashboard, Tools, Reports…) show data for the site you pick. Remembered on this device."
+      onClick={() => pickSite(section)}
     >
-      <option value="" disabled>
-        {loading ? 'Loading sites…' : sites.length ? 'Select a site…' : 'No sites yet'}
-      </option>
-      {sites.map((s) => (
-        <option key={s.id} value={s.id}>
-          {s.domain}
-        </option>
-      ))}
-    </select>
+      <Icon name="sites" />
+      <span className="site-switch-text">
+        <span className="site-switch-domain">
+          {current ? current.domain : loading ? 'Loading sites…' : sites.length ? 'Choose a site' : 'No sites yet'}
+        </span>
+        {current && <span className="site-switch-meta">{sitePostCount(current).toLocaleString()} posts</span>}
+      </span>
+      <Icon name="chevron" size={14} />
+    </button>
   );
 }

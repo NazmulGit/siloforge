@@ -37,6 +37,10 @@ uuid = { workspace = true }
 # v2 routes (work packet O)
 sf-ops = { workspace = true }
 tokio-util = { workspace = true, features = ["io"] }
+# v2.1: live compute-thread limit readout (settings), download checksums
+sf-engine = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

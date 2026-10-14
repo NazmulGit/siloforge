@@ -16,17 +16,32 @@
 //! | `POST /auth/logout-all` | user session (ends all sessions, revokes own API tokens; I-02) |
 //! | `GET /audit?limit=` | admin |
 //! | `GET /mcp` (alias `/mcp/info`) | user |
+//! | `GET/PUT /settings`, `POST /system/restart` | admin (v2.1 §1) |
+//! | `PATCH /tokens/{id}` | owner or admin (v2.1 §2) |
+//! | `GET/PUT /mcp/policy`, `GET /mcp/stats` | admin (v2.1 §3) |
+//! | `GET /mcp/policy/effective`, `POST /mcp/usage` | any user / API token (v2.1 §3) |
+//! | `GET /docs`, `GET /docs/{slug}` | user (v2.1 §4) |
+//! | `GET /downloads`, `GET /downloads/{file}` | user (v2.1 §5) |
+//! | `GET /logs?source=&actor=&site_id=&status=&q=&since=&until=&limit=&before_id=&after_id=` | user (admin: all rows; others: own rows) |
+//! | `GET /logs/export?...` (CSV), `GET /logs/stats?since=&until=` | user (same row visibility) |
 
 mod backups;
+pub mod docs;
+pub mod downloads;
 mod gsc;
 mod jobs;
+mod logs;
+pub mod mcp;
 mod misc;
 mod notifications;
+pub mod settings;
 mod system;
 mod tokens;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_v21;
 
 use axum::Router;
 use axum::routing::{get, patch, post};
@@ -66,9 +81,25 @@ pub fn router() -> Router<AppState> {
         .route("/backups/{id}/download", get(backups::download))
         .route("/backups/{id}/verify", post(backups::verify))
         .route("/tokens", get(tokens::list).post(tokens::create))
-        .route("/tokens/{id}", axum::routing::delete(tokens::revoke))
+        .route(
+            "/tokens/{id}",
+            axum::routing::delete(tokens::revoke).patch(tokens::patch),
+        )
+        .route("/settings", get(settings::get).put(settings::put))
+        .route("/system/restart", post(settings::restart))
+        .route("/mcp/policy", get(mcp::get_policy).put(mcp::put_policy))
+        .route("/mcp/policy/effective", get(mcp::effective))
+        .route("/mcp/stats", get(mcp::stats))
+        .route("/mcp/usage", post(mcp::usage))
+        .route("/docs", get(docs::list))
+        .route("/docs/{slug}", get(docs::get_one))
+        .route("/downloads", get(downloads::list))
+        .route("/downloads/{file}", get(downloads::download))
         .route("/auth/logout-all", post(tokens::logout_all))
         .route("/audit", get(misc::audit))
+        .route("/logs", get(logs::list))
+        .route("/logs/export", get(logs::export))
+        .route("/logs/stats", get(logs::stats))
         .route("/mcp", get(misc::mcp_info))
         .route("/mcp/info", get(misc::mcp_info))
         .route("/sites/{id}/gsc/sync", post(gsc::sync))

@@ -8,11 +8,20 @@
 //!   apply; there is no built-in privileged identity.
 //!
 //! Tools: the 20 v1 names/params/semantics unchanged (see [`tools::catalogue`]) plus v2 job,
-//! system, backup and notification tools. Credentials are stripped from every output.
+//! system, backup and notification tools and the v2.1 admin surface (contract §8). Credentials
+//! are stripped from every output.
+//!
+//! Policy (contract §3): the caller's effective tool list is fetched from
+//! `GET /api/v2/mcp/policy/effective` (cached 60 s per identity); `tools/list` shows only allowed
+//! tools and `tools/call` of any other tool is an MCP error. Every REST call made for a tool
+//! carries `X-SiloForge-Via: mcp` + `X-SiloForge-Tool: <name>`, and each call is reported to
+//! `POST /api/v2/mcp/usage` (fire-and-forget).
 
 mod client;
 mod config;
+mod extra;
 mod output;
+mod policy;
 mod server;
 pub mod tools;
 

@@ -29,20 +29,20 @@ Legend: [x] done · [~] in progress (agent) · [ ] open. Details: docs/PLAN.md. 
 - [x] Migrate v1 data into a test home; verify counts + embedding samples
 - [x] Side-by-side run on 8610/8611; JSON diff vs v1 for UI + MCP endpoints
 - [x] Pilot one site end to end (crawl → plan → approve → inject on a test WP → verify → undo)
-- [x] Perf: CPU/RAM v1 vs v2 on site26 (112k paragraphs) plan; report
+- [x] Perf: CPU/RAM v1 vs v2 on site24 (112k paragraphs) plan; report
 - [x] Linking accuracy test (golden set + spot checks)
 - [x] Security/code audit by review agents; fix findings
 - [x] Cutover to 8600/8601; v1 containers stopped (kept for rollback); autostart task
-- [ ] Reboot test (blocked: Defender/AMSI hang, see follow-ups)
+- [x] Autostart verified without reboot: headless conhost keepalive task (VBS keeper retired; the PowerShell hang is the ALLUSERSPROFILE/SYSTEMDRIVE issue, not Defender)
 - [x] Hermes: ap13 MCP → siloforge.exe with API token (remove plaintext admin password); skill update
-- [ ] Hermes gateway webhook route for SiloForge notifications (needs gateway restart)
+- [x] Hermes gateway webhook route for SiloForge notifications (gateway restarted via hub, channel test ok)
 - [x] Run a SiloForge task through Hermes end to end
 - [x] Update Backup Hub, Model Control, Mission Control, teli scripts (docker exec psql users) — docs/INTEGRATIONS-v2.md
 - [x] Docs: README, CHANGELOG, KB, skill `siloforge-dev`, release v2.0.0 zip
 - [x] GitHub: new public repo (MIT), secret scan, push
 
 ## Follow-ups (v2.0.1)
-- [ ] Reboot PC (Defender/AMSI frozen since 2026-10-13 22:43) → keepalive VBS/Startup entry take over; then delete task `siloforge-direct`
+- [x] PowerShell hang worked around (env vars); no reboot needed; temporary task siloforge-direct deleted
 - [x] Anchor misses like "V kits perfect" (model-number fragments) — tighten noun-phrase filter (+ pending v1 fragment anchors re-picked on the next plan)
 - [x] UI controls for `ai_anchor_refine`; R11 embedding CPU budget; R14/R16/R21/R22; A3–A13 doc mismatches
 - [x] Backup Hub / Model Control / Mission Control: repoint SiloForge entries to v2 (integrations agent, docs/INTEGRATIONS-v2.md)
@@ -55,3 +55,8 @@ Legend: [x] done · [~] in progress (agent) · [ ] open. Details: docs/PLAN.md. 
 - [x] Anchor quality: site-wide brand capitalisation, min target similarity for in-paragraph picks, generic head nouns (anchor-quality.md)
 - [x] UI: Linking Rules -> Targets (money pages, root URLs, inbound cap); dashboard "unknown" link-health cards
 - [x] CLI `siloforge vacuum` (incremental auto-vacuum for pre-2.0.2 databases)
+
+## Later (optional)
+- [ ] Delete v1 Docker volumes/images after a long stable period (see RESTORE-v1.md, "Deleting v1 for good")
+- [ ] PHP plugin: verify `paragraph_hash` before splicing (plugin mode is unused by the fleet today)
+- [ ] Anchor edge case "Bell Air Attack" (brand also used as a common word)

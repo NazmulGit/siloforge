@@ -3411,7 +3411,7 @@ dependencies = [
 
 [[package]]
 name = "sf-ai"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "axum",
  "parking_lot",
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "sf-core"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -3443,13 +3443,14 @@ dependencies = [
  "subtle",
  "thiserror 2.0.21",
  "toml",
+ "toml_edit",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "sf-crawl"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3474,7 +3475,7 @@ dependencies = [
 
 [[package]]
 name = "sf-embed"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "axum",
  "candle-core",
@@ -3499,7 +3500,7 @@ dependencies = [
 
 [[package]]
 name = "sf-engine"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "hex",
  "lol_html",
@@ -3521,7 +3522,7 @@ dependencies = [
 
 [[package]]
 name = "sf-jobs"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "axum",
  "chrono",
@@ -3550,7 +3551,7 @@ dependencies = [
 
 [[package]]
 name = "sf-mcp"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3569,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "sf-ops"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -3597,13 +3598,14 @@ dependencies = [
 
 [[package]]
 name = "sf-server"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "axum",
  "chrono",
  "chrono-tz",
  "croner",
  "csv",
+ "hex",
  "mime_guess",
  "parking_lot",
  "regex",
@@ -3614,9 +3616,11 @@ dependencies = [
  "sf-ai",
  "sf-core",
  "sf-crawl",
+ "sf-engine",
  "sf-jobs",
  "sf-ops",
  "sf-store",
+ "sha2 0.10.9",
  "tokio",
  "tokio-util",
  "tower",
@@ -3628,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "sf-store"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "hex",
@@ -3704,7 +3708,7 @@ dependencies = [
 
 [[package]]
 name = "siloforge"
-version = "2.0.2"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3720,6 +3724,7 @@ dependencies = [
  "sf-ops",
  "sf-server",
  "sf-store",
+ "sysinfo",
  "tokio",
  "tracing",
  "tracing-appender",

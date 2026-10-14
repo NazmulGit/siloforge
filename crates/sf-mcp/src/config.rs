@@ -31,6 +31,9 @@ pub struct McpConfig {
     pub min_poll: Duration,
     /// Extra `Host` header values the HTTP transport accepts (empty = loopback only).
     pub http_allowed_hosts: Vec<String>,
+    /// How long an effective MCP tool policy (`GET /api/v2/mcp/policy/effective`) stays cached
+    /// per identity before it is fetched again.
+    pub policy_ttl: Duration,
 }
 
 impl Default for McpConfig {
@@ -45,6 +48,7 @@ impl Default for McpConfig {
             max_output_chars: 80_000,
             min_poll: Duration::from_secs(2),
             http_allowed_hosts: Vec::new(),
+            policy_ttl: Duration::from_secs(60),
         }
     }
 }

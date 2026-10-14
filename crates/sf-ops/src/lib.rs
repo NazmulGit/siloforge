@@ -17,6 +17,7 @@
 
 pub mod backup;
 pub mod errors;
+pub mod eventlog;
 pub mod instance;
 pub mod migrate_v1;
 pub mod monitor;

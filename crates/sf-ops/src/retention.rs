@@ -6,7 +6,7 @@
 //! `job_runs_retain_days` (the newest `job_runs_keep_per_site` per site and kind, and runs a
 //! schedule points at, are always kept; their logs cascade), `snapshots` = `snapshot_retain_days`
 //! (only snapshots that back no applied edge and no in-flight write), resolved `errors` =
-//! `errors_retain_days`. `site_metrics_history` is kept (it is the trend history). Large deletes
+//! `errors_retain_days`, `event_log` = `event_log_retain_days`. `site_metrics_history` is kept (it is the trend history). Large deletes
 //! run in batches so the single writer is never held for long.
 
 use std::sync::Arc;
@@ -27,6 +27,7 @@ pub struct RetentionPolicy {
     pub job_runs_keep_per_site: u32,
     pub snapshots_days: u32,
     pub errors_days: u32,
+    pub event_log_days: u32,
 }
 
 impl RetentionPolicy {
@@ -42,6 +43,7 @@ impl RetentionPolicy {
             job_runs_keep_per_site: m.job_runs_keep_per_site,
             snapshots_days: m.snapshot_retain_days,
             errors_days: m.errors_retain_days,
+            event_log_days: m.event_log_retain_days,
         }
     }
 }
@@ -56,6 +58,7 @@ pub struct RetentionReport {
     pub job_runs: usize,
     pub snapshots: usize,
     pub errors: usize,
+    pub event_log: usize,
 }
 
 fn cutoff(days: u32) -> String {
@@ -90,12 +93,13 @@ async fn delete_batched(
 /// Deletes rows older than the policy allows.
 pub async fn prune(db: &Db, policy: &RetentionPolicy) -> Result<RetentionReport> {
     let mut rep = RetentionReport::default();
-    let rules: [(&'static str, &str, u32); 5] = [
+    let rules: [(&'static str, &str, u32); 6] = [
         ("job_logs", "ts", policy.job_logs_days),
         ("model_call_log", "called_at", policy.model_call_log_days),
         ("notifications", "created_at", policy.notifications_days),
         ("system_metrics", "ts", policy.system_metrics_days),
         ("audit_log", "ts", policy.audit_log_days),
+        ("event_log", "ts", policy.event_log_days),
     ];
     for (table, col, days) in rules {
         if days == 0 {
@@ -113,6 +117,7 @@ pub async fn prune(db: &Db, policy: &RetentionPolicy) -> Result<RetentionReport>
             "model_call_log" => rep.model_call_log = n,
             "notifications" => rep.notifications = n,
             "system_metrics" => rep.system_metrics = n,
+            "event_log" => rep.event_log = n,
             _ => rep.audit_log = n,
         }
     }
@@ -215,6 +220,8 @@ mod tests {
             t.execute_batch(
                 "INSERT INTO audit_log(ts, actor, action) VALUES('2000-01-01T00:00:00.000Z','a','x');
                  INSERT INTO audit_log(actor, action) VALUES('a','y');
+                 INSERT INTO event_log(ts, source, actor, action) VALUES('2000-01-01T00:00:00.000Z','api','a','x');
+                 INSERT INTO event_log(source, actor, action) VALUES('api','a','y');
                  INSERT INTO notifications(event, title, created_at) VALUES('job.done','t','2000-01-01T00:00:00.000Z');
                  INSERT INTO system_metrics(ts,cpu_pct,proc_cpu_pct,mem_used_mb,mem_total_mb,proc_rss_mb)
                    VALUES('2000-01-01T00:00:00.000Z',1,1,1,1,1);",
@@ -230,11 +237,27 @@ mod tests {
             rep,
             RetentionReport {
                 audit_log: 1,
+                event_log: 1,
                 notifications: 1,
                 system_metrics: 1,
                 ..Default::default()
             }
         );
+        // 0 = keep forever
+        db.write(|t| {
+            t.execute_batch(
+                "INSERT INTO event_log(ts, source, actor, action) VALUES('2000-01-01T00:00:00.000Z','api','a','z');",
+            )
+            .map_err(err)
+        })
+        .await
+        .unwrap();
+        let mut keep = Config::default();
+        keep.monitor.event_log_retain_days = 0;
+        let rep = prune(&db, &RetentionPolicy::from_config(&keep))
+            .await
+            .unwrap();
+        assert_eq!(rep.event_log, 0);
         maintenance(&db, true).await.unwrap();
         db.close();
         let _ = std::fs::remove_dir_all(dir);

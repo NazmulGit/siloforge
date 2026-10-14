@@ -87,10 +87,26 @@ impl Default for AiOptions {
     }
 }
 
+/// Where the env fallback (`[llm]`) comes from: fixed at construction, or the live config so a
+/// settings change applies to the next call (v2.1).
+enum LlmSource {
+    Fixed(LlmCfg),
+    Live(sf_core::LiveConfig),
+}
+
+impl LlmSource {
+    fn get(&self) -> LlmCfg {
+        match self {
+            Self::Fixed(c) => c.clone(),
+            Self::Live(l) => l.get().llm.clone(),
+        }
+    }
+}
+
 struct Inner {
     db: Db,
     key: Arc<[u8; 32]>,
-    llm: LlmCfg,
+    llm: LlmSource,
     opts: AiOptions,
     client: reqwest::Client,
     breakers: Breakers,
@@ -249,6 +265,24 @@ impl Ai {
         llm: LlmCfg,
         opts: AiOptions,
     ) -> Result<Self, AiError> {
+        Self::build(db, secret_key, LlmSource::Fixed(llm), opts)
+    }
+
+    /// Like [`Ai::new`], reading `[llm]` from the live config on every call (v2.1 settings).
+    pub fn with_live(
+        db: Db,
+        secret_key: Arc<[u8; 32]>,
+        live: sf_core::LiveConfig,
+    ) -> Result<Self, AiError> {
+        Self::build(db, secret_key, LlmSource::Live(live), AiOptions::default())
+    }
+
+    fn build(
+        db: Db,
+        secret_key: Arc<[u8; 32]>,
+        llm: LlmSource,
+        opts: AiOptions,
+    ) -> Result<Self, AiError> {
         let client = http::build_client().map_err(AiError::BadRequest)?;
         let breakers = Breakers::new(opts.breaker_threshold, opts.breaker_cooldown);
         Ok(Self {
@@ -295,7 +329,7 @@ impl Ai {
                 tracing::warn!(error = %e, role = role.as_str(), "model chain lookup failed; using env fallback");
             }
         }
-        let env = resolve::env_rungs(role, &self.inner.llm);
+        let env = resolve::env_rungs(role, &self.inner.llm.get());
         Resolved {
             chain_id: None,
             chain_name: None,
@@ -767,6 +801,26 @@ mod tests {
         assert!(unit_vector(&[0.0, 0.0], 2, "v").is_err());
         assert!(unit_vector(&[f64::NAN, 1.0], 2, "v").is_err());
         assert!(unit_vector(&[1e300, 1.0], 2, "v").is_err());
+    }
+
+    #[test]
+    fn live_llm_source_follows_settings() {
+        let mut cfg = sf_core::Config::default();
+        let live = sf_core::LiveConfig::new(cfg.clone());
+        let src = LlmSource::Live(live.clone());
+        assert_eq!(src.get().fallback_models, cfg.llm.fallback_models);
+        cfg.llm.fallback_models = vec!["m-live".into()];
+        cfg.llm.fallback_url = "http://127.0.0.1:9/v1".into();
+        live.set(cfg.clone());
+        let got = src.get();
+        assert_eq!(got.fallback_models, vec!["m-live".to_string()]);
+        let rungs = resolve::env_rungs(Role::Chat, &got);
+        assert_eq!(rungs.len(), 1);
+        let fixed = LlmSource::Fixed(sf_core::config::LlmCfg::default());
+        assert_eq!(
+            fixed.get().fallback_models,
+            sf_core::config::LlmCfg::default().fallback_models
+        );
     }
 
     #[test]

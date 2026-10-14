@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import {
   changePassword,
   disconnectGsc,
@@ -12,18 +12,22 @@ import {
   type GscStatus,
   type UsageSummary,
 } from '../api';
-import { ApiTokensPanel } from '../components/ApiTokensPanel';
 import { AuditLogPanel } from '../components/AuditLogPanel';
 import { BackupsPanel } from '../components/BackupsPanel';
 import { LinkRulesPanel } from '../components/LinkRulesPanel';
-import { McpPanel } from '../components/McpPanel';
 import { NotificationsPanel } from '../components/NotificationsPanel';
 import { ModelsPanel } from '../components/ModelsPanel';
 import { PostLink } from '../components/PostLink';
 import { EmptyState, Skeleton } from '../components/Skeleton';
 import { StatusChip } from '../components/StatusChip';
 import { Toggle } from '../components/Toggle';
-import { Knowledgebase } from '../components/Knowledgebase';
+import { ApiMcpPanel } from '../components/settings/ApiMcpPanel';
+import { BackupSettingsCard, LlmFallbackCard, ServerSettingsCard } from '../components/settings/ExtraCards';
+import { ResourcesPanel } from '../components/settings/ResourcesPanel';
+import { WordPressServerCards } from '../components/settings/WordPressPanel';
+import { WpCredentialsForm } from '../components/WpCredentialsForm';
+import { HelpButton } from '../docs';
+import { readTheme, saveTheme, type Theme } from '../theme';
 import { useActiveSite } from '../activeSite';
 import { fmtDate, fmtDuration } from '../format';
 import { useHints } from '../hints';
@@ -38,18 +42,15 @@ import type { HistoryRow, JobRun, SiteListItem } from '../types';
 
 type SectionId =
   | 'general'
-  | 'account'
-  | 'cms'
   | 'linking'
-  | 'gsc'
+  | 'resources'
+  | 'wordpress'
   | 'models'
-  | 'plans'
-  | 'activity'
+  | 'api'
   | 'notifications'
   | 'backups'
-  | 'tokens'
-  | 'integrations'
-  | 'kb';
+  | 'activity'
+  | 'account';
 
 interface SectionDef {
   id: SectionId;
@@ -60,39 +61,32 @@ interface SectionDef {
 }
 
 const SECTIONS: SectionDef[] = [
-  { id: 'general', label: 'General', hint: 'Interface preferences — including the toggle for the hover help hints.' },
-  { id: 'account', label: 'Account', hint: 'Your signed-in email and role, and change your password.' },
-  { id: 'cms', label: 'CMS Integration', hint: 'Connect WordPress, Shopify (soon) or any CMS via CSV.' },
+  { id: 'general', label: 'General', hint: 'Interface preferences, theme, usage totals and server options.' },
+  { id: 'linking', label: 'Linking Rules', hint: 'Per-site link density limits and the post-injection verification switch.' },
   {
-    id: 'linking',
-    label: 'Linking Rules',
-    hint: 'Per-site link density limits and the post-injection verification switch.',
-  },
-  { id: 'gsc', label: 'Search Console', hint: 'Connect Google Search Console per site for rank-aware scoring.' },
-  {
-    id: 'models',
-    label: 'Models',
-    hint: 'LLM providers, the models under them, and the fallback chain each role uses. Admins only.',
+    id: 'resources',
+    label: 'Resources & Performance',
+    hint: 'CPU threads, concurrent jobs, memory caps and CPU/GPU balancing for embeddings. Admins only.',
     adminOnly: true,
   },
-  { id: 'plans', label: 'Plans & Usage', hint: 'Self-hosted usage totals — unlimited, no per-link cost.' },
+  { id: 'wordpress', label: 'WordPress', hint: 'Site credentials, defaults for new sites, crawling, Search Console and other CMSes.' },
+  { id: 'models', label: 'AI Models', hint: 'LLM providers, models, fallback chains and the last-resort fallback. Admins only.', adminOnly: true },
+  { id: 'api', label: 'API & MCP', hint: 'API tokens and their scopes, the MCP tool manager and how to connect Hermes Agent.' },
+  { id: 'notifications', label: 'Notifications', hint: 'Where alerts go: webhook, ntfy, Telegram, Hermes, desktop toast. Admins only.', adminOnly: true },
+  { id: 'backups', label: 'Backups', hint: 'Create, verify, download and schedule backups of the whole install. Admins only.', adminOnly: true },
   { id: 'activity', label: 'Activity', hint: 'Current jobs and the most recent applied links for the active site (plus the audit log for admins).' },
-  {
-    id: 'notifications',
-    label: 'Notifications',
-    hint: 'Where alerts go: webhook, ntfy, Telegram, Hermes, desktop toast. Admins only.',
-    adminOnly: true,
-  },
-  {
-    id: 'backups',
-    label: 'Backups',
-    hint: 'Create, verify, download and delete backups of the whole install. Admins only.',
-    adminOnly: true,
-  },
-  { id: 'tokens', label: 'API tokens', hint: 'Personal tokens for Hermes Agent, the MCP server and scripts.' },
-  { id: 'integrations', label: 'Integrations', hint: 'Connect Hermes Agent and other MCP clients to SiloForge.' },
-  { id: 'kb', label: 'Knowledge Base', hint: 'Guides and reference for getting the most out of SiloForge.' },
+  { id: 'account', label: 'Account', hint: 'Your signed-in email and role, and change your password.' },
 ];
+
+/** Section ids from older links, mapped onto the v2.1 sections. */
+const LEGACY_SECTIONS: Record<string, SectionId> = {
+  tokens: 'api',
+  integrations: 'api',
+  mcp: 'api',
+  cms: 'wordpress',
+  gsc: 'wordpress',
+  plans: 'general',
+};
 
 // ---------------------------------------------------------------------------
 // Shared bits
@@ -184,6 +178,7 @@ function SiteScope({
 
 function GeneralPanel() {
   const { enabled, setEnabled } = useHints();
+  const [theme, setTheme] = useState<Theme>(readTheme);
   return (
     <div className="card">
       <PanelHead title="General" sub="Interface preferences for this device." />
@@ -201,6 +196,29 @@ function GeneralPanel() {
             label="Show help hints on hover"
             dataHint="Turns the hover explanations on or off everywhere in the app. Your choice is remembered on this device."
           />
+        </div>
+        <div className="settings-row">
+          <div className="settings-row-text">
+            <div className="settings-row-label">Theme</div>
+            <div className="settings-row-desc">Light, dark, or follow this device&apos;s setting.</div>
+          </div>
+          <div className="segmented" role="radiogroup" aria-label="Theme">
+            {(['system', 'light', 'dark'] as Theme[]).map((t) => (
+              <button
+                key={t}
+                type="button"
+                role="radio"
+                aria-checked={theme === t}
+                className={theme === t ? 'on' : ''}
+                onClick={() => {
+                  setTheme(t);
+                  saveTheme(t);
+                }}
+              >
+                {t === 'system' ? 'System' : t === 'light' ? 'Light' : 'Dark'}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -743,7 +761,8 @@ export function SettingsPage() {
   const sectionIds = useMemo(() => new Set<string>(sections.map((s) => s.id)), [sections]);
 
   const raw = params.get('section');
-  const section: SectionId = raw && sectionIds.has(raw) ? (raw as SectionId) : 'general';
+  const mapped = raw ? (LEGACY_SECTIONS[raw] ?? raw) : null;
+  const section: SectionId = mapped && sectionIds.has(mapped) ? (mapped as SectionId) : 'general';
 
   const goTo = useCallback(
     (id: SectionId) => {
@@ -754,14 +773,20 @@ export function SettingsPage() {
 
   // No-flash effective site for scoped panels (defaults to first site).
   const effectiveSiteId = useMemo(() => siteId ?? sites[0]?.id ?? null, [siteId, sites]);
+  const current = sections.find((s) => s.id === section);
+
+  // The old Knowledge Base section now lives on the Docs page.
+  if (raw === 'kb') return <Navigate to="/docs/operating-procedures" replace />;
 
   return (
     <div>
       <div className="page-head">
         <div>
           <h1>Settings</h1>
-          <div className="page-sub">Preferences, account, integrations and usage.</div>
+          <div className="page-sub">{current?.hint ?? 'Preferences, account, integrations and usage.'}</div>
         </div>
+        <div className="spacer" />
+        <HelpButton />
       </div>
 
       <div className="settings-hub">
@@ -781,41 +806,50 @@ export function SettingsPage() {
         </nav>
 
         <div className="settings-panel">
-          {section === 'general' && <GeneralPanel />}
+          {section === 'general' && (
+            <>
+              <GeneralPanel />
+              <PlansPanel />
+              {isAdmin && <ServerSettingsCard />}
+            </>
+          )}
           {section === 'account' && <AccountPanel />}
-          {section === 'cms' && <CmsPanel siteId={effectiveSiteId} sites={sites} onChange={setSiteId} />}
           {section === 'linking' && (
             <>
-              <PanelHead
-                title="Linking Rules"
-                sub="How many internal links a page may carry, and how carefully they're written."
-              />
+              <PanelHead title="Linking Rules" sub="How many internal links a page may carry, and how carefully they're written." />
               <SiteScope siteId={effectiveSiteId} sites={sites} onChange={setSiteId}>
                 {(id) => <LinkRulesPanel siteId={id} />}
               </SiteScope>
             </>
           )}
+          {section === 'resources' && isAdmin && (
+            <>
+              <PanelHead title="Resources & Performance" sub="How much of this machine SiloForge may use, and where embeddings run." />
+              <ResourcesPanel />
+            </>
+          )}
+          {section === 'wordpress' && (
+            <>
+              <PanelHead title="WordPress" sub="How SiloForge connects to each site, and the defaults every site starts with." />
+              <SiteScope siteId={effectiveSiteId} sites={sites} onChange={setSiteId}>
+                {(id) => (
+                  <>
+                    <WpCredentialsForm siteId={id} />
+                    <GscBody siteId={id} />
+                  </>
+                )}
+              </SiteScope>
+              {isAdmin && <WordPressServerCards />}
+              <CmsPanel siteId={effectiveSiteId} sites={sites} onChange={setSiteId} />
+            </>
+          )}
           {section === 'models' && isAdmin && (
             <>
-              <PanelHead
-                title="Models"
-                sub="Providers, the models under them, and the fallback chain each role runs on."
-              />
+              <PanelHead title="AI Models" sub="Providers, the models under them, and the fallback chain each role runs on." />
               <ModelsPanel />
+              <LlmFallbackCard />
             </>
           )}
-          {section === 'gsc' && (
-            <>
-              <PanelHead
-                title="Search Console"
-                sub="Connect Google Search Console per site for rank-aware link scoring."
-              />
-              <SiteScope siteId={effectiveSiteId} sites={sites} onChange={setSiteId}>
-                {(id) => <GscBody siteId={id} />}
-              </SiteScope>
-            </>
-          )}
-          {section === 'plans' && <PlansPanel />}
           {section === 'activity' && (
             <>
               <PanelHead title="Activity" sub="Live jobs and the latest applied links for the active site." />
@@ -823,45 +857,28 @@ export function SettingsPage() {
                 {(id) => <ActivityBody siteId={id} />}
               </SiteScope>
               {isAdmin && <AuditLogPanel />}
+              <div className="muted" style={{ fontSize: 13 }}>
+                Every API, MCP and job event is on the <Link to="/logs">Logs</Link> page.
+              </div>
             </>
           )}
-          {section === 'notifications' && (
+          {section === 'notifications' && isAdmin && (
             <>
-              <PanelHead
-                title="Notifications"
-                sub="Every alert shows under the bell in the top bar. Channels also deliver it elsewhere."
-              />
+              <PanelHead title="Notifications" sub="Every alert shows under the bell in the top bar. Channels also deliver it elsewhere." />
               <NotificationsPanel />
             </>
           )}
           {section === 'backups' && isAdmin && (
             <>
-              <PanelHead
-                title="Backups"
-                sub="Snapshots of the database, config and secrets. Download one before upgrades or moves."
-              />
+              <PanelHead title="Backups" sub="Snapshots of the database, config and secrets. Download one before upgrades or moves." />
               <BackupsPanel />
+              <BackupSettingsCard />
             </>
           )}
-          {section === 'tokens' && (
+          {section === 'api' && (
             <>
-              <PanelHead
-                title="API tokens"
-                sub="Tokens act as your account, limited by their scopes. Use them for Hermes, MCP and scripts."
-              />
-              <ApiTokensPanel />
-            </>
-          )}
-          {section === 'integrations' && (
-            <>
-              <PanelHead title="Integrations" sub="Connect Hermes Agent and other MCP clients to this server." />
-              <McpPanel />
-            </>
-          )}
-          {section === 'kb' && (
-            <>
-              <PanelHead title="Knowledge Base" sub="Guides and reference for SiloForge." />
-              <Knowledgebase />
+              <PanelHead title="API & MCP" sub="Tokens for Hermes, MCP clients and scripts, which MCP tools they may use, and how to connect." />
+              <ApiMcpPanel />
             </>
           )}
         </div>

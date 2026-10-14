@@ -32,3 +32,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 rusqlite.workspace = true
+# v2.1 restart: detect the keepalive task host (parent conhost --headless)
+sysinfo.workspace = true

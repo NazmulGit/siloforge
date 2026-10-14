@@ -12,7 +12,7 @@ use crate::ctx::{Job, JobContext, JobResult};
 
 pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
     job.progress("prune", 10.0).await;
-    let report = prune(&ctx.db, &RetentionPolicy::from_config(&ctx.cfg)).await?;
+    let report = prune(&ctx.db, &RetentionPolicy::from_config(&ctx.live.get())).await?;
     job.checkpoint().await?;
     job.progress("optimize", 60.0).await;
     maintenance(&ctx.db, true).await?;

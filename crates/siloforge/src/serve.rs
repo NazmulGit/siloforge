@@ -87,7 +87,7 @@ async fn seed_admin(cfg: &Config, db: &Db) -> Result<()> {
 pub async fn run(home: PathBuf) -> Result<()> {
     // R2: the exclusive instance lock is the very first thing (before the DB is even opened), so
     // a second `serve` on the same home fails fast without touching jobs or files.
-    let _instance = sf_ops::instance::InstanceGuard::acquire(&home)
+    let instance = sf_ops::instance::InstanceGuard::acquire(&home)
         .with_context(|| format!("cannot start on {}", home.display()))?;
     let (cfg, db, key) = load(home.clone()).await?;
     let _log_guard = init_logging(&cfg, false);
@@ -118,14 +118,14 @@ pub async fn run(home: PathBuf) -> Result<()> {
     seed_admin(&cfg, &db).await?;
 
     let state = sf_server::AppState::new(cfg.clone(), db.clone(), key);
-    let cfg_arc = state.cfg.clone();
+    // v2.1: services read the live config, so PUT /api/v2/settings applies without a restart.
+    let live = state.live.clone();
 
     // Services (each background loop is supervised: sf_ops::supervise, R8).
     let notifier =
         sf_ops::notify::Notifier::start(db.clone(), state.secret_key.clone(), Default::default());
-    let monitor =
-        sf_ops::monitor::Monitor::start(cfg_arc.clone(), db.clone(), Some(notifier.clone()));
-    let ai = sf_ai::Ai::new(db.clone(), state.secret_key.clone(), cfg.llm.clone())
+    let monitor = sf_ops::monitor::Monitor::start(live.clone(), db.clone(), Some(notifier.clone()));
+    let ai = sf_ai::Ai::with_live(db.clone(), state.secret_key.clone(), live.clone())
         .map_err(|e| anyhow::anyhow!("ai init: {e}"))?;
     let embed = Arc::new(sf_embed::EmbedChain::from_config_budget(
         &cfg.embed,
@@ -134,6 +134,16 @@ pub async fn run(home: PathBuf) -> Result<()> {
         cfg.resources.low_priority_jobs,
     ));
     let errors = sf_ops::errors::ErrorTracker::new(db.clone());
+    // §9 unified event log: API middleware, jobs, auth, notifications and system events.
+    let events = sf_ops::eventlog::EventLog::start(db.clone(), Default::default());
+    notifier.set_events(events.clone());
+    state.jobs.set_events(events.clone());
+    state.services.insert(Arc::new(events.clone()));
+    events.record_system(
+        "system start",
+        true,
+        serde_json::json!({"version": sf_core::VERSION, "binds": cfg.server.binds}),
+    );
     state.services.insert(Arc::new(notifier.clone()));
     state.services.insert(Arc::new(monitor.clone()));
     state.services.insert(Arc::new(ai.clone()));
@@ -141,9 +151,15 @@ pub async fn run(home: PathBuf) -> Result<()> {
     state.services.insert(Arc::new(errors.clone()));
     state
         .services
-        .insert(Arc::new(sf_server::state::McpTools(sf_mcp::tools::catalogue().into_iter().map(|t| serde_json::json!({"name": t.name, "title": t.title, "description": t.description, "read_only": t.read_only, "destructive": t.destructive})).collect())));
+        .insert(Arc::new(crate::wire::mcp_catalogue()));
     let _backup_task =
-        sf_ops::backup::spawn_scheduler(cfg_arc.clone(), db.clone(), Some(notifier.clone()));
+        sf_ops::backup::spawn_scheduler(live.clone(), db.clone(), Some(notifier.clone()));
+    crate::wire::embed_follows_live(&live, embed.clone());
+    let (restart_tx, mut restart_rx) = tokio::sync::watch::channel(false);
+    state.services.insert(Arc::new(crate::wire::settings_hooks(
+        embed.clone(),
+        restart_tx,
+    )));
     // Retention + ANALYZE run as the daily `maintenance` job queued by the scheduler
     // (monitor.maintenance_cron, G2-3).
 
@@ -181,8 +197,11 @@ pub async fn run(home: PathBuf) -> Result<()> {
         }));
     }
 
-    shutdown_signal().await;
-    tracing::info!("shutting down");
+    let restarting = tokio::select! {
+        _ = shutdown_signal() => false,
+        _ = restart_rx.wait_for(|v| *v) => true,
+    };
+    tracing::info!(restarting, "shutting down");
     let _ = stop_tx.send(true);
     jobs.shutdown(std::time::Duration::from_secs(20)).await;
     // R17: long MCP-over-HTTP calls (wait_for_job) must not hold the exit forever.
@@ -194,7 +213,21 @@ pub async fn run(home: PathBuf) -> Result<()> {
             tracing::warn!("HTTP drain timed out; closing open connections");
         }
     }
+    events.record_system(
+        "system stop",
+        true,
+        serde_json::json!({"uptime_secs": state.started.elapsed().as_secs(), "restarting": restarting}),
+    );
+    events.flush().await;
     db.close();
+    if restarting {
+        // the lock and the ports are released before the replacement starts
+        let plan = crate::restart::current_plan();
+        drop(instance);
+        crate::restart::relaunch(&plan);
+    } else {
+        drop(instance);
+    }
     Ok(())
 }
 

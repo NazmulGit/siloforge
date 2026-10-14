@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod eventlog;
 pub mod state;
 pub mod ui;
 pub mod v1;
@@ -46,7 +47,11 @@ pub fn router(state: AppState, extra: Option<Router<AppState>>) -> Router {
         .nest("/api/v2", v2::router())
         .route("/api/{*rest}", axum::routing::any(api_not_found));
     if let Some(extra) = extra {
-        app = app.merge(extra);
+        // v2.1 §3: `/mcp` answers 404 while the MCP policy has `http_enabled: false`.
+        app = app.merge(extra.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            v2::mcp::http_gate,
+        )));
     }
     let app = app
         .fallback(ui::serve)
@@ -62,6 +67,10 @@ pub fn router(state: AppState, extra: Option<Router<AppState>>) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             error::track_errors,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            eventlog::middleware,
         ))
         .with_state(state)
 }

@@ -12,8 +12,8 @@ passwords, tokens, credentials) are redacted in its output.
 
 ## What is compared
 
-- Sites: **big** site26.example (2,621 posts, ~14.7k edges, 46k link-health rows), **medium** site38.example
-  (152 posts), **tiny** site24.example (4 posts), **empty** site70.example (0 posts).
+- Sites: **big** site24.example (2,621 posts, ~14.7k edges, 46k link-health rows), **medium** site45.example
+  (152 posts), **tiny** site21.example (4 posts), **empty** site67.example (0 posts).
 - Endpoints: every GET the UI (05-ui-audit) and the MCP tools (04-integrations section 3) call, plus the plugin's
   `GET /suggestions/:site`, the admin model endpoints and `/health`: sites list/get, gsc status, dashboard, edges
   (status / tool / limit / offset variants, incl. the MCP default `limit=200` and the UI's `limit=2000`), posts
@@ -36,7 +36,7 @@ First run: 49 of 187 requests had real mismatches. Apart from the intentional on
    (punctuation/spaces ignored, case- and accent-insensitive, lowercase before uppercase); SQLite used BINARY
    (`Zebra` < `apple`, `tag/bottle-art/` < `tag/bottle/`, `water bottle many` < `water bottled brands`).
    Effects on real data: `/posts` returned a different set of posts inside large `suggested_out` ties (61 of 500
-   posts differed on site26 at `limit=500`; page 2 at `limit=100&offset=100` shared 0 of 100 posts with v1),
+   posts differed on site24 at `limit=500`; page 2 at `limit=100&offset=100` shared 0 of 100 posts with v1),
    and the order differed in `/posts` `clusters[]`, dashboard `orphan_posts` and `cannibalization_warnings` (which
    also changed *which* 20 warnings are shown), `/reports/links` pagerank ties, `/silo/:site/clusters`,
    `/silo/:site/clusters/export` (cluster order and `member_urls` order), every link-health list, breadcrumbs
@@ -77,7 +77,7 @@ by microseconds now tie and v2 breaks the tie by `id`. This shows up in `/edges`
 `/history` JSON + CSV (applied_at, decided_at), `/csv/export` and `/suggestions` (created_at). The harness checks
 that the v1 and v2 sort-key sequences are identical; for csv export and suggestions (keys not in the payload)
 `verify_order.py` checks v1's order against the timestamps stored in v2: 0 violations (e.g. 165 adjacent ms ties in
-site26 suggestions). `/reports/anchors` `byAnchor` ties on `count` (v1 has no tie-break; v2 adds `anchor`).
+site24 suggestions). `/reports/anchors` `byAnchor` ties on `count` (v1 has no tie-break; v2 adds `anchor`).
 Link-health nofollow rows that are identical on (scope, source_url, href) differ only in other columns.
 
 ## Performance
@@ -94,7 +94,7 @@ full diff + timing run, 200 MiB peak working set** (peak during the 46k-row link
 Debug build: 33 MiB after the run, 200 MiB peak.
 
 **Where v2 is slower** (pre-existing, not caused by the fix; also measured with the collation disabled):
-`/reports/link-health` on site26 (~330-360 ms vs ~40 ms: summary + six sorted lists run sequentially in one
+`/reports/link-health` on site24 (~330-360 ms vs ~40 ms: summary + six sorted lists run sequentially in one
 read, each 30-50 ms over 46k rows, while v1 runs its 9 queries in parallel), `/reports/graph` (~165 ms vs ~21 ms),
 `/reports/links` (~220 ms vs ~72 ms), `/posts` on the big site (~120-190 ms vs ~30-60 ms) and `/dashboard`
 (~180 ms vs ~76 ms). Suggested follow-ups (performance, not contract): run the link-health lists as parallel
@@ -367,9 +367,9 @@ Tiny/empty-site and negative rows are omitted from the table (all < 15 ms on bot
 | sum of p50 (one pass over every endpoint) | 4612 | 6594 | 5727 |
 | requests where v2 release p50 < v1 p50 | | | 145/203 |
 
-Largest v2-release/v1 p50 ratios (same-status requests only): `big:site26.example /reports/graph/:site?max_nodes=50&max_edges=100` x14.86; `big:site26.example /reports/link-health/:site?limit=10&offset=5` x8.88; `big:site26.example /reports/link-health/:site?limit=1` x8.58; `big:site26.example /reports/link-health/:site?limit=250` x8.04; `big:site26.example /reports/graph/:site` x7.66; `big:site26.example /posts/:site?cluster_id=` x7.22
+Largest v2-release/v1 p50 ratios (same-status requests only): `big:site24.example /reports/graph/:site?max_nodes=50&max_edges=100` x14.86; `big:site24.example /reports/link-health/:site?limit=10&offset=5` x8.88; `big:site24.example /reports/link-health/:site?limit=1` x8.58; `big:site24.example /reports/link-health/:site?limit=250` x8.04; `big:site24.example /reports/graph/:site` x7.66; `big:site24.example /posts/:site?cluster_id=` x7.22
 
-### Perf pass (2026-10-13): heavy reads on site26.example, before/after
+### Perf pass (2026-10-13): heavy reads on site24.example, before/after
 
 The table above was measured before this pass. Changes: migration `0003_perf` (covering indexes
 for the per-site scans: `posts` rows carry 40 KB of HTML in front of the counters, so every
@@ -389,7 +389,7 @@ release binary on the same copy without the 0003 indexes. (Python `urllib`/`http
 this Windows host are bimodal at ~15.6 ms timer steps for both servers when other jobs load the
 machine, so curl medians are used here.)
 
-| Endpoint (site26.example) | v1 p50 | v2 before p50 | v2 after p50 | v2 after p95 |
+| Endpoint (site24.example) | v1 p50 | v2 before p50 | v2 after p50 | v2 after p95 |
 |---|---|---|---|---|
 | `/reports/link-health/:site?limit=1` | 40.9 | 400.7 | 15.4 | 19.5 |
 | `/reports/link-health/:site?limit=250` | 43.0 | 332.3 | 27.2 | 30.2 |

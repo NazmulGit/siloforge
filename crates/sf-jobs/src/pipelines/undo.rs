@@ -63,7 +63,7 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
         stats.failed = ids.len();
         return done(stats);
     }
-    let writer = WpWriter::new(site.http_client(ctx)?, site.wp_site(true)?)?;
+    let writer = WpWriter::new(site.wp_http_client(ctx)?, site.wp_site(true)?)?;
     let mut groups: BTreeMap<String, Vec<EdgeRow>> = BTreeMap::new();
     for e in edges {
         groups.entry(e.source.clone()).or_default().push(e);

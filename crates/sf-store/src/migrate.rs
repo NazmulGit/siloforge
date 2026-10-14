@@ -22,6 +22,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0005_reliability",
         include_str!("../migrations/0005_reliability.sql"),
     ),
+    (
+        6,
+        "0006_event_log",
+        include_str!("../migrations/0006_event_log.sql"),
+    ),
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {

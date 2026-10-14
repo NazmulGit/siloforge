@@ -5,7 +5,9 @@
 //! v1 migration, API tokens, diagnostics.
 
 mod cmds;
+mod restart;
 mod serve;
+mod wire;
 
 use std::path::PathBuf;
 

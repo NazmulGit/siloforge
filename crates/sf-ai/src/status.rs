@@ -85,7 +85,7 @@ impl Ai {
     /// success rate over the last `status_window` attempts in `model_call_log`.
     pub async fn status(&self) -> Result<Vec<ProviderStatus>, AiError> {
         let n = self.inner.opts.status_window.max(1);
-        let env_models = resolve::env_rungs(Role::Chat, &self.inner.llm);
+        let env_models = resolve::env_rungs(Role::Chat, &self.inner.llm.get());
         let (providers, models, windows, env_window) = self
             .db()
             .read(move |c| {

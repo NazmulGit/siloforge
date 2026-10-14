@@ -3,6 +3,39 @@
 All notable changes to SiloForge. Versions follow [SemVer](https://semver.org). v2 is a rewrite in Rust; the v1
 history (TypeScript, Docker) is summarised at the end.
 
+## [2.1.0] - 2026-10-14
+
+Settings, resources and agent control. The app UI was refreshed; v1 API contract unchanged.
+
+### Added
+- **Settings → Resources & Performance**: CPU threads, concurrent jobs, vector cache, process RAM cap, low priority,
+  defer-when-busy, alert thresholds; live-applied (restart only when needed, one-click restart in 1–2 s).
+- **CPU/GPU load balancing**: embedding modes `auto | gpu | cpu | hybrid | remote`. Hybrid runs DirectML (GPU) and CPU on the
+  same job in parallel: 526–708 texts/s vs 307–581 GPU-only and 142–240 CPU-only on the 64-paragraph fixture; cosine 1.000000.
+- **API & MCP** (one section): editable token name/scopes/expiry, per-token MCP tool allowlist; MCP tool manager with
+  categories, enable/disable, minimum scope, destructive badges and 24 h call/error stats; HTTP transport toggle.
+- **118 MCP tools** (the 28 v1-era names kept) so an agent such as Hermes can manage everything: sites, runs, edges, rules,
+  schedules, reports, silos, posts, AI models, settings, system, jobs, backups, notifications, tokens, MCP policy, logs, docs,
+  downloads, plus `siloforge_capabilities` and the admin-only, off-by-default `siloforge_api_request`. New destructive tools
+  require `confirm: true`.
+- **Logs**: unified event log of API requests, MCP tool calls, jobs, logins, notifications and system events; filters,
+  search, live tail, CSV export, stats; 90-day retention; no bodies or secrets.
+- **Docs**: built-in user guide (22 pages) with a Docs page and a context "?" side drawer.
+- **Downloads**: app package and WordPress plugin zips with version, size and SHA-256.
+- **WordPress settings**: global defaults and a per-site connection dialog for the application password.
+- Link Health "Check internal links only" button. Dark mode.
+
+### Changed
+- Menu: site pages are always reachable (remembered site + site picker); grouped Site · Workspace · Settings.
+- Visual refresh across the app.
+- SiloForge Connect WordPress plugin **0.2.0** is now part of this repository (history kept): verifies the target paragraph
+  before inserting, acks only after a successful save, shows backend health, handles key rotation.
+- Release tooling: `scripts/release.sh`, `scripts/publish-github.sh`, `docs/RELEASING.md`; every release ships the app zip and
+  the plugin zip.
+
+### Fixed
+- GPU name probe and desktop notifications no longer hang on PCs where PowerShell stalls with ALLUSERSPROFILE/SYSTEMDRIVE set.
+
 ## [2.0.2] - 2026-10-14
 
 Completes the open items from the v2 audits. v1 is archived (containers removed, data kept for rollback).
