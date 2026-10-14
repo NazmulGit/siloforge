@@ -1,0 +1,103 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+authors = ["Nazmul Hasan"]
+repository = "https://github.com/NazmulGit/siloforge"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+
+[workspace.dependencies]
+# internal
+sf-core = { path = "crates/sf-core" }
+sf-store = { path = "crates/sf-store" }
+sf-engine = { path = "crates/sf-engine" }
+sf-embed = { path = "crates/sf-embed" }
+sf-ai = { path = "crates/sf-ai" }
+sf-crawl = { path = "crates/sf-crawl" }
+sf-jobs = { path = "crates/sf-jobs" }
+sf-ops = { path = "crates/sf-ops" }
+sf-mcp = { path = "crates/sf-mcp" }
+sf-server = { path = "crates/sf-server" }
+
+# runtime / web
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "signal", "time", "sync", "process", "io-util"] }
+tokio-util = "0.7"
+futures = "0.3"
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["compression-gzip", "trace", "limit", "cors", "set-header"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "brotli", "stream"] }
+rust-embed = { version = "8", features = ["include-exclude"] }
+mime_guess = "2"
+
+# data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rusqlite = { version = "0.37", features = ["bundled", "serde_json", "backup", "blob"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+csv = "1"
+
+# security
+jsonwebtoken = { version = "9" }
+bcrypt = "0.17"
+aes-gcm = "0.10"
+scrypt = { version = "0.11", default-features = false }
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+subtle = "2"
+
+# compute
+rayon = "1"
+parking_lot = "0.12"
+scraper = "0.20"
+lol_html = "2"
+url = "2"
+regex = "1"
+unicode-segmentation = "1"
+rust-stemmers = "1"
+
+# ops
+sysinfo = "0.37"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+croner = "2"
+clap = { version = "4", features = ["derive", "env"] }
+
+# errors / logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-appender = "0.2"
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

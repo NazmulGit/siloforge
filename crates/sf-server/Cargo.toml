@@ -1,0 +1,43 @@
+[package]
+name = "sf-server"
+description = "SiloForge HTTP server: /api/v1, /api/v2, /mcp, UI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sf-core.workspace = true
+sf-store.workspace = true
+sf-jobs.workspace = true
+sf-crawl.workspace = true  # SSRF helpers for site-host validation (M-01)
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true
+parking_lot.workspace = true
+csv.workspace = true
+chrono.workspace = true
+rusqlite = { workspace = true, features = ["collation"] }  # COLLATE V1 (v1 text order)
+# v1 routes (work packet S)
+sf-ai = { workspace = true }
+croner = { workspace = true }
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+url = { workspace = true }
+regex = { workspace = true }
+uuid = { workspace = true }
+# v2 routes (work packet O)
+sf-ops = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true, features = ["util"] }

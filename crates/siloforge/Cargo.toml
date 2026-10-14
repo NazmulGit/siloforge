@@ -1,0 +1,34 @@
+[package]
+name = "siloforge"
+description = "SiloForge: self-hosted internal linking for WordPress (single binary)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "siloforge"
+path = "src/main.rs"
+
+[dependencies]
+sf-core.workspace = true
+sf-store.workspace = true
+sf-engine.workspace = true
+sf-embed.workspace = true
+sf-ai.workspace = true
+sf-jobs.workspace = true
+sf-ops.workspace = true
+sf-mcp.workspace = true
+sf-server.workspace = true
+tokio.workspace = true
+axum.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+rusqlite.workspace = true

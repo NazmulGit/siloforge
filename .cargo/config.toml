@@ -1,0 +1,6 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+# Prefer dependency versions whose MSRV <= workspace rust-version.
+[resolver]
+incompatible-rust-versions = "fallback"

@@ -1,0 +1,37 @@
+[package]
+name = "sf-ops"
+description = "SiloForge monitor, notifications, backup/restore, v1 migrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sf-core.workspace = true
+sf-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+sysinfo.workspace = true
+zip.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+csv.workspace = true
+croner.workspace = true
+aes-gcm.workspace = true
+scrypt.workspace = true
+sha2.workspace = true
+hex.workspace = true
+rand.workspace = true
+regex.workspace = true
+parking_lot.workspace = true
+hmac = "0.12"
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

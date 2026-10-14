@@ -1,0 +1,41 @@
+[package]
+name = "sf-jobs"
+description = "SiloForge job queue, runner, scheduler and pipelines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sf-core.workspace = true
+sf-store.workspace = true
+sf-engine.workspace = true
+sf-crawl.workspace = true
+sf-embed.workspace = true
+sf-ai.workspace = true
+sf-ops.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+croner.workspace = true
+futures.workspace = true
+url.workspace = true
+rayon.workspace = true
+# GSC pull (G2-2): workspace deps (rustls reqwest; jsonwebtoken ring backend for RS256)
+reqwest.workspace = true
+jsonwebtoken.workspace = true
+# crate-local (already in Cargo.lock via sf-server)
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+# lower OS priority of the compute pool threads (safe API; the unsafe FFI lives in the crate)
+thread-priority = "=3.1.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+axum.workspace = true

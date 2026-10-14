@@ -1,0 +1,78 @@
+# SiloForge v2 configuration. Copy to <home>/siloforge.toml (`siloforge init` does it for you).
+# Secrets (JWT_SECRET, SILOFORGE_ENCRYPTION_KEY, ADMIN_PASSWORD, OPENROUTER_API_KEY, ...) belong in
+# <home>/secrets.env or the environment — never in this file.
+
+[server]
+# v1 used 8600 (API) and 8601 (UI); in v2 both listeners serve API + UI + /mcp.
+binds = ["127.0.0.1:8600", "127.0.0.1:8601"]
+body_limit_mb = 25
+cors_origins = []
+
+[auth]
+# Self-registration from the login page (v1 had it open). Keep false unless you need it.
+allow_registration = false
+admin_email = "admin@siloforge.local"
+
+[resources]
+# Threads for CPU-heavy work (scoring, graph, anchors, CPU embeddings). 0 = about half the physical cores.
+cpu_threads = 0
+# Jobs running at once (different sites). Jobs that change a site never overlap on the same site.
+max_concurrent_jobs = 3
+# RAM budget for cached site vectors (MB).
+vector_cache_mb = 512
+# Run heavy jobs at lower OS priority so the PC stays responsive.
+low_priority_jobs = true
+# Don't start heavy jobs while total CPU is above this percent (0 = off).
+defer_when_cpu_above = 0.0
+
+[embed]
+# Tried in order: remote (OpenRouter key 1), remote2 (key 2), onnx (ONNX Runtime: DirectML GPU, else CPU), local (candle, if built in).
+chain = ["remote", "remote2", "onnx", "local"]
+remote_url = "https://openrouter.ai/api/v1"
+remote_model = "sentence-transformers/all-minilm-l6-v2"
+batch_size = 64
+max_chars = 2000
+timeout_ms = 20000
+retries = 2
+model_dir = ""          # default <home>/models/all-MiniLM-L6-v2
+onnx_runtime_dir = ""   # default: next to the exe, then <home>/runtime
+gpu = true
+
+[llm]
+# Used when no model chain is active in Settings → Models (OpenAI-compatible; v1 used dario).
+fallback_url = "http://127.0.0.1:3460/v1"
+fallback_models = ["claude-sonnet-5-5"]
+timeout_ms = 120000
+
+[crawl]
+allow_private_hosts = false
+concurrency = 4
+timeout_ms = 20000
+max_pages = 20000
+
+[crawl.host_aliases]
+"site01.example" = "127.0.0.1"
+
+[backup]
+dir = ""                 # default <home>/backups
+keep = 10
+schedule = "17 3 * * *"  # daily 03:17 local; "" = off
+passphrase_env = "SILOFORGE_BACKUP_PASSPHRASE"
+
+[monitor]
+sample_secs = 5
+retain_days = 14
+job_log_retain_days = 30
+alert_cpu_pct = 95.0
+alert_mem_pct = 92.0
+alert_disk_free_mb = 2048
+# Daily maintenance job (retention prune + ANALYZE), local-time cron; "" disables it.
+maintenance_cron = "30 4 * * *"
+# Retention in days (0 = keep forever). Snapshots backing an applied link are always kept;
+# the newest job_runs_keep_per_site runs per site and kind are always kept. site_metrics_history is kept.
+job_runs_retain_days = 180
+job_runs_keep_per_site = 50
+snapshot_retain_days = 180
+errors_retain_days = 90
+notifications_retain_days = 90
+audit_log_retain_days = 365

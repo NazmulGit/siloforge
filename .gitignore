@@ -1,0 +1,13 @@
+/target
+/dist
+/data
+/plan/STATUS.md
+*.db
+*.db-wal
+*.db-shm
+.env
+siloforge.toml
+ui/node_modules
+ui/dist
+*.bak
+*.log

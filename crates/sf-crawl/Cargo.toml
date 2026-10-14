@@ -1,0 +1,35 @@
+[package]
+name = "sf-crawl"
+description = "SiloForge crawler, SSRF guard, link health, WP writer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sf-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+scraper.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+regex.workspace = true
+# crate-local additions (pure Rust)
+texting_robots = "0.2"
+quick-xml = "0.37"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+bytes = "1"
+ego-tree = "0.6"
+httpdate = "1"
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

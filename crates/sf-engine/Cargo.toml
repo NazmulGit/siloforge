@@ -1,0 +1,32 @@
+[package]
+name = "sf-engine"
+description = "SiloForge pure linking algorithms (no IO)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sf-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+parking_lot.workspace = true
+scraper.workspace = true
+lol_html.workspace = true
+url.workspace = true
+regex.workspace = true
+unicode-segmentation.workspace = true
+rust-stemmers.workspace = true
+sha1.workspace = true
+hex.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+markup5ever = "0.12"
+
+[dev-dependencies]
+# exact f64 parsing for the v1 golden fixtures (sf-engine E2)
+serde_json = { version = "1", features = ["float_roundtrip"] }
