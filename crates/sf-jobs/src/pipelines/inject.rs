@@ -49,6 +49,41 @@ pub struct EdgeRow {
     pub src_wp_id: Option<i64>,
     pub src_type: String,
     pub src_url: String,
+    /// Fix-broken edge: the broken href whose link is re-pointed (`score_breakdown.replace_href`)
+    /// instead of wrapping new text.
+    pub replace_href: Option<String>,
+    /// The target is a money page (`posts.meta.money_page`): AI work runs on the `money_page` tier.
+    pub target_money: bool,
+}
+
+/// Inject behaviour switches (link runs).
+#[derive(Debug, Clone)]
+pub struct InjectOpts {
+    /// Allow the AI rephrase/context modules when the native insertion fails.
+    pub allow_llm: bool,
+    /// Fall back to the AI context module for *any* edge whose anchor cannot be placed natively,
+    /// even when the site's insert modules do not list rephrase/context (a link run with the
+    /// Contextual strategy ticked; E2E 2.2: native items of a contextual run ended as
+    /// "no AI insertion model" content gaps with an AI chain active).
+    pub llm_fallback: bool,
+    /// "Apply properly" pass: AI insertions are accounted as task `repair_insert`.
+    pub repair: bool,
+    /// Run/site marked high priority: AI insertions use the `priority` tier.
+    pub high_priority: bool,
+    /// Link Run id (or job id) for AI accounting.
+    pub run_id: Option<String>,
+}
+
+impl Default for InjectOpts {
+    fn default() -> Self {
+        Self {
+            allow_llm: true,
+            llm_fallback: false,
+            repair: false,
+            high_priority: false,
+            run_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +91,10 @@ enum Outcome {
     Applied {
         link_start: usize,
         module: InsertModule,
+        /// What an AI module changed, so undo can take it back byte for byte
+        /// (`score_breakdown.llm_edit`): `{kind: context, inserted}` or
+        /// `{kind: rephrase, before, after}`.
+        llm: Option<Value>,
     },
     Failed {
         error: String,
@@ -91,7 +130,26 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
         }));
     }
     let ids = job.payload_ids("edge_ids", "edgeIds", MAX_EDGES);
-    let edges = load_approved(ctx, &site.id, &ids).await?;
+    let opts = InjectOpts {
+        high_priority: site.setting_bool("ai_high_priority"),
+        run_id: Some(job.id.clone()),
+        ..InjectOpts::default()
+    };
+    let stats = inject_edges(ctx, job, &site, &ids, opts).await?;
+    finish(stats)
+}
+
+/// Inject these approved edges (ids of other statuses are ignored). The caller holds the site
+/// lock and has reconciled the journal ([`reconcile_for_job`]).
+pub async fn inject_edges(
+    ctx: &JobContext,
+    job: &Job,
+    site: &SiteInfo,
+    ids: &[String],
+    opts: InjectOpts,
+) -> JobResult<InjectStats> {
+    let site = site.clone();
+    let edges = load_approved(ctx, &site.id, ids).await?;
     let mut stats = InjectStats::default();
     job.info(format!(
         "inject: {} of {} requested edges are approved",
@@ -100,7 +158,7 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
     ))
     .await;
     if edges.is_empty() {
-        return finish(stats);
+        return Ok(stats);
     }
     if !site.has_wp_credentials() {
         // Plugin-pull mode (v1 'marked'): keep approved, record how to insert.
@@ -126,7 +184,7 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
             "no WordPress application password: {n} edges left approved for the plugin to pull"
         ))
         .await;
-        return finish(stats);
+        return Ok(stats);
     }
     let client = site.http_client(ctx)?;
     let writer = WpWriter::new(client.clone(), site.wp_site(true)?)?;
@@ -138,7 +196,7 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
     for (i, (source, group)) in groups.into_iter().enumerate() {
         job.checkpoint().await?;
         let res = process_post(
-            ctx, job, &site, &writer, &client, &source, &group, &mut stats,
+            ctx, job, &site, &writer, &client, &source, &group, &mut stats, &opts,
         )
         .await;
         if let Err(e) = res {
@@ -175,7 +233,7 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
         ))
         .await;
     }
-    finish(stats)
+    Ok(stats)
 }
 
 /// Reason stored on an edge that could not be inserted natively (v1 kept these silently approved).
@@ -208,7 +266,9 @@ async fn load_approved(ctx: &JobContext, site_id: &str, ids: &[String]) -> JobRe
             .read(move |c| {
                 let sql = format!(
                     "SELECT e.id, e.source_post_id, e.anchor, e.insert_module, pa.idx, pa.hash,
-                        t.url, t.title, s.wp_post_id, s.post_type, s.url
+                        t.url, t.title, s.wp_post_id, s.post_type, s.url,
+                        json_extract(CASE WHEN json_valid(e.score_breakdown) THEN e.score_breakdown ELSE '{{}}' END, '$.replace_href'),
+                        CASE WHEN json_valid(t.meta) AND json_extract(t.meta, '$.money_page') IN (1, 'true') THEN 1 ELSE 0 END
                      FROM link_edges e
                      JOIN posts s ON s.id = e.source_post_id
                      JOIN posts t ON t.id = e.target_post_id
@@ -236,6 +296,8 @@ async fn load_approved(ctx: &JobContext, site_id: &str, ids: &[String]) -> JobRe
                             src_wp_id: r.get(8)?,
                             src_type: r.get(9)?,
                             src_url: r.get(10)?,
+                            replace_href: r.get::<_, Option<String>>(11).ok().flatten(),
+                            target_money: r.get::<_, i64>(12).unwrap_or(0) != 0,
                         })
                     })
                     .map_err(err)?
@@ -261,6 +323,7 @@ async fn process_post(
     source: &str,
     group: &[EdgeRow],
     stats: &mut InjectStats,
+    opts: &InjectOpts,
 ) -> JobResult<()> {
     let fail_all = |error: String, kind: &'static str| -> Vec<(String, Outcome)> {
         group
@@ -294,7 +357,7 @@ async fn process_post(
             return persist(ctx, &outs, None, stats).await;
         }
     };
-    let (mut new_content, mut outcomes) = apply_all(ctx, site, &raw.raw, group).await;
+    let (mut new_content, mut outcomes) = apply_all(ctx, site, &raw.raw, group, opts).await;
     let mut base = raw.clone();
     if !outcomes
         .iter()
@@ -332,7 +395,7 @@ async fn process_post(
         .await;
         match writer.get_post_raw(wp_id, &post_type).await {
             Ok(fresh) => {
-                let (c2, o2) = apply_all(ctx, site, &fresh.raw, group).await;
+                let (c2, o2) = apply_all(ctx, site, &fresh.raw, group, opts).await;
                 new_content = c2;
                 outcomes = o2;
                 if !outcomes
@@ -602,6 +665,7 @@ async fn apply_all(
     site: &SiteInfo,
     content: &str,
     group: &[EdgeRow],
+    opts: &InjectOpts,
 ) -> (String, Vec<(String, Outcome)>) {
     let mut cur = content.to_string();
     let mut outs: Vec<(String, Outcome)> = Vec::new();
@@ -609,6 +673,38 @@ async fn apply_all(
     let allowed = site.insert_modules();
     let mut llm_queue: Vec<&EdgeRow> = Vec::new();
     for e in group {
+        if let Some(old) = e.replace_href.as_deref() {
+            // fix-broken edge: re-point the broken link, keep its text
+            match sf_engine::insert::replace_link(&cur, old, &e.target_url, Some(&e.anchor), None) {
+                Ok(o) => {
+                    let delta = o.content.len().abs_diff(cur.len());
+                    let grew = o.content.len() >= cur.len();
+                    if grew {
+                        shift(&mut starts, &mut outs, o.link_start + 1, delta);
+                    } else {
+                        unshift(&mut starts, &mut outs, o.link_start + 1, delta);
+                    }
+                    cur = o.content;
+                    starts.push((outs.len(), o.link_start));
+                    outs.push((
+                        e.id.clone(),
+                        Outcome::Applied {
+                            link_start: o.link_start,
+                            module: InsertModule::Native,
+                            llm: None,
+                        },
+                    ));
+                }
+                Err(err) => outs.push((
+                    e.id.clone(),
+                    Outcome::Failed {
+                        error: format!("broken link to {old} not found in the post: {err}"),
+                        kind: "replace",
+                    },
+                )),
+            }
+            continue;
+        }
         match try_native(&cur, e) {
             Ok(o) => {
                 let delta = o.content.len().saturating_sub(cur.len());
@@ -620,17 +716,20 @@ async fn apply_all(
                     Outcome::Applied {
                         link_start: o.link_start,
                         module: InsertModule::Native,
+                        llm: None,
                     },
                 ));
             }
             Err(InsertError::AnchorNotFound) => {
-                let wants_llm = matches!(
-                    e.insert_module.as_deref(),
-                    Some("rephrase") | Some("context")
-                ) || allowed
-                    .iter()
-                    .any(|m| matches!(m, InsertModule::Rephrase | InsertModule::Context));
-                if wants_llm && ctx.ai.is_some() {
+                let wants_llm = opts.llm_fallback
+                    || matches!(
+                        e.insert_module.as_deref(),
+                        Some("rephrase") | Some("context")
+                    )
+                    || allowed
+                        .iter()
+                        .any(|m| matches!(m, InsertModule::Rephrase | InsertModule::Context));
+                if wants_llm && opts.allow_llm && ctx.ai.is_some() {
                     llm_queue.push(e);
                 } else {
                     outs.push((
@@ -665,8 +764,8 @@ async fn apply_all(
             _ if allowed.contains(&InsertModule::Rephrase) => LlmKind::Rephrase,
             _ => LlmKind::Context,
         };
-        match llm_insert(ctx, site, &cur, e, kind).await {
-            Ok((new, start)) => {
+        match llm_insert(ctx, site, &cur, e, kind, opts).await {
+            Ok((new, start, edit)) => {
                 let delta = new.len().saturating_sub(cur.len());
                 shift(&mut starts, &mut outs, start, delta);
                 cur = new;
@@ -679,6 +778,7 @@ async fn apply_all(
                             LlmKind::Rephrase => InsertModule::Rephrase,
                             LlmKind::Context => InsertModule::Context,
                         },
+                        llm: Some(edit),
                     },
                 ));
             }
@@ -686,6 +786,23 @@ async fn apply_all(
         }
     }
     (cur, outs)
+}
+
+/// Move recorded link starts at or after `pos` back by `delta` bytes (a change got shorter).
+fn unshift(
+    starts: &mut [(usize, usize)],
+    outs: &mut [(String, Outcome)],
+    pos: usize,
+    delta: usize,
+) {
+    for (oi, s) in starts.iter_mut() {
+        if *s >= pos {
+            *s = s.saturating_sub(delta);
+            if let Some((_, Outcome::Applied { link_start, .. })) = outs.get_mut(*oi) {
+                *link_start = *s;
+            }
+        }
+    }
 }
 
 /// Shift recorded link starts that lie after a change at `pos` by `delta` bytes.
@@ -768,7 +885,8 @@ async fn llm_insert(
     content: &str,
     e: &EdgeRow,
     kind: LlmKind,
-) -> Result<(String, usize), (String, &'static str)> {
+    opts: &InjectOpts,
+) -> Result<(String, usize, Value), (String, &'static str)> {
     let Some(ai) = ctx.ai.as_ref() else {
         return Err(("no AI model configured".into(), "llm_unavailable"));
     };
@@ -787,6 +905,23 @@ async fn llm_insert(
         LlmKind::Rephrase => rephrase_prompt(&para.html, &e.anchor, &e.target_url, &e.target_title),
         LlmKind::Context => context_prompt(&para.text, &e.anchor, &e.target_url, &e.target_title),
     };
+    // v2.3 task routing: repair pass / rephrase / context sentence; money-page targets and
+    // high-priority runs override the tier.
+    let task = if opts.repair {
+        sf_core::config::ai_tasks::REPAIR_INSERT
+    } else {
+        match kind {
+            LlmKind::Rephrase => sf_core::config::ai_tasks::REPHRASE,
+            LlmKind::Context => sf_core::config::ai_tasks::CONTEXT_SENTENCE,
+        }
+    };
+    let tier = if e.target_money {
+        ai.tier_for_task(sf_core::config::ai_tasks::MONEY_PAGE)
+    } else if opts.high_priority {
+        ai.tier_for_task(sf_core::config::ai_tasks::PRIORITY)
+    } else {
+        ai.tier_for_task(task)
+    };
     let req = ChatRequest {
         messages: msgs
             .into_iter()
@@ -795,15 +930,21 @@ async fn llm_insert(
                 content: m.content,
             })
             .collect(),
-        max_tokens: LLM_MAX_TOKENS,
+        max_tokens: llm_max_tokens(kind, &para.text),
         temperature: LLM_TEMPERATURE,
         site_id: Some(site.id.clone()),
         json_mode: false,
+        task: Some(task.into()),
+        tier: Some(tier),
+        run_id: opts.run_id.clone(),
+        ..Default::default()
     };
-    let reply = ai
-        .chat(req)
-        .await
-        .map_err(|err| (format!("AI call failed: {err}"), "llm_error"))?;
+    let reply = ai.chat(req).await.map_err(|err| match err {
+        sf_ai::AiError::BudgetExhausted(m) => {
+            (format!("AI budget exhausted: {m}"), "llm_unavailable")
+        }
+        other => (format!("AI call failed: {other}"), "llm_error"),
+    })?;
     let clean = validate_llm_output(
         kind,
         &para.html,
@@ -829,7 +970,28 @@ async fn llm_insert(
             rest.get(..h)?.rfind("<a").map(|a| a + para.start)
         })
         .unwrap_or(para.start);
-    Ok((new, start))
+    // exactly what changed (append_to_paragraph inserts " " + sentence)
+    let edit = match kind {
+        LlmKind::Context => json!({"kind": "context", "inserted": format!(" {clean}")}),
+        LlmKind::Rephrase => json!({"kind": "rephrase", "before": para.html, "after": clean}),
+    };
+    Ok((new, start, edit))
+}
+
+/// Output budget of an AI insertion (v2.3 tight max_tokens): a context sentence gets 220 tokens;
+/// a rephrase returns the whole paragraph, so it gets ~1 token per 3 chars of it + 60 (at least
+/// 220, at most the engine cap).
+fn llm_max_tokens(kind: LlmKind, para_text: &str) -> u32 {
+    const SENTENCE: u32 = 220;
+    match kind {
+        LlmKind::Context => SENTENCE,
+        LlmKind::Rephrase => {
+            let chars = u32::try_from(para_text.chars().count()).unwrap_or(u32::MAX);
+            (chars / 3)
+                .saturating_add(60)
+                .clamp(SENTENCE, LLM_MAX_TOKENS)
+        }
+    }
 }
 
 /// Snapshot of the pre-inject raw + the journal row, in one transaction (R4/R13).
@@ -952,7 +1114,9 @@ fn journal_edges(
     outcomes
         .iter()
         .filter_map(|(id, o)| match o {
-            Outcome::Applied { link_start, module } => {
+            Outcome::Applied {
+                link_start, module, ..
+            } => {
                 let e = group.iter().find(|g| &g.id == id)?;
                 Some(JournalEdge {
                     id: id.clone(),
@@ -1089,13 +1253,27 @@ fn persist_tx(
     let now = sf_core::now_rfc3339();
     for (id, o) in outs {
         match o {
-            Outcome::Applied { link_start, module } => {
+            Outcome::Applied {
+                link_start,
+                module,
+                llm,
+            } => {
                 let Some(snap) = snap else { continue };
                 t.execute(
                     "UPDATE link_edges SET status='applied', applied_at=?2, snapshot_id=?3, link_start=?4,
-                       insert_module=?5, error=NULL, failure_kind=NULL
+                       insert_module=?5, error=NULL, failure_kind=NULL,
+                       score_breakdown=CASE WHEN ?6 IS NULL THEN score_breakdown
+                         ELSE json_set(CASE WHEN json_valid(score_breakdown) THEN score_breakdown ELSE '{}' END,
+                                       '$.llm_edit', json(?6)) END
                      WHERE id=?1 AND status='approved'",
-                    params![id, now, snap, *link_start as i64, module.as_str()],
+                    params![
+                        id,
+                        now,
+                        snap,
+                        *link_start as i64,
+                        module.as_str(),
+                        llm.as_ref().map(Value::to_string)
+                    ],
                 )
                 .map_err(err)?;
             }

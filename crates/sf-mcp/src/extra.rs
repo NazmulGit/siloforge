@@ -45,6 +45,10 @@ enum Ty {
     Id,
     /// Site id or domain, resolved to an id.
     Site,
+    /// Workspace id (path); falls back to `SILOFORGE_WORKSPACE` when omitted.
+    Ws,
+    /// Boolean query flag: `true` is sent as `1`, `false` is omitted.
+    Flag,
     Int(i64, i64),
     Num(f64, f64),
     Bool,
@@ -121,6 +125,20 @@ fn q(key: &'static str, ty: Ty, desc: &'static str) -> P {
 fn b(key: &'static str, ty: Ty, desc: &'static str) -> P {
     P::new(key, ty, Loc::Body, desc)
 }
+/// `workspace_id` path parameter: optional in the schema, defaults to `SILOFORGE_WORKSPACE`.
+fn wsid() -> P {
+    let mut p = P::new(
+        "workspace_id",
+        Ty::Ws,
+        Loc::Path,
+        "workspace id (default: SILOFORGE_WORKSPACE when the MCP server has one)",
+    );
+    p.req = false;
+    p
+}
+fn uid() -> P {
+    pid("user_id", "user id")
+}
 fn limit(max: i64) -> P {
     q("limit", Ty::Int(1, max), "page size")
 }
@@ -134,8 +152,9 @@ fn offset() -> P {
 
 fn ty_schema(ty: Ty) -> Map<String, Value> {
     let v = match ty {
-        Ty::Str(_) | Ty::Id => json!({"type":"string"}),
+        Ty::Str(_) | Ty::Id | Ty::Ws => json!({"type":"string"}),
         Ty::Site => json!({"type":"string"}),
+        Ty::Flag => json!({"type":"boolean"}),
         Ty::Int(min, max) => json!({"type":"integer","minimum":min,"maximum":max}),
         Ty::Num(min, max) => json!({"type":"number","minimum":min,"maximum":max}),
         Ty::Bool => json!({"type":"boolean"}),
@@ -194,11 +213,12 @@ fn extract(a: &Args<'_>, p: &P) -> ToolResult<Option<Value>> {
             Some(Value::String(s)) => Some(Value::String(s.clone())),
             Some(_) => return Err(bad(format!("`{k}` must be a string"))),
         },
-        Ty::Id => match a.raw(k) {
+        Ty::Id | Ty::Ws => match a.raw(k) {
             None => None,
             Some(_) => Some(Value::String(a.id_req(k)?)),
         },
         Ty::Site => a.str_opt(k)?.map(Value::String),
+        Ty::Flag => a.bool_opt(k)?.filter(|b| *b).map(|_| json!("1")),
         Ty::Int(min, max) => a.int_opt(k, min, max)?.map(|n| json!(n)),
         Ty::Num(min, max) => match a.raw(k) {
             None => None,
@@ -319,6 +339,8 @@ struct RouteTool {
     /// Refuse an empty body (update tools that would otherwise be a no-op).
     need_body: bool,
     post: Post,
+    /// Strip invite/reset links, 2FA material and passwords from the answer (v2.4 account tools).
+    redact: bool,
 }
 
 impl RouteTool {
@@ -346,7 +368,18 @@ impl RouteTool {
         self.post = p;
         self
     }
+    fn redact(mut self) -> Self {
+        self.redact = true;
+        self
+    }
 }
+
+/// v2.4 platform roles and workspace member roles (owner changes only via transfer).
+const USER_ROLES: &[&str] = &["user", "admin"];
+const MEMBER_ROLES: &[&str] = &["viewer", "member", "admin"];
+
+/// v2.3 chain tiers.
+const TIER_NAMES: &[&str] = &["low", "main", "high"];
 
 #[allow(clippy::too_many_arguments)]
 fn rt(
@@ -374,6 +407,7 @@ fn rt(
         wrap: None,
         need_body: false,
         post: Post::Plain,
+        redact: false,
     }
 }
 
@@ -427,6 +461,62 @@ fn routes() -> Vec<RouteTool> {
             b("credentials_json", s(256 * 1024), "service-account credentials JSON (as a string)").req(),
         ]),
         rt("runs", "siloforge_gsc_disconnect", "Disconnect Search Console", "Remove the site's Search Console connection and its stored credentials.", D, del(), "/api/v1/sites/{site}/gsc", vec![site()]),
+        // ---------------- link runs (v2.2)
+        rt("link_runs", "siloforge_opportunities", "Linking opportunities", "Pre-run overview for a site: counts per strategy (orphans, under-linked posts, semantic pairs >= min_score, keyword-rule hits, broken internal links, silo gaps), posts total and last crawl age. Read this before siloforge_link_run_create.", R, get(), "/api/v2/sites/{site}/opportunities", vec![
+            site(),
+            q("min_score", Ty::Num(0.0, 1.0), "cosine threshold for semantic pairs (default 0.55)"),
+        ]),
+        rt("link_runs", "siloforge_link_run_create", "Start a link run", "Create and start a Link Run: crawl (options.crawl always|if_stale|skip) -> plan with the chosen mode (opportunity = best links anywhere; reverse|serial|priority|circle|bidirectional = silo topology) and strategies (in_text, contextual, semantic, keyword_rules, silo, orphan_rescue, money_pages, fix_broken) + filters -> status `ready` (suggestions only, nothing written). Poll siloforge_link_run_status, review with siloforge_link_run_items, then siloforge_link_run_deploy.", W, post(), "/api/v2/sites/{site}/link-runs", vec![
+            site(),
+            b("name", Ty::Str(200), "optional run name"),
+            b("options", Ty::Obj, "run options: {crawl, strategies:{...}, mode, filters:{min_score, max_links_per_post, max_new_per_post, max_total, anchor_types, max_exact_share, clusters, include_post_ids, exclude_post_ids, exclude_url_patterns, post_types}, ai_refine, high_priority, verify, approve}"),
+        ]),
+        rt("link_runs", "siloforge_link_run_estimate", "Estimate a link run's AI tokens", "Before siloforge_link_run_create: estimated AI calls, tokens, cost per tier for these options, today's remaining budgets and within_budget.", R, post(), "/api/v2/sites/{site}/link-runs/estimate", vec![
+            site(),
+            b("options", Ty::Obj, "the same options as siloforge_link_run_create"),
+        ]),
+        rt("link_runs", "siloforge_link_runs_list", "List link runs", "Link runs of a site, newest first (status, stats, job ids, auto flag).", R, get(), "/api/v2/sites/{site}/link-runs", vec![site(), limit(500)]),
+        rt("link_runs", "siloforge_link_run_status", "Link run status", "One link run: status (draft|crawling|planning|ready|deploying|deployed|partially_deployed|failed|cancelled|undone), progress {phase, pct}, stats (opportunities, selected, applied, failed, not_present, repaired, skipped, by_strategy) and job ids.", R, get(), "/api/v2/link-runs/{run_id}", vec![pid("run_id", "link run id")]),
+        rt("link_runs", "siloforge_link_run_items", "Link run items", "Suggestions/links of a run with status (suggested|selected|applied|failed|not_present|skipped|reverted), anchor, strategy, module, score, verify result, live_url and open_url (opens the live page scrolled to the link). group=post groups them per source post.", R, get(), "/api/v2/link-runs/{run_id}/items", vec![
+            pid("run_id", "link run id"),
+            q("status", Ty::Enum(&["suggested", "selected", "applied", "failed", "not_present", "skipped", "reverted"]), ""),
+            q("post_id", Ty::Id, "source post id"),
+            q("strategy", Ty::Enum(&["in_text", "contextual", "semantic", "keyword_rules", "silo", "orphan_rescue", "money_pages", "fix_broken"]), ""),
+            q("q", s(200), "search anchor / titles / URLs"),
+            limit(1000),
+            offset(),
+            q("group", Ty::Enum(&["post"]), "group items by source post"),
+        ]),
+        rt("link_runs", "siloforge_link_run_select", "Tick/untick run items", "Choose which items of a `ready` run get deployed: edge_ids (or all: true), deselect: true to untick.", W, post(), "/api/v2/link-runs/{run_id}/select", vec![
+            pid("run_id", "link run id"),
+            b("edge_ids", Ty::IdArr, "item edge ids"),
+            b("all", Ty::Bool, "every suggested item of the run"),
+            b("deselect", Ty::Bool, "untick instead of tick"),
+        ]),
+        rt("link_runs", "siloforge_link_run_item_update", "Edit a run item", "Before deploy: change an item's anchor (free text, or `alternate` = one of its alternates) and/or insert_module (native|rephrase|context).", W, patch(), "/api/v2/link-runs/{run_id}/items/{edge_id}", vec![
+            pid("run_id", "link run id"),
+            pid("edge_id", "item edge id"),
+            b("anchor", s(255), "new anchor text"),
+            b("alternate", s(255), "one of the item's alternates"),
+            b("insert_module", Ty::Enum(&["native", "rephrase", "context"]), ""),
+        ]).need_body(),
+        rt("link_runs", "siloforge_link_run_deploy", "Deploy a link run", "WRITES TO WORDPRESS: approve the ticked items of a `ready` run and inject them (one job), then verify each link on the live page. 409 when the run is not ready. Returns {run, job_run_id}.", D, post(), "/api/v2/link-runs/{run_id}/deploy", vec![pid("run_id", "link run id")]),
+        rt("link_runs", "siloforge_link_run_verify", "Verify a link run", "Re-check every applied link of the run on the live pages (items become applied or not_present). Read-only on WordPress.", W, post(), "/api/v2/link-runs/{run_id}/verify", vec![pid("run_id", "link run id")]),
+        rt("link_runs", "siloforge_link_run_repair", "Repair a link run (apply properly)", "WRITES TO WORDPRESS: for failed / not_present / unverified items: re-check the raw post, re-locate the paragraph, try alternate anchors, the AI module when contextual is on, else mark skipped with a reason; then verify.", D, post(), "/api/v2/link-runs/{run_id}/repair", vec![pid("run_id", "link run id")]),
+        rt("link_runs", "siloforge_link_run_undo", "Undo a link run", "WRITES TO WORDPRESS: remove every link this run applied (exact removal; re-pointed broken links get their old href back). Status becomes `undone`.", D, post(), "/api/v2/link-runs/{run_id}/undo", vec![pid("run_id", "link run id")]),
+        rt("link_runs", "siloforge_link_run_cancel", "Cancel a link run", "Cancel a run while it is crawling, planning or deploying (links already written stay; undo them with siloforge_link_run_undo).", W, post(), "/api/v2/link-runs/{run_id}/cancel", vec![pid("run_id", "link run id")]),
+        rt("link_runs", "siloforge_auto_linker_get", "Auto-Linker settings", "The site's Auto-Linker: {enabled, cron, tz, options, live, max_per_day, pause_on_failure_rate, paused_reason}, its schedule (next/last run) and the last auto run.", R, get(), "/api/v2/sites/{site}/auto-linker", vec![site()]),
+        rt("link_runs", "siloforge_auto_linker_update", "Update the Auto-Linker", "Change the site's Auto-Linker (merged into the current settings). live=false (default) = dry run: stop at `ready` and notify; live=true = deploy + verify + one repair pass + summary. Auto-pauses itself above pause_on_failure_rate.", W, put(), "/api/v2/sites/{site}/auto-linker", vec![
+            site(),
+            b("enabled", Ty::Bool, ""),
+            b("cron", s(200), "cron expression, e.g. 0 3 * * *"),
+            b("tz", s(64), "IANA time zone"),
+            b("options", Ty::Obj, "link run options (as siloforge_link_run_create)"),
+            b("live", Ty::Bool, "deploy automatically (false = dry run)"),
+            b("max_per_day", Ty::Int(1, 10_000), "most links applied per day"),
+            b("pause_on_failure_rate", Ty::Num(0.0, 1.0), "pause when this share of a run fails"),
+        ]).need_body(),
+        rt("link_runs", "siloforge_auto_linker_run_now", "Run the Auto-Linker now", "Start one Auto-Linker run now (dry run or live per its settings; works while disabled, the daily cap still applies). Returns a job_run_id; the run id is in the job stats (link_run_id).", W, post(), "/api/v2/sites/{site}/auto-linker/run", vec![site()]),
         // ---------------- rules
         rt("rules", "siloforge_list_keyword_rules", "List keyword rules", "Keyword-linker rules of a site (id, keyword, target_url, anchor_type, max_links, active).", R, get(), "/api/v1/rules/keywords/{site}", vec![site()]),
         rt("rules", "siloforge_update_keyword_rule", "Update a keyword rule", "Change a keyword rule: active, max_links, anchor_type.", W, patch(), "/api/v1/rules/keywords/{rule_id}", vec![
@@ -535,18 +625,39 @@ fn routes() -> Vec<RouteTool> {
         ]).admin().need_body(),
         rt("ai", "siloforge_delete_ai_model", "Delete an AI model", "Delete a model (removes it from chains).", D, del(), "/api/v1/models/{model_row_id}", vec![pid("model_row_id", "model row id")]).admin(),
         rt("ai", "siloforge_probe_ai_model", "Probe an AI model", "Send a tiny test request to one model and record the result.", W, post(), "/api/v1/models/{model_row_id}/probe", vec![pid("model_row_id", "model row id")]).admin(),
-        rt("ai", "siloforge_list_ai_chains", "List AI model chains", "Fallback chains (role, site scope, active, rungs).", R, get(), "/api/v1/model-chains", vec![q("site_id", s(64), "site uuid or \"global\"")]).admin(),
+        rt("ai", "siloforge_list_ai_chains", "List AI model chains", "Fallback chains (role, tier low|main|high, site scope, active, rungs).", R, get(), "/api/v1/model-chains", vec![q("site_id", s(64), "site uuid or \"global\""), q("tier", Ty::Enum(TIER_NAMES), "only this tier")]).admin(),
         rt("ai", "siloforge_create_ai_chain", "Create an AI model chain", "Create a fallback chain for a role, global or for one site.", W, post(), "/api/v1/model-chains", vec![
             b("name", s(200), "").req(),
             b("role", s(64), "llm | embed | ...").req(),
             P::new("site", Ty::Site, Loc::Body, "optional site (id or domain); omit for a global chain").wire("site_id"),
             b("active", Ty::Bool, ""),
             b("notes", s(2000), ""),
+            b("tier", Ty::Enum(TIER_NAMES), "AI task tier (default main): low = cheap batched tasks, high = money pages / priority"),
         ]).admin(),
-        rt("ai", "siloforge_update_ai_chain", "Update an AI model chain", "Rename a chain or change its notes.", W, patch(), "/api/v1/model-chains/{chain_id}", vec![
+        rt("ai", "siloforge_update_ai_chain", "Update an AI model chain", "Rename a chain, change its notes or move it to another tier.", W, patch(), "/api/v1/model-chains/{chain_id}", vec![
             pid("chain_id", "chain id"),
             b("name", s(200), ""),
             b("notes", s(2000), ""),
+            b("tier", Ty::Enum(TIER_NAMES), "low | main | high"),
+        ]).admin().need_body(),
+        // v2.3 tiers, usage, AI settings
+        rt("ai", "siloforge_ai_tiers", "AI chains by tier", "The effective chat chain per tier (low / main / high): which chain serves, from where (tier, main fallback, env), reasoning effort and rungs.", R, get(), "/api/v2/ai/tiers", vec![q("site_id", Ty::Id, "site uuid (site chains first)")]).admin(),
+        rt("ai", "siloforge_ai_usage", "AI token usage", "AI calls, tokens in/out, cost, cache hits and errors grouped by day|model|tier|task|site|provider, with totals, cache hit rate and today's budget per tier and top sites.", R, get(), "/api/v2/ai/usage", vec![
+            q("since", s(64), "RFC 3339 or relative like 24h / 7d (default 7d)"),
+            q("until", s(64), "RFC 3339 or relative"),
+            q("group", Ty::Enum(&["day", "model", "tier", "task", "site", "provider"]), "default day"),
+            q("site_id", Ty::Id, "only this site"),
+            q("run_id", s(64), "only this Link Run (or job) id"),
+        ]).admin(),
+        rt("ai", "siloforge_ai_settings_get", "Get AI settings", "The `ai` settings: always_on (Always use AI for perfect linking), task_tiers (task -> low|main|high), batch_size, confidence_skip {anchor, relevance}, budget {daily_tokens {low, main, high}, per_site_daily_tokens}, cache_ttl_days, reasoning_effort per tier.", R, get(), "/api/v2/ai/settings", vec![]).admin(),
+        rt("ai", "siloforge_ai_settings_update", "Update AI settings", "Change any subset of the `ai` settings; nested objects merge, e.g. {always_on: true} or {task_tiers: {rephrase: \"high\"}} or {budget: {daily_tokens: {low: 3000000}}}. Validated and persisted; returns the new `ai` settings.", W, put(), "/api/v2/ai/settings", vec![
+            b("always_on", Ty::Bool, "AI anchor + relevance checks on every plan / Link Run (budgets respected, heuristic fallback)"),
+            b("task_tiers", Ty::Obj, "task -> tier: anchor_pick, relevance_check, link_verify_judge, rephrase, context_sentence, repair_insert, money_page, priority"),
+            b("batch_size", Ty::Int(1, 50), "edges per low-tier request"),
+            b("confidence_skip", Ty::Obj, "{anchor, relevance} 0..1: no AI call above these"),
+            b("budget", Ty::Obj, "{daily_tokens: {low, main, high}, per_site_daily_tokens}; 0 = unlimited"),
+            b("cache_ttl_days", Ty::Int(0, 365), "0 = cache off"),
+            b("reasoning_effort", Ty::Obj, "{low, main, high}: none|low|medium|high"),
         ]).admin().need_body(),
         rt("ai", "siloforge_delete_ai_chain", "Delete an AI model chain", "Delete a chain and its rungs.", D, del(), "/api/v1/model-chains/{chain_id}", vec![pid("chain_id", "chain id")]).admin(),
         rt("ai", "siloforge_activate_ai_chain", "Activate an AI model chain", "Make this chain the active one for its role/scope.", W, post(), "/api/v1/model-chains/{chain_id}/activate", vec![pid("chain_id", "chain id")]).admin(),
@@ -670,6 +781,69 @@ fn routes() -> Vec<RouteTool> {
         rt("docs", "siloforge_docs_list", "List user-guide pages", "The built-in SiloForge user guide: slug, title, section.", R, get(), "/api/v2/docs", vec![]),
         rt("docs", "siloforge_docs_get", "Read a user-guide page", "One user-guide page as Markdown.", R, get(), "/api/v2/docs/{slug}", vec![pid("slug", "page slug from siloforge_docs_list")]).post(Post::Markdown),
         rt("downloads", "siloforge_downloads_list", "List downloads", "Downloadable app and WordPress plugin builds (version, size, sha256, latest).", R, get(), "/api/v2/downloads", vec![]),
+        // ---------------- workspaces (v2.4)
+        rt("workspaces", "siloforge_workspaces_list", "List workspaces", "Workspaces the caller belongs to: id, name, slug, role (owner|admin|member|viewer), status, plan, sites, is_default, plus current_id. all=true: platform admins see every workspace.", R, get(), "/api/v2/workspaces", vec![
+            q("all", Ty::Flag, "platform admins: every workspace"),
+        ]).redact(),
+        rt("workspaces", "siloforge_workspace_get", "Get a workspace", "One workspace: name, slug, status, plan, owner, my_role, limits and usage.", R, get(), "/api/v2/workspaces/{workspace_id}", vec![wsid()]).redact(),
+        rt("workspaces", "siloforge_workspace_usage", "Workspace plan usage", "Plan limits vs live usage of a workspace this UTC month: sites, posts_total, posts_max_site, link_runs_month, ai_tokens_month, members, pending_invites, api_tokens, schedules (null limit = unlimited). Over a limit the API answers 402 `plan limit`. history=true adds monthly snapshots.", R, get(), "/api/v2/workspaces/{workspace_id}/usage", vec![
+            wsid(),
+            q("history", Ty::Flag, "add monthly history"),
+        ]).redact(),
+        rt("workspaces", "siloforge_workspace_members", "Workspace members", "Members of a workspace: user_id, email, name, role, invited_by, created_at.", R, get(), "/api/v2/workspaces/{workspace_id}/members", vec![wsid()]).redact(),
+        rt("workspaces", "siloforge_workspace_invite", "Invite to a workspace", "Invite someone by email (role admin|member|viewer; needs the admin role in the workspace; counts against the plan's `members` limit, 402 when full). The invite email is sent by SMTP; the invite link is never returned through MCP (without SMTP a platform admin copies it from Admin -> Email). Returns {invite, delivery}.", W, post(), "/api/v2/workspaces/{workspace_id}/invites", vec![
+            wsid(),
+            b("email", s(320), "invitee email").req(),
+            b("role", Ty::Enum(MEMBER_ROLES), "default member"),
+        ]).admin().redact(),
+        rt("workspaces", "siloforge_plans_list", "List plans", "Plans with their limits (sites, posts_per_site, link_runs_per_month, ai_tokens_per_month, members, api_tokens, schedules; null = unlimited; auto_linker, mcp) and price_label. Platform admins also see internal plans.", R, get(), "/api/v2/plans", vec![]),
+        rt("workspaces", "siloforge_billing_get", "Billing info", "Billing provider, plan, limits and upgrade contact for a workspace (default: the current one). v2.4 has manual billing: a platform admin assigns plans.", R, get(), "/api/v2/billing", vec![
+            q("workspace_id", Ty::Id, "workspace id (default: current workspace)"),
+        ]).redact(),
+        // ---------------- admin console (v2.4, platform admins)
+        rt("admin", "siloforge_admin_overview", "Platform overview", "Platform admin dashboard: users (total, admins, disabled, unverified, with_2fa), workspaces (total, suspended, deleted), sites, posts, runs_today, ai_tokens_month, errors_open, mail (configured, outbox_pending), registration_mode, health.", R, get(), "/api/v2/admin/overview", vec![]).admin().redact(),
+        rt("admin", "siloforge_admin_users_list", "List users (admin)", "All users with role, email_verified_at, disabled_at, two_factor_enabled, last_login_at, sessions_active and workspaces; plus total. Search with q (email/name).", R, get(), "/api/v2/admin/users", vec![
+            q("q", s(200), "search email / name"),
+            limit(1000),
+            offset(),
+        ]).admin().redact(),
+        rt("admin", "siloforge_admin_users_get", "Get a user (admin)", "One user with workspaces, sessions and 2FA state (no secrets).", R, get(), "/api/v2/admin/users/{user_id}", vec![uid()]).admin().redact(),
+        rt("admin", "siloforge_admin_users_create", "Create a user (admin)", "Create a user account. No password is set through MCP: the user gets a set-password email (the link is never returned here; without SMTP it waits in Admin -> Email). role user|admin (admin = platform admin). Optionally add them to workspace_id with workspace_role.", W, post(), "/api/v2/admin/users", vec![
+            b("email", s(320), "").req(),
+            b("name", s(200), ""),
+            b("role", Ty::Enum(USER_ROLES), "platform role (default user)"),
+            b("workspace_id", Ty::Id, "add the user to this workspace"),
+            b("workspace_role", Ty::Enum(MEMBER_ROLES), "role in workspace_id (default member)"),
+        ]).admin().redact(),
+        rt("admin", "siloforge_admin_users_update", "Update a user (admin)", "Change a user's name, email and/or platform role (user|admin). The last admin cannot be demoted.", W, patch(), "/api/v2/admin/users/{user_id}", vec![
+            uid(),
+            b("name", s(200), ""),
+            b("email", s(320), ""),
+            b("role", Ty::Enum(USER_ROLES), ""),
+        ]).admin().need_body().redact(),
+        rt("admin", "siloforge_admin_users_disable", "Disable a user (admin)", "Block a user's sign-in and revoke their sessions (reversible with siloforge_admin_users_enable).", W, post(), "/api/v2/admin/users/{user_id}/disable", vec![uid()]).admin().redact(),
+        rt("admin", "siloforge_admin_users_enable", "Enable a user (admin)", "Allow a disabled user to sign in again.", W, post(), "/api/v2/admin/users/{user_id}/enable", vec![uid()]).admin().redact(),
+        rt("admin", "siloforge_admin_users_logout", "Force logout (admin)", "Revoke every session of a user (they must sign in again).", W, post(), "/api/v2/admin/users/{user_id}/logout", vec![uid()]).admin().redact(),
+        rt("admin", "siloforge_admin_users_reset_password", "Send a password reset (admin)", "Email the user a one-time reset link (1 h). The link is never returned through MCP; without SMTP it waits in Admin -> Email.", W, post(), "/api/v2/admin/users/{user_id}/reset-password", vec![uid()]).admin().redact(),
+        rt("admin", "siloforge_admin_users_delete", "Delete a user (admin)", "PERMANENT: delete a user. Workspaces and sites they own move to transfer_to (default: the acting admin). Deleting yourself or the last admin is refused.", D, del(), "/api/v2/admin/users/{user_id}", vec![
+            uid(),
+            q("transfer_to", Ty::Id, "user id that takes over owned workspaces and sites"),
+        ]).admin().redact(),
+        rt("admin", "siloforge_admin_workspaces_list", "List workspaces (admin)", "Every workspace with owner, members, sites, plan, usage vs limits, status, deleted_at/purge_after; plus total.", R, get(), "/api/v2/admin/workspaces", vec![
+            q("q", s(200), "search name / slug / owner"),
+            q("status", Ty::Enum(&["active", "suspended", "deleted"]), ""),
+            limit(1000),
+            offset(),
+        ]).admin().redact(),
+        rt("admin", "siloforge_admin_workspaces_get", "Get a workspace (admin)", "One workspace with members, sites, plan, usage and limits.", R, get(), "/api/v2/admin/workspaces/{workspace_id}", vec![wsid()]).admin().redact(),
+        rt("admin", "siloforge_admin_workspaces_set_plan", "Change a workspace's plan (admin)", "Assign a plan (free|pro|agency|unlimited or a custom plan id, see siloforge_admin_plans_list). Manual billing: this is how upgrades happen in v2.4.", W, patch(), "/api/v2/admin/workspaces/{workspace_id}", vec![
+            wsid(),
+            b("plan_id", Ty::Id, "plan id").req(),
+        ]).admin().redact(),
+        rt("admin", "siloforge_admin_workspaces_suspend", "Suspend a workspace (admin)", "Suspend a workspace: its sites become read-only (non-GET site routes answer 403 `workspace suspended`). Reversible with siloforge_admin_workspaces_resume.", W, post(), "/api/v2/admin/workspaces/{workspace_id}/suspend", vec![wsid()]).admin().redact(),
+        rt("admin", "siloforge_admin_workspaces_resume", "Resume a workspace (admin)", "Lift a workspace suspension.", W, post(), "/api/v2/admin/workspaces/{workspace_id}/resume", vec![wsid()]).admin().redact(),
+        rt("admin", "siloforge_admin_workspaces_delete", "Delete a workspace (admin)", "Soft-delete a workspace: its sites disappear for members at once and everything is purged after 30 days. The Default workspace cannot be deleted.", D, del(), "/api/v2/admin/workspaces/{workspace_id}", vec![wsid()]).admin().redact(),
+        rt("admin", "siloforge_admin_plans_list", "List all plans (admin)", "Every plan incl. internal ones (public false) with limits, price_label, sort.", R, get(), "/api/v2/plans", vec![]).admin(),
     ]
 }
 
@@ -793,7 +967,18 @@ async fn exec(api: &Api, r: &RouteTool, a: &Args<'_>) -> ToolResult<Out> {
     };
     // Validate everything that needs no network first, then resolve sites.
     for p in r.params.iter().filter(|p| !matches!(p.ty, Ty::Site)) {
-        let v = extract(a, p)?;
+        let mut v = extract(a, p)?;
+        if matches!(p.ty, Ty::Ws) && v.is_none() {
+            v = match api.cfg().workspace.as_deref() {
+                Some(w) => Some(Value::String(check_id(p.key, w)?)),
+                None => {
+                    return Err(bad(format!(
+                        "`{}` is required (no SILOFORGE_WORKSPACE is configured; see siloforge_workspaces_list)",
+                        p.key
+                    )));
+                }
+            };
+        }
         place(p, v, &mut built)?;
     }
     if r.need_body && built.body.is_empty() {
@@ -837,7 +1022,12 @@ async fn exec(api: &Api, r: &RouteTool, a: &Args<'_>) -> ToolResult<Out> {
     let req_body =
         (r.method != Method::GET && r.method != Method::DELETE).then_some(ReqBody::Json(body));
     let full = format!("{}{}", built.path, query(&built.query));
-    let res = api.call_body(r.method.clone(), &full, req_body).await?;
+    let mut res = api.call_body(r.method.clone(), &full, req_body).await?;
+    if r.redact
+        && let ApiBody::Json(v) = &mut res
+    {
+        crate::output::strip_account_secrets(v);
+    }
     Ok(match res {
         ApiBody::Text(t) => Out::Text(t),
         ApiBody::Json(v) => match r.post {
@@ -887,6 +1077,14 @@ async fn import_posts_csv(api: &Api, a: &Args<'_>) -> ToolResult<Out> {
     Ok(Out::Json(res.into_json()))
 }
 
+/// Escape-hatch answers under these prefixes get the account-tool redaction (links, 2FA material).
+const ACCOUNT_PREFIXES: &[&str] = &[
+    "/api/v2/admin/",
+    "/api/v2/workspaces",
+    "/api/v2/invites",
+    "/api/v2/billing",
+];
+
 /// Paths the escape hatch refuses (credentials, plugin channel, token minting, binary downloads).
 fn blocked_api_route(method: &str, path: &str) -> Option<&'static str> {
     let lower = path.to_ascii_lowercase();
@@ -906,6 +1104,14 @@ fn blocked_api_route(method: &str, path: &str) -> Option<&'static str> {
     }
     if lower.ends_with("/download") || lower.starts_with("/api/v2/downloads/") {
         return Some("file downloads are not available through MCP");
+    }
+    let bare = lower.trim_end_matches('/');
+    for secret in ["/api/v2/admin/platform", "/api/v2/admin/email"] {
+        if bare == secret || lower.starts_with(&format!("{secret}/")) {
+            return Some(
+                "platform settings and the mail outbox (SMTP password, invite/reset links) are not available through MCP",
+            );
+        }
     }
     None
 }
@@ -1015,10 +1221,17 @@ async fn api_request(api: &Api, a: &Args<'_>) -> ToolResult<Out> {
         (_, None) if m == Method::DELETE => None,
         (_, None) => Some(ReqBody::Json(json!({}))),
     };
+    let lower = path.to_ascii_lowercase();
+    let account = ACCOUNT_PREFIXES.iter().any(|p| lower.starts_with(p));
     Ok(
         match api.call_body(m, &format!("{path}{qs}"), req_body).await? {
             ApiBody::Text(t) => Out::Text(t),
-            ApiBody::Json(v) => Out::Json(v),
+            ApiBody::Json(mut v) => {
+                if account {
+                    crate::output::strip_account_secrets(&mut v);
+                }
+                Out::Json(v)
+            }
         },
     )
 }
@@ -1043,6 +1256,10 @@ const CATEGORIES: &[(&str, &str)] = &[
     (
         "inject",
         "WRITES TO WORDPRESS: inject approved edges / undo applied ones from snapshots.",
+    ),
+    (
+        "link_runs",
+        "Guided bulk linking: opportunities -> link run (strategies + mode + filters) -> review items -> deploy (WRITES) -> verify -> repair -> undo; plus the scheduled Auto-Linker.",
     ),
     ("rules", "Keyword-linker rules and the anchor ignore list."),
     (
@@ -1086,6 +1303,14 @@ const CATEGORIES: &[(&str, &str)] = &[
     ("logs", "Unified event log search and stats (admin)."),
     ("docs", "The built-in user guide."),
     ("downloads", "Downloadable app and WordPress plugin builds."),
+    (
+        "workspaces",
+        "Tenancy (v2.4): workspaces you belong to, plan limits vs usage, members, invites, plans and billing. Sites, tokens and quotas belong to a workspace; SILOFORGE_WORKSPACE (sent as X-SiloForge-Workspace) picks the current one.",
+    ),
+    (
+        "admin",
+        "Platform admin console (v2.4, admin scope + platform admin): overview, users (create/update/disable/enable/logout/reset password/delete), workspaces (plan, suspend/resume/delete), all plans. Links, tokens, passwords and 2FA material are never returned.",
+    ),
     ("api", "Raw REST escape hatch (admin, disabled by default)."),
 ];
 
@@ -1097,6 +1322,11 @@ const WORKFLOW: &[&str] = &[
     "5. inject: siloforge_bulk_inject(site, edge_ids?) -> siloforge_wait_for_job  (WRITES to WordPress)",
     "6. verify: siloforge_link_history(site), siloforge_dashboard(site), siloforge_link_health_run",
     "7. undo: siloforge_bulk_undo(site, edge_ids?)  (reverts exactly the inserted links)",
+    "Link Run (guided, v2.2): siloforge_opportunities(site) -> siloforge_link_run_create(site, options{strategies, mode, filters}) -> poll siloforge_link_run_status until `ready` -> siloforge_link_run_items(run_id, group=post) + siloforge_link_run_select -> siloforge_link_run_deploy(run_id, confirm) -> deployed / partially_deployed -> siloforge_link_run_items(status=not_present|failed) -> siloforge_link_run_repair(run_id, confirm) -> siloforge_link_run_undo(run_id, confirm) to revert",
+    "Auto-Linker: siloforge_auto_linker_update(site, enabled, cron, live=false) for scheduled dry runs that notify 'N links ready'; siloforge_auto_linker_run_now to try it",
+    "Workspaces (v2.4): siloforge_workspaces_list (current_id = where creates land) -> siloforge_workspace_usage(workspace_id) before big runs (402 `plan limit` = over quota) -> siloforge_workspace_members / siloforge_workspace_invite(email, role) to add people",
+    "Platform admin (v2.4): siloforge_admin_overview -> siloforge_admin_users_list(q) / siloforge_admin_users_create(email) (a set-password email is sent) -> siloforge_admin_workspaces_list(status) -> siloforge_admin_workspaces_set_plan(workspace_id, plan_id) (manual billing) / _suspend / _resume; deletes need confirm",
+    "AI tiers (v2.3): siloforge_ai_tiers (which chain serves low/main/high) -> siloforge_ai_settings_get/update (always_on, task_tiers, budgets, cache) -> siloforge_link_run_estimate before a run -> siloforge_ai_usage(group=day|tier|task|site) to watch tokens and cost",
 ];
 
 fn capabilities(api: &Api) -> Out {
@@ -1147,7 +1377,8 @@ fn capabilities(api: &Api) -> Out {
             "Nothing is written to WordPress until edges are approved AND siloforge_bulk_inject runs; siloforge_bulk_undo reverts from snapshots.",
             "Destructive v2.1 tools need `confirm: true` (they refuse and send nothing otherwise).",
             "Job tools return job_run_id: chain them with siloforge_wait_for_job.",
-            "Credentials (WP passwords, API keys, tokens) are never returned through MCP.",
+            "Credentials (WP passwords, API keys, tokens) are never returned through MCP; neither are invite/reset/verification links, 2FA secrets or recovery codes.",
+            "Over a plan limit the API answers 402 `plan limit` {key, limit, used}: report it (a platform admin can change the plan), do not retry.",
             "Read the user guide with siloforge_docs_list / siloforge_docs_get.",
         ],
         "categories": groups,
@@ -1231,6 +1462,18 @@ mod tests {
         assert!(blocked_api_route("GET", "/api/v2/tokens").is_none());
         assert!(blocked_api_route("GET", "/api/v2/backups/x/download").is_some());
         assert!(blocked_api_route("POST", "/api/v1/sync").is_some());
+        for p in [
+            "/api/v2/admin/platform",
+            "/api/v2/admin/platform/",
+            "/api/v2/Admin/Email",
+            "/api/v2/admin/email/outbox/1",
+            "/api/v2/admin/email/test",
+            "/api/v2/auth/2fa/setup",
+        ] {
+            assert!(blocked_api_route("GET", p).is_some(), "{p}");
+        }
+        assert!(blocked_api_route("GET", "/api/v2/admin/users").is_none());
+        assert!(blocked_api_route("GET", "/api/v2/admin/emailx").is_none());
     }
 
     #[test]
@@ -1283,6 +1526,9 @@ mod tests {
             "docs",
             "downloads",
             "api",
+            "link_runs",
+            "workspaces",
+            "admin",
         ];
         for (c, _) in CATEGORIES {
             assert!(ALLOWED.contains(c), "{c}");

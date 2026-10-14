@@ -60,6 +60,7 @@ pub async fn sync(
             .ok_or_else(|| ApiError::bad("user sync requires ?site_id="))?,
     };
     guard_site(&st, &who, &site_id).await?;
+    crate::tenancy::check_posts(&st, &site_id).await?;
     if b.posts.len() > MAX_SYNC_POSTS {
         return Err(ApiError::bad(format!(
             "too many posts in one batch (max {MAX_SYNC_POSTS})"

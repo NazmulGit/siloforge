@@ -23,6 +23,8 @@ pub struct AppState {
     pub auth_cache: AuthCache,
     /// Cached MCP tool policy (kv `mcp_policy`), see `v2::mcp`.
     pub mcp_policy: Arc<parking_lot::RwLock<Option<crate::v2::mcp::McpPolicy>>>,
+    /// Cached v2.4 platform settings (kv `platform_settings`), see `platform`.
+    pub platform: Arc<parking_lot::RwLock<Option<crate::platform::Platform>>>,
     pub started: Instant,
     /// Type-keyed registry for services owned by upper crates (ai, ops monitor, notifier, mcp, ...).
     pub services: Arc<Services>,
@@ -57,6 +59,7 @@ impl AppState {
             secret_key: Arc::new(secret_key),
             auth_cache: AuthCache::default(),
             mcp_policy: Arc::new(parking_lot::RwLock::new(None)),
+            platform: Arc::new(parking_lot::RwLock::new(None)),
             started: Instant::now(),
             services: Arc::new(Services::default()),
         }

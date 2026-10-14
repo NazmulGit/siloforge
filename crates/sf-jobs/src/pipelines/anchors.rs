@@ -26,9 +26,15 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use rusqlite::params;
 use serde_json::{Value, json};
-use sf_ai::{ChatMessage, ChatRequest};
+use sf_ai::{ChatMessage, ChatRequest, Tier};
+use sf_core::config::ai_tasks;
 use sf_core::types::AnchorType;
-use sf_engine::anchor::refine::{RefineReply, refine_prompt, relevance_factor, validate_refined};
+use sf_engine::anchor::batch::{
+    AnchorBatchItem, BATCH_PARAGRAPH_CHARS, RELEVANCE_PARAGRAPH_CHARS, RelevanceBatchItem,
+    anchor_batch_prompt, anchor_max_tokens, compact_paragraph, parse_batch_reply,
+    relevance_batch_prompt, relevance_max_tokens,
+};
+use sf_engine::anchor::refine::{RefineReply, relevance_factor, validate_refined};
 use sf_engine::anchor::{
     AnchorAlt, GuardItem, PickOptions, PickSource, STRIKING_WEIGHT, TargetProfile,
     apply_diversity_guard, apply_over_optimization_guard, brand_from_domain, classify_anchor,
@@ -71,6 +77,8 @@ pub struct AnchorInput {
     pub paragraphs: Vec<i64>,
     /// Composite score (orders the AI refinement budget).
     pub score: f64,
+    /// Source -> target semantic cosine (v2.3 relevance skip rule); None = use `score`.
+    pub relevance: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +96,9 @@ pub struct AnchorOutput {
     pub ai: Option<Value>,
     /// Factor for the composite score (AI relevance < 0.3 scales it down; else 1).
     pub score_factor: f64,
+    /// Other anchors the picker considered (`[{anchor, anchor_type, in_paragraph}]`, best
+    /// first): stored as `score_breakdown.alternates` for review and for repair.
+    pub alternates: Vec<Value>,
 }
 
 /// AI refinement budget.
@@ -98,14 +109,30 @@ pub struct AiRefineOptions {
     pub concurrency: usize,
     /// Wall-clock budget for all AI calls of one plan.
     pub timeout: Duration,
+    /// v2.3: edges per batched request.
+    pub batch_size: usize,
+    /// v2.3 skip rules: no AI call when the heuristic anchor confidence and the relevance are
+    /// both at or above these.
+    pub skip_anchor: f64,
+    pub skip_relevance: f64,
+    /// Link Run id (or job id) for AI accounting and the run's AI summary.
+    pub run_id: Option<String>,
+    /// AI work on the `priority` tier.
+    pub high_priority: bool,
 }
 
 impl Default for AiRefineOptions {
     fn default() -> Self {
+        let ai = sf_core::config::AiCfg::default();
         Self {
             max_edges: 200,
             concurrency: 4,
             timeout: Duration::from_secs(300),
+            batch_size: ai.batch(),
+            skip_anchor: ai.confidence_skip.anchor,
+            skip_relevance: ai.confidence_skip.relevance,
+            run_id: None,
+            high_priority: false,
         }
     }
 }
@@ -236,6 +263,11 @@ struct AiItem {
     paras: Vec<(i64, ParagraphNlp)>,
     candidates: Vec<String>,
     opts: PickOptions,
+    /// Heuristic anchor confidence 0..1 (semantic cosine of the pick, else its lexical score;
+    /// 0 when the anchor is not in a paragraph).
+    confidence: f64,
+    /// Source -> target relevance used by the skip rule.
+    relevance: Option<f64>,
 }
 
 /// Generate anchors. Output order = input order (entries whose pick failed have an empty anchor).
@@ -487,6 +519,18 @@ pub async fn generate(
             m
         });
         sources.push((inp.source.clone(), inp.target.clone()));
+        let alternates: Vec<Value> = alts
+            .iter()
+            .filter(|(a, _)| !a.anchor.eq_ignore_ascii_case(&final_loc.anchor))
+            .take(5)
+            .map(|(a, l)| {
+                json!({
+                    "anchor": a.anchor,
+                    "anchor_type": a.anchor_type.as_str(),
+                    "in_paragraph": l.in_paragraph,
+                })
+            })
+            .collect();
         out.push(AnchorOutput {
             key: inp.key,
             anchor: final_loc.anchor,
@@ -497,6 +541,7 @@ pub async fn generate(
             meta,
             ai: None,
             score_factor: 1.0,
+            alternates,
         });
     }
     job.info(format!(
@@ -710,6 +755,8 @@ fn pick_batch(
                         .collect(),
                     candidates: top_phrases(&paras, target, &opts, 5),
                     opts: o,
+                    confidence: 0.0,
+                    relevance: inp.relevance.or(Some(inp.score)).filter(|r| r.is_finite()),
                 }
             });
             st.restore_reserved(std::mem::take(&mut opts.reserved_exact), own_exact);
@@ -774,7 +821,18 @@ fn pick_batch(
             if let Some(i) = loc.paragraph_idx {
                 used_paras.insert(i);
             }
-            if let Some(item) = ai_item {
+            if let Some(mut item) = ai_item {
+                item.confidence = if loc.in_paragraph {
+                    opts.semantic
+                        .get(&lower)
+                        .map(|c| f64::from(*c))
+                        .or(pick.score)
+                        .filter(|c| c.is_finite())
+                        .unwrap_or(0.0)
+                        .clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 ai_items.push(item);
             }
             out.push((inp, loc, alts, Some(Value::Object(meta))));
@@ -831,10 +889,74 @@ fn empty_loc() -> Located {
 // AI refinement
 // ---------------------------------------------------------------------------------------------
 
+/// One edge prepared for the AI (v2.3: batched, cached, tiered).
 struct AiCall {
     key: usize,
     para_idx: i64,
-    messages: Vec<ChatMessage>,
+    task: &'static str,
+    tier: Tier,
+    family: String,
+    cache_key: String,
+    anchor_item: Option<AnchorBatchItem>,
+    rel_item: Option<RelevanceBatchItem>,
+}
+
+/// `(reply, model)` or an error message.
+type Answer = Result<(RefineReply, String), String>;
+
+/// What one batch call returned: `(key, para_idx, cache_key)` per item, task, family, result.
+type BatchOut = (
+    Vec<(usize, i64, String)>,
+    &'static str,
+    String,
+    Result<sf_ai::ChatResponse, sf_ai::AiError>,
+);
+
+/// Target post ids flagged as money pages (`posts.meta.money_page`).
+async fn money_targets(ctx: &JobContext, site_id: &str) -> HashSet<String> {
+    let sid = site_id.to_string();
+    ctx.db
+        .read(move |c| {
+            let mut st = c
+                .prepare(
+                    "SELECT id FROM posts WHERE site_id=?1 AND json_valid(meta) AND json_extract(meta,'$.money_page') IN (1, 'true')",
+                )
+                .map_err(err)?;
+            let v = st
+                .query_map([&sid], |r| r.get::<_, String>(0))
+                .map_err(err)?
+                .collect::<rusqlite::Result<HashSet<String>>>()
+                .map_err(err)?;
+            Ok(v)
+        })
+        .await
+        .unwrap_or_default()
+}
+
+/// Stores the AI summary of a run (kv `ai_run:<run_id>`), read by the Link Run API.
+async fn store_ai_summary(ctx: &JobContext, run_id: Option<&str>, summary: Value) {
+    let Some(id) = run_id else { return };
+    let key = format!("ai_run:{id}");
+    let v = summary.to_string();
+    let r = ctx
+        .db
+        .write(move |t| {
+            t.execute(
+                "INSERT INTO kv(key, value, updated_at) VALUES(?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                params![key, v],
+            )
+            .map_err(err)?;
+            Ok(())
+        })
+        .await;
+    if let Err(e) = r {
+        tracing::warn!(error = %e, "ai run summary not stored");
+    }
+}
+
+fn round3(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -865,14 +987,23 @@ async fn refine_with_ai(
                 o.ai = Some(fallback("ai not configured"));
             }
         }
+        store_ai_summary(
+            ctx,
+            opts.run_id.as_deref(),
+            json!({"asked": 0, "fallback": "ai not configured", "items": items.len()}),
+        )
+        .await;
         return;
     };
-    // Build one call per edge: the edge's own paragraph when it is native, else the first
-    // candidate paragraph no other native link of the source claimed.
+    let money = money_targets(ctx, &site.id).await;
+    let mut families: HashMap<Tier, String> = HashMap::new();
+    // Placement: the edge's own paragraph when it is native, else the first candidate paragraph
+    // no other native link of the source claimed. Then the skip rules decide the task.
     let mut calls: Vec<AiCall> = Vec::new();
     let mut no_place: Vec<usize> = Vec::new();
+    let mut skipped_confident = 0usize;
     for it in &items {
-        let Some(o) = pos.get(&it.key).and_then(|&i| out.get(i)) else {
+        let Some(o) = pos.get(&it.key).and_then(|&i| out.get_mut(i)) else {
             continue;
         };
         if o.anchor.is_empty() {
@@ -894,71 +1025,264 @@ async fn refine_with_ai(
         let Some(target) = profiles.targets.get(&it.target) else {
             continue;
         };
+        let anchor_ok = o.in_paragraph && it.confidence >= opts.skip_anchor;
+        let rel_ok = it.relevance.is_some_and(|r| r >= opts.skip_relevance);
+        if anchor_ok && rel_ok {
+            skipped_confident += 1;
+            o.ai = Some(json!({
+                "skipped": "confident",
+                "fallback_used": false,
+                "confidence": round3(it.confidence),
+                "relevance": it.relevance.map(round3),
+            }));
+            continue;
+        }
+        let task = if anchor_ok {
+            ai_tasks::RELEVANCE_CHECK
+        } else {
+            ai_tasks::ANCHOR_PICK
+        };
+        let tier = if money.contains(&it.target) {
+            ai.tier_for_task(ai_tasks::MONEY_PAGE)
+        } else if opts.high_priority {
+            ai.tier_for_task(ai_tasks::PRIORITY)
+        } else {
+            ai.tier_for_task(task)
+        };
+        let family = match families.get(&tier) {
+            Some(f) => f.clone(),
+            None => {
+                let f = ai.model_family(tier, Some(&site.id)).await;
+                families.insert(tier, f.clone());
+                f
+            }
+        };
         let mut cands = it.candidates.clone();
         if !cands.iter().any(|c| c.eq_ignore_ascii_case(&o.anchor)) {
             cands.insert(0, o.anchor.clone());
         }
-        let (sys, user) = refine_prompt(&p.text, &target.title, &target.keywords, &cands);
-        calls.push(AiCall {
-            key: it.key,
-            para_idx: *pi,
-            messages: vec![ChatMessage::system(sys), ChatMessage::user(user)],
-        });
+        let call = if task == ai_tasks::ANCHOR_PICK {
+            let compact = compact_paragraph(&p.text, &cands, BATCH_PARAGRAPH_CHARS);
+            let key = sf_ai::Ai::cache_key(
+                task,
+                &family,
+                &[
+                    &compact,
+                    &it.target,
+                    &target.title,
+                    &target.keywords.join(","),
+                    &cands.join("\u{1e}"),
+                ],
+            );
+            AiCall {
+                key: it.key,
+                para_idx: *pi,
+                task,
+                tier,
+                family,
+                cache_key: key,
+                anchor_item: Some(AnchorBatchItem {
+                    id: it.key,
+                    paragraph: compact,
+                    target_title: target.title.clone(),
+                    keywords: target.keywords.clone(),
+                    candidates: cands,
+                }),
+                rel_item: None,
+            }
+        } else {
+            let compact = compact_paragraph(
+                &p.text,
+                std::slice::from_ref(&o.anchor),
+                RELEVANCE_PARAGRAPH_CHARS,
+            );
+            let key = sf_ai::Ai::cache_key(task, &family, &[&compact, &it.target, &target.title]);
+            AiCall {
+                key: it.key,
+                para_idx: *pi,
+                task,
+                tier,
+                family,
+                cache_key: key,
+                anchor_item: None,
+                rel_item: Some(RelevanceBatchItem {
+                    id: it.key,
+                    paragraph: compact,
+                    target_title: target.title.clone(),
+                }),
+            }
+        };
+        calls.push(call);
     }
     for k in no_place {
         if let Some(o) = pos.get(&k).and_then(|&i| out.get_mut(i)) {
             o.ai = Some(fallback("no free paragraph"));
         }
     }
-    let asked = calls.len();
+
+    // Cache first (0 tokens), accounted per (task, tier, family).
+    let mut results: Vec<(usize, i64, &'static str, Answer)> = Vec::new();
+    let mut pending: Vec<AiCall> = Vec::new();
+    let mut hits: Vec<((&'static str, Tier, String), u32)> = Vec::new();
+    for c in calls {
+        let cached = ai
+            .cache_get(&c.cache_key)
+            .await
+            .and_then(|v| serde_json::from_value::<RefineReply>(v).ok());
+        match cached {
+            Some(r) => {
+                let k = (c.task, c.tier, c.family.clone());
+                match hits.iter_mut().find(|(hk, _)| *hk == k) {
+                    Some((_, n)) => *n += 1,
+                    None => hits.push((k, 1)),
+                }
+                results.push((
+                    c.key,
+                    c.para_idx,
+                    c.task,
+                    Ok((r, format!("cache:{}", c.family))),
+                ));
+            }
+            None => pending.push(c),
+        }
+    }
+    let cache_hits: u32 = hits.iter().map(|(_, n)| *n).sum();
+    for ((task, tier, fam), n) in &hits {
+        let meta = sf_ai::AiCallMeta {
+            task: (*task).to_string(),
+            tier: *tier,
+            site_id: Some(site.id.clone()),
+            run_id: opts.run_id.clone(),
+            items: *n,
+        };
+        ai.record_cache_hits(&meta, fam, *n).await;
+    }
+
+    // Batches per (task, tier), in input order.
+    let mut groups: Vec<((&'static str, Tier), Vec<AiCall>)> = Vec::new();
+    for c in pending {
+        let k = (c.task, c.tier);
+        match groups.iter_mut().find(|(gk, _)| *gk == k) {
+            Some((_, v)) => v.push(c),
+            None => groups.push((k, vec![c])),
+        }
+    }
+    let bs = opts.batch_size.clamp(1, 50);
+    let mut batches: Vec<(&'static str, Tier, Vec<AiCall>)> = Vec::new();
+    for ((task, tier), v) in groups {
+        let mut v = v;
+        while !v.is_empty() {
+            let rest = v.split_off(bs.min(v.len()));
+            batches.push((task, tier, v));
+            v = rest;
+        }
+    }
+    let asked: usize = batches.iter().map(|b| b.2.len()).sum();
+    let n_batches = batches.len();
     let deadline = tokio::time::Instant::now() + opts.timeout;
     let site_id = site.id.clone();
-    let mut stream = futures::stream::iter(calls.into_iter().map(|c| {
+    let run_id = opts.run_id.clone();
+    let mut futs: Vec<futures::future::BoxFuture<'static, BatchOut>> = Vec::new();
+    for (task, tier, b) in batches {
         let ai = ai.clone();
         let site_id = site_id.clone();
-        async move {
+        let run_id = run_id.clone();
+        futs.push(Box::pin(async move {
+            let n = b.len();
+            let family = b.first().map(|c| c.family.clone()).unwrap_or_default();
+            let ids: Vec<(usize, i64, String)> = b
+                .iter()
+                .map(|c| (c.key, c.para_idx, c.cache_key.clone()))
+                .collect();
+            let (sys, user, max_tokens) = if task == ai_tasks::ANCHOR_PICK {
+                let its: Vec<AnchorBatchItem> =
+                    b.into_iter().filter_map(|c| c.anchor_item).collect();
+                let (s, u) = anchor_batch_prompt(&its);
+                (s, u, anchor_max_tokens(n))
+            } else {
+                let its: Vec<RelevanceBatchItem> =
+                    b.into_iter().filter_map(|c| c.rel_item).collect();
+                let (s, u) = relevance_batch_prompt(&its);
+                (s, u, relevance_max_tokens(n))
+            };
             let req = ChatRequest {
-                messages: c.messages,
-                max_tokens: 300,
+                messages: vec![ChatMessage::system(sys), ChatMessage::user(user)],
+                max_tokens,
                 temperature: 0.0,
                 site_id: Some(site_id),
                 json_mode: true,
+                task: Some(task.into()),
+                tier: Some(tier),
+                run_id,
+                items: u32::try_from(n).unwrap_or(u32::MAX),
+                ..Default::default()
             };
-            let r = ai.chat_json::<RefineReply>(req).await;
-            (c.key, c.para_idx, r)
-        }
-    }))
-    .buffer_unordered(opts.concurrency.clamp(1, 16));
-    let mut results: Vec<(usize, i64, Result<(RefineReply, String), String>)> = Vec::new();
+            let r = ai.chat(req).await;
+            (ids, task, family, r)
+        }));
+    }
+    let mut stream = futures::stream::iter(futs).buffer_unordered(opts.concurrency.clamp(1, 16));
     let (mut ok_any, mut consecutive_fail, mut stop) = (false, 0usize, None::<&str>);
+    let mut answered_batches = 0usize;
     loop {
-        match tokio::time::timeout_at(deadline, stream.next()).await {
-            Ok(Some((key, pi, r))) => {
-                match r {
-                    Ok((reply, resp)) => {
-                        ok_any = true;
-                        consecutive_fail = 0;
-                        results.push((key, pi, Ok((reply, resp.model))));
-                    }
-                    Err(e) => {
-                        consecutive_fail += 1;
-                        results.push((key, pi, Err(e.to_string())));
-                        if !ok_any && consecutive_fail >= AI_CIRCUIT {
-                            stop = Some("ai unavailable");
-                            break;
-                        }
-                    }
-                }
-                if job.cancel_requested() {
-                    stop = Some("cancelled");
-                    break;
-                }
-            }
-            Ok(None) => break,
+        let next: Option<BatchOut> = match tokio::time::timeout_at(deadline, stream.next()).await {
+            Ok(x) => x,
             Err(_) => {
                 stop = Some("ai timeout");
                 break;
             }
+        };
+        let Some((ids, task, family, r)) = next else {
+            break;
+        };
+        answered_batches += 1;
+        match r {
+            Ok(resp) => {
+                let keys: Vec<usize> = ids.iter().map(|x| x.0).collect();
+                let parsed = parse_batch_reply(&resp.text, &keys);
+                if parsed.is_empty() {
+                    consecutive_fail += 1;
+                } else {
+                    ok_any = true;
+                    consecutive_fail = 0;
+                }
+                for (key, pi, ck) in ids {
+                    match parsed.get(&key) {
+                        Some(reply) => {
+                            if let Ok(v) = serde_json::to_value(reply) {
+                                ai.cache_put(&ck, task, &family, &v).await;
+                            }
+                            results.push((key, pi, task, Ok((reply.clone(), resp.model.clone()))));
+                        }
+                        None => results.push((
+                            key,
+                            pi,
+                            task,
+                            Err("the model gave no valid answer for this item".into()),
+                        )),
+                    }
+                }
+            }
+            Err(e) => {
+                let budget = matches!(e, sf_ai::AiError::BudgetExhausted(_));
+                let msg = e.to_string();
+                for (key, pi, _) in ids {
+                    results.push((key, pi, task, Err(msg.clone())));
+                }
+                if budget {
+                    stop = Some("budget exhausted");
+                    break;
+                }
+                consecutive_fail += 1;
+            }
+        }
+        if !ok_any && consecutive_fail >= AI_CIRCUIT {
+            stop = Some("ai unavailable");
+            break;
+        }
+        if job.cancel_requested() {
+            stop = Some("cancelled");
+            break;
         }
     }
     drop(stream);
@@ -973,9 +1297,10 @@ async fn refine_with_ai(
                 .insert(o.anchor.to_lowercase());
         }
     }
-    let (mut changed, mut kept, mut errors, mut low) = (0usize, 0usize, 0usize, 0usize);
+    let (mut changed, mut kept, mut errors, mut low, mut rel_checked) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
     let mut first_error: Option<String> = None;
-    for (key, pi, r) in results {
+    for (key, pi, task, r) in results {
         let Some(it) = items.iter().find(|i| i.key == key) else {
             continue;
         };
@@ -989,7 +1314,11 @@ async fn refine_with_ai(
                 if first_error.is_none() {
                     first_error = Some(e.chars().take(200).collect());
                 }
-                o.ai = Some(fallback("ai call failed"));
+                o.ai = Some(fallback(if e.contains("budget exhausted") {
+                    "budget exhausted"
+                } else {
+                    "ai call failed"
+                }));
                 continue;
             }
         };
@@ -1001,6 +1330,16 @@ async fn refine_with_ai(
             low += 1;
         }
         let reason: String = reply.reason.chars().take(200).collect();
+        if task == ai_tasks::RELEVANCE_CHECK {
+            rel_checked += 1;
+            o.ai = Some(json!({
+                "task": task,
+                "relevance": reply.relevance,
+                "model": model,
+                "fallback_used": false,
+            }));
+            continue;
+        }
         let current = o.anchor.to_lowercase();
         let (Some(target), Some((_, p))) = (
             profiles.targets.get(&it.target),
@@ -1070,10 +1409,29 @@ async fn refine_with_ai(
         }
     }
     let msg = format!(
-        "ai anchors: {asked} asked, {changed} changed, {kept} kept the heuristic anchor, {low} rated low relevance, {errors} errors{} ({} ms)",
-        stop.map(|s| format!(", stopped: {s}")).unwrap_or_default(),
+        "ai anchors: {asked} asked in {n_batches} batches ({answered_batches} answered), {cache_hits} from cache, {skipped_confident} skipped (heuristic confident), {changed} changed, {kept} kept the heuristic anchor, {rel_checked} relevance-checked, {low} rated low relevance, {errors} errors{} ({} ms)",
+        stop.map(|s| format!(", stopped: {s} (heuristics used)"))
+            .unwrap_or_default(),
         t0.elapsed().as_millis()
     );
+    store_ai_summary(
+        ctx,
+        opts.run_id.as_deref(),
+        json!({
+            "items": items.len(),
+            "asked": asked,
+            "batches": n_batches,
+            "cache_hits": cache_hits,
+            "skipped_confident": skipped_confident,
+            "changed": changed,
+            "kept": kept,
+            "relevance_checked": rel_checked,
+            "low_relevance": low,
+            "errors": errors,
+            "fallback": stop,
+        }),
+    )
+    .await;
     if errors > 0 || stop.is_some() {
         job.warn(format!(
             "{msg}; first error: {}",

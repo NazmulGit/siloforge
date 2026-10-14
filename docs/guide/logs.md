@@ -19,6 +19,7 @@ API calls, AI-agent (MCP) tool calls, jobs, sign-ins, notifications and system e
 | `job` | Jobs queued, started, done, failed or cancelled, with a short stats summary |
 | `auth` | Sign-in ok or failed, account lockout, tokens created or revoked |
 | `notify` | Notifications sent |
+| `ai` | Every AI call: task, model, tier, tokens in and out, cost, cache hits, fallbacks |
 | `system` | Start, stop, restart, settings changed, backup done or failed, errors |
 
 Each row shows time, source, **actor** (a user, a token by name, an MCP token, or the system), action, target, site,
@@ -26,6 +27,16 @@ status (`ok`, `error`, `denied`), HTTP status and duration. Expand a row to see 
 
 By default every change, every MCP call and every error is logged. Plain page loads and reads are not, unless an
 admin turns on **log reads**.
+
+## AI token use
+
+The **AI** chip shows only AI calls. Their rows have the action `ai <task> <model>` (for example
+`ai anchor_pick gpt-example-mini`, or `ai anchor_pick cache` for answers served from the cache) and two extra columns:
+**Tokens in / out** and **Cost**. A `*` after the tokens means the provider sent no usage and SiloForge estimated it
+(characters ÷ 4). Expand a row to see the tier, rung, latency and whether a fallback model answered.
+
+The stats header adds the AI totals for the chosen time range: tokens in / out, cost and number of calls. Charts per
+day, tier, model and site are in **Settings → AI Models → Usage** (see [AI models](ai-models)).
 
 ## Find something
 

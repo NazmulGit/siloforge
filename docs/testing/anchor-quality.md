@@ -29,9 +29,9 @@ Measured on `D:\tmp\sf-test-home` (scratch tool `D:\tmp\sf-postvec`, 150 posts p
 
 | Site | match at 512 | match at 256 |
 |---|---|---|
-| site24.example | 148/150 (worst 0.99988) | 49/150 |
-| site65.example | 150/150 | 96/150 |
-| site05 / site80.example / site45 / site18 / site46 / site74 | 58-103/150 | 150/150 |
+| site30.example | 148/150 (worst 0.99988) | 49/150 |
+| site69.example | 150/150 | 96/150 |
+| site06 / site81.example / site53 / site15 / site39 / site72 | 58-103/150 | 150/150 |
 
 Paragraph vectors were always 256 (40/40 long paragraphs per site match at 256). So before it
 re-embeds posts, `embed_site` re-embeds up to 6 stored long posts at both caps and uses the cap
@@ -40,7 +40,7 @@ uses 256. Test: `post_vectors_reuse_the_sites_token_cap`.
 
 ## Golden set (method)
 
-`crates/sf-engine/src/anchor/golden_anchors.json` has 61 real cases from the site65 pilot DB: the
+`crates/sf-engine/src/anchor/golden_anchors.json` has 61 real cases from the site69 pilot DB: the
 source paragraph, target title, top-10 keywords, the anchor the old picker chose, and hand-labelled
 acceptable anchors (51 cases have at least one; 10 have no good anchor in the paragraph). Cases 1-11 are
 the pilot's known-bad anchors; 12-61 are random suggestions (seed 7, 42 native + 8 content_gap). The
@@ -146,7 +146,7 @@ quality gate.
 
 ## v2.0.1 fragment filter (2026-10-14)
 
-Hermes acceptance on site46.example reported the anchors "V kits perfect" ('12 Best Drill Kits with
+Hermes acceptance on site39.example reported the anchors "V kits perfect" ('12 Best Drill Kits with
 Accessory Sets' → 'Drill Driver Kits Under $200') and "inch cordless Impact Wrenches". Both are **v1
 suggestions** carried over by the migration (created 2026-07-27, v1 split "20V" into "20" + "V"): the
 v2 plan does not re-pick anchors of existing pending edges. The v2 picker did produce the second kind
@@ -166,7 +166,7 @@ start on "Inch".
 | `is_natural_anchor` accepts a leading spec only whole (number(s) + unit) | "Inch ...", "1/2 Cordless ..." | "1/2 Inch Cordless Impact Wrenches" |
 
 Golden set: cases 62-96 are new (35 cases): the two Hermes anchors plus 33 real v1 suggestions from
-site46.example and site24.example (`D:\tmp\sf-test-home`, read-only) whose anchor starts on a
+site39.example and site30.example (`D:\tmp\sf-test-home`, read-only) whose anchor starts on a
 unit/letter fragment or ends on an adjective; paragraphs trimmed to the sentences around the anchor,
 target keywords from the DB, acceptable anchors labelled by hand.
 
@@ -191,7 +191,7 @@ the edge gets a fresh anchor from the current picker, or is dropped by the blank
 its paragraph offers nothing natural. Natural anchors are never re-picked. The plan log says
 "N pending suggestions rescored (M get a new anchor)". Test
 `anchors_ai::fragment_anchors_of_pending_suggestions_are_repicked`. So the v1 "V kits perfect" edges on
-site46.example are replaced on its next plan, with no data migration.
+site39.example are replaced on its next plan, with no data migration.
 
 ## v2.0.2 brands, generic heads, semantic floor (2026-10-14)
 
@@ -204,7 +204,7 @@ Closes the open items above: lowercase / 4-letter ALL-CAPS brands, the -ing lead
 | Site-wide capitalisation ratio: a word seen capitalised mid-sentence ≥ 8 times and ≥ 8× more often than in lowercase is a proper noun (`PROPER_RATIO_MIN_CAPS`, `PROPER_RATIO`), in addition to the strict rule (≥ 2 caps, ≤ 2 lowercase). The statistics are per site (`TermsBuilder`, once per plan, cached by content fingerprint), so the brand is caught where a paragraph writes it in lowercase | `nlp/terms.rs` | "Squirt Chain Lube", "squirt lube" (pilot: 26 caps / 3 lowercase) | "Bell" (313 / 176), "Pro" (275 / 125), "lube" stay ordinary words |
 | 4-letter ALL-CAPS words are brand suspects unless a known acronym (`KNOWN_ACRONYMS_4`: MIPS, HEPA, HDMI, OLED, ...), a plural of a 3-letter one (LEDS, ATVS), or a shouted common word (stopwords, lexicon verbs/adjectives, `COMMON_CAPS_WORDS`). 5+ letters were already suspects | `nlp/pos.rs suspect_token` | "AIII Lightweight Electric Dirt Bike", "WORX Nitro Cordless Impact Driver" | "MIPS bike helmets", "HEPA filter bags" |
 | Gerund objects: an -ing word right after a gerund-taking verb (`GERUND_VERBS`: try, avoid, enjoy, keep, love, start, ...) is a verb, so it never leads an anchor (`ING_NOUNS` such as lighting/clothing stay nouns) | `nlp/pos.rs tag_tokens` | "crafting wine bottle", "painting glass bottle vases" | "glass bottle vases", "folding bike" |
-| Generic head noun: when the head's stem is in ≥ 50% of the site's posts (`GENERIC_HEAD_DF`, sites with ≥ 20 posts) and no other word of the phrase is a target word, the phrase costs `GENERIC_HEAD_PENALTY` (12) | `nlp/phrases.rs` (`NounPhrase.generic_head`), `anchor/pick.rs score_phrase` | "Clear glass bottles", "cheap souvenir bottles" on site24.example (bottle stem in 68% of 2,621 posts) | "wine bottles" (target names wine), "vacuum-insulated water bottle" |
+| Generic head noun: when the head's stem is in ≥ 50% of the site's posts (`GENERIC_HEAD_DF`, sites with ≥ 20 posts) and no other word of the phrase is a target word, the phrase costs `GENERIC_HEAD_PENALTY` (12) | `nlp/phrases.rs` (`NounPhrase.generic_head`), `anchor/pick.rs score_phrase` | "Clear glass bottles", "cheap souvenir bottles" on site30.example (bottle stem in 68% of 2,621 posts) | "wine bottles" (target names wine), "vacuum-insulated water bottle" |
 | Semantic floor for native phrase picks: a phrase whose cosine to the target post is below `MIN_PHRASE_SEMANTIC` (0.15; site setting `anchor_semantic_min`, 0 = off) is skipped unless every descriptive word of it is a target word. The pick then falls back to a target keyword / title found in the paragraph, else to the cleaned title (not in paragraph, so the insert step writes a sentence) | `anchor/pick.rs pick_anchor`, `sf-jobs anchors.rs`/`plan.rs` | pilot "open road" → Phone Mounts (cos 0.014), "safety questions" (0.046), "perfect match" (0.05), "long ride" (0.122), "Bell Air" (0.102) | exact target phrases, which embed poorly against a whole post ("Commuter Bike Helmets" 0.17) |
 
 Threshold evidence: the pilot DB (`D:\tmp\sf-pilot-home`, read-only) holds 1,438 suggestions with a
@@ -213,10 +213,10 @@ off-topic phrases and half exact target phrases. Hence a low floor plus the "ful
 target" exemption. Only the top-3 lexical candidates per edge are embedded; phrases without a
 cosine are never dropped by the floor.
 
-Golden set: cases 97-109 are new (13 cases). 97-100 brands (pilot counts for squirt/aiii, site46
-counts for worx/nitro), 101-104 site24.example, which now has its own site statistics in the
-fixture (`sites.site24`: 2,621 docs, df and capitalisation counts for the 402 words of its
-cases, from `D:\tmp\sf-test-home`, read-only; site24 cases 64-83 use them too, with IDF
+Golden set: cases 97-109 are new (13 cases). 97-100 brands (pilot counts for squirt/aiii, site39
+counts for worx/nitro), 101-104 site30.example, which now has its own site statistics in the
+fixture (`sites.site30`: 2,621 docs, df and capitalisation counts for the 402 words of its
+cases, from `D:\tmp\sf-test-home`, read-only; site30 cases 64-83 use them too, with IDF
 applied to the target as the plan does), 105-109 the five real low-cosine pilot suggestions with
 their recorded cosine (`semantic` per case). Every new case must not pick its old weak anchor.
 
@@ -230,7 +230,7 @@ their recorded cosine (`semantic` per case). Every new case must not pick its ol
 
 Changes in the old cases: #65 "Starbucks glass bottles" → "coffee-loving crafters", #74 "crafting
 wine bottle" → "edgy cut glass bottle crafts" (labelled); #76 "label materials" → "strong adhesive" (IDF now applied on
-the site24 cases; still natural, not a labelled pick). My reading of the 13 new picks: 12
+the site30 cases; still natural, not a labelled pick). My reading of the 13 new picks: 12
 natural and on topic; weak: #109 "Bell Air Attack" (a pump model name for an inner-tube target:
 "Bell" is a brand that the bike site also writes in lowercase 176 times, so neither rule can tell
 it apart, and only the two-word "Bell Air" had a recorded cosine).

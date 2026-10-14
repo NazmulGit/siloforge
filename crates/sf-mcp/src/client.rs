@@ -48,6 +48,9 @@ pub const VIA_HEADER: &str = "x-siloforge-via";
 /// Header naming the MCP tool a REST call was made for.
 pub const TOOL_HEADER: &str = "x-siloforge-tool";
 
+/// Header naming the current workspace (v2.4, `SILOFORGE_WORKSPACE`).
+pub const WORKSPACE_HEADER: &str = "x-siloforge-workspace";
+
 /// A successful API response.
 #[derive(Debug, Clone)]
 pub enum ApiBody {
@@ -278,6 +281,9 @@ impl Api {
             .bearer_auth(token);
         if let Some(tool) = self.tool {
             req = req.header(VIA_HEADER, "mcp").header(TOOL_HEADER, tool);
+        }
+        if let Some(ws) = &self.core.cfg.workspace {
+            req = req.header(WORKSPACE_HEADER, ws.as_str());
         }
         if let Some(t) = timeout {
             req = req.timeout(t);

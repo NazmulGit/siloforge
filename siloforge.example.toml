@@ -1,6 +1,9 @@
 # SiloForge v2 configuration. Copy to <home>/siloforge.toml (`siloforge init` does it for you).
 # Secrets (JWT_SECRET, SILOFORGE_ENCRYPTION_KEY, ADMIN_PASSWORD, OPENROUTER_API_KEY, ...) belong in
 # <home>/secrets.env or the environment — never in this file.
+# Link Runs and the Auto-Linker (v2.2) have no server keys: the Auto-Linker is a per-site setting
+# (`auto_linker` in site settings, or PUT /api/v2/sites/{id}/auto-linker) and runs as a `link_run`
+# job on that site's schedule (hard timeout 4 h).
 
 [server]
 # v1 used 8600 (API) and 8601 (UI); in v2 both listeners serve API + UI + /mcp.
@@ -98,3 +101,13 @@ request_timeout_ms = 20000
 
 [downloads]
 dir = ""   # release zips for the Downloads page; default <exe dir>\..\releases
+
+[ai]
+# v2.3 AI task tiers (docs/specs/v2.3-ai-tiers.md). Chains per tier live in Settings > AI Models.
+always_on = false          # "Always use AI for perfect linking": AI checks on every plan / Link Run
+batch_size = 20            # edges per low-tier request
+cache_ttl_days = 30        # 0 = cache off
+task_tiers = { anchor_pick = "low", relevance_check = "low", link_verify_judge = "low", rephrase = "main", context_sentence = "main", repair_insert = "main", money_page = "high", priority = "high" }
+confidence_skip = { anchor = 0.85, relevance = 0.80 }
+budget = { daily_tokens = { low = 2000000, main = 1000000, high = 300000 }, per_site_daily_tokens = 300000 }   # 0 = unlimited
+reasoning_effort = { low = "low", main = "low", high = "medium" }   # none | low | medium | high

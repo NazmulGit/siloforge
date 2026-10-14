@@ -15,6 +15,7 @@ pub mod inject;
 pub mod keyword_link;
 pub mod keywords;
 pub mod link_health;
+pub mod link_run;
 pub mod maintenance;
 pub mod plan;
 pub mod undo;
@@ -46,6 +47,7 @@ pub async fn dispatch(ctx: Arc<JobContext>, job: Arc<Job>) -> JobResult<Value> {
         JobKind::Backup => backup::run(&ctx, &job).await,
         JobKind::Maintenance => maintenance::run(&ctx, &job).await,
         JobKind::Gsc => gsc::run(&ctx, &job).await,
+        JobKind::LinkRun => link_run::run(&ctx, &job).await,
         JobKind::Unknown(ref k) => Err(JobError::fatal(Error::bad(format!(
             "unknown job kind: {k}"
         )))),

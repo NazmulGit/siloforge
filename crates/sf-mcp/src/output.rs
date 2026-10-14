@@ -46,26 +46,46 @@ fn looks_like_secret(s: &str) -> bool {
     false
 }
 
+/// Extra fields removed from the output of the account tools (v2.4 workspaces / admin): invite,
+/// set-password and verification links, 2FA material and SMTP passwords. Not applied globally
+/// because `link`/`challenge` are innocent keys in link reports.
+pub const ACCOUNT_SECRET_KEYS: &[&str] = &[
+    "link",
+    "token",
+    "challenge",
+    "recovery_codes",
+    "secret",
+    "otpauth_uri",
+    "password",
+];
+
 /// Recursively removes secret fields and redacts secret-looking strings. Depth is bounded.
 pub fn strip_secrets(v: &mut Value) {
-    strip_inner(v, 0);
+    strip_inner(v, 0, &[]);
 }
 
-fn strip_inner(v: &mut Value, depth: usize) {
+/// [`strip_secrets`] plus [`ACCOUNT_SECRET_KEYS`] (account / admin tool output).
+pub fn strip_account_secrets(v: &mut Value) {
+    strip_inner(v, 0, ACCOUNT_SECRET_KEYS);
+}
+
+fn strip_inner(v: &mut Value, depth: usize, extra: &[&str]) {
     if depth > MAX_DEPTH {
         *v = Value::String("[omitted: nesting too deep]".into());
         return;
     }
     match v {
         Value::Object(map) => {
-            map.retain(|k, _| !is_secret_key(k));
+            map.retain(|k, _| {
+                !is_secret_key(k) && !extra.iter().any(|s| s.eq_ignore_ascii_case(k))
+            });
             for (_, child) in map.iter_mut() {
-                strip_inner(child, depth + 1);
+                strip_inner(child, depth + 1, extra);
             }
         }
         Value::Array(items) => {
             for child in items.iter_mut() {
-                strip_inner(child, depth + 1);
+                strip_inner(child, depth + 1, extra);
             }
         }
         Value::String(s) if looks_like_secret(s) => *s = "[redacted]".into(),
@@ -117,6 +137,7 @@ const LIST_FIELDS: &[&str] = &[
     "lines",
     "logs",
     "notifications",
+    "runs",
 ];
 
 /// Finds the array to shorten: the value itself, or the first known list field of an object.
@@ -248,6 +269,32 @@ mod tests {
         let out = fit_text(&csv, 200);
         assert!(out.contains("[truncated"));
         assert!(out.len() < 400);
+    }
+
+    #[test]
+    fn account_output_loses_links_and_2fa_material() {
+        let mut v = json!({"invite": {"email": "a@b.c", "role": "member", "token": "t"},
+            "delivery": "manual", "link": "https://x/invite/abc", "users": [{"id": "u1",
+            "Recovery_Codes": ["a"], "otpauth_uri": "otpauth://x", "challenge": "c"}],
+            "smtp": {"host": "h", "password": "***"}});
+        strip_account_secrets(&mut v);
+        let s = v.to_string();
+        for k in [
+            "link",
+            "token",
+            "ecovery",
+            "otpauth",
+            "challenge",
+            "password",
+            "invite/abc",
+        ] {
+            assert!(!s.contains(k), "{k}: {s}");
+        }
+        assert!(s.contains("delivery") && s.contains("a@b.c") && s.contains("\"host\""));
+        // The global sanitiser keeps innocent `link` keys (link reports).
+        let mut r = json!({"link": "https://a.com/x"});
+        strip_secrets(&mut r);
+        assert!(r.get("link").is_some());
     }
 
     #[test]

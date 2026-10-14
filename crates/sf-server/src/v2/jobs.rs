@@ -54,9 +54,10 @@ pub async fn list(
             sql.push_str(&format!(" AND {col} = ?{}", args.len()));
         }
     }
-    if !u.is_admin() {
-        args.push(SqlValue::Text(u.user_id.clone()));
-        sql.push_str(&format!(" AND s.user_id = ?{}", args.len()));
+    // v2.4: workspace scope (admins without a workspace header also see site-less jobs).
+    let scope = crate::tenancy::site_scope(&st, &u, "s").await?;
+    if scope != "1=1" {
+        sql.push_str(&format!(" AND s.id IS NOT NULL AND {scope}"));
     }
     args.push(SqlValue::Integer(limit));
     let lim = args.len();
@@ -83,12 +84,7 @@ pub async fn list(
 }
 
 fn principal(u: &User) -> Principal {
-    Principal::User {
-        user_id: u.user_id.clone(),
-        role: u.role.clone(),
-        token: u.token.clone(),
-        scopes: u.scopes.clone(),
-    }
+    u.principal()
 }
 
 /// 404 unless the caller may see this job (site-less jobs are admin-only).

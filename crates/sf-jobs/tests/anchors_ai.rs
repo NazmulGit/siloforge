@@ -14,8 +14,9 @@ use common::*;
 use serde_json::{Value, json};
 use sf_core::types::JobKind;
 
-/// Stub chat endpoint answering anchor-refinement prompts. Mode 0: picks the LAST heuristic
-/// candidate with relevance 0.1. Mode 1: proposes an invented (non-verbatim) phrase.
+/// Stub chat endpoint answering batched anchor-refinement prompts (v2.3: the user message is a
+/// JSON array of items `{id, t, k, c, p}`). Mode 0: picks the LAST heuristic candidate with
+/// relevance 0.1. Mode 1: proposes an invented (non-verbatim) phrase.
 async fn stub_refine(State(mode): State<Arc<AtomicUsize>>, Json(body): Json<Value>) -> Json<Value> {
     let user = body["messages"]
         .as_array()
@@ -23,24 +24,24 @@ async fn stub_refine(State(mode): State<Arc<AtomicUsize>>, Json(body): Json<Valu
         .and_then(|m| m["content"].as_str())
         .unwrap_or("")
         .to_string();
-    let cands: Vec<String> = user
-        .split("imperfect):\n")
-        .nth(1)
-        .unwrap_or("")
-        .split("\n\n")
-        .next()
-        .unwrap_or("")
-        .lines()
-        .filter_map(|l| l.strip_prefix("- ").map(str::to_string))
+    let items: Vec<Value> = serde_json::from_str(&user).unwrap_or_default();
+    let mode = mode.load(Ordering::SeqCst);
+    let replies: Vec<Value> = items
+        .iter()
+        .map(|it| {
+            let last = it["c"]
+                .as_array()
+                .and_then(|c| c.last())
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            match mode {
+                0 => json!({"id": it["id"], "anchor": last, "rel": 0.1}),
+                _ => json!({"id": it["id"], "anchor": "completely invented anchor words", "rel": 0.9}),
+            }
+        })
         .collect();
-    let reply = match mode.load(Ordering::SeqCst) {
-        0 => {
-            json!({"anchor": cands.last().cloned().unwrap_or_default(), "relevance": 0.1, "reason": "stub pick"})
-        }
-        _ => {
-            json!({"anchor": "completely invented anchor words", "relevance": 0.9, "reason": "stub"})
-        }
-    };
+    let reply = json!({"items": replies});
     Json(json!({
         "id": "x", "object": "chat.completion", "model": "stub-model",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": reply.to_string()}, "finish_reason": "stop"}],
@@ -125,7 +126,8 @@ async fn ai_refinement_validates_replies_and_scales_low_relevance() {
         assert_eq!(ai["relevance"], 0.1);
         assert_eq!(b["ai_factor"], 0.6, "{b}");
         assert!(*composite > 0.0);
-        if ai["fallback_used"] == false {
+        // v2.3: confident heuristic anchors only get a relevance check (no anchor proposal)
+        if ai["fallback_used"] == false && ai["task"] != "relevance_check" {
             used_ai += 1;
             assert!(
                 ai["anchor"].as_str().unwrap().eq_ignore_ascii_case(anchor),
@@ -180,6 +182,10 @@ async fn ai_refinement_rejects_invented_anchors() {
         .collect();
     assert!(!with_ai.is_empty());
     for (anchor, _, _, b) in with_ai {
+        if b["ai"]["task"] == "relevance_check" {
+            assert_eq!(b["ai"]["relevance"], 0.9, "{b}");
+            continue;
+        }
         assert_eq!(b["ai"]["fallback_used"], true, "{b}");
         assert_eq!(b["ai"]["reject"], "not_verbatim", "{b}");
         assert_ne!(anchor, "completely invented anchor words");

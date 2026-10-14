@@ -38,7 +38,17 @@ const PROVIDER_COLS: &str = "id, name, label, kind, base_url, api_key_enc, heade
      last_probe_at, last_probe_ok, last_probe_error, last_probe_ms, created_at, updated_at";
 const MODEL_COLS: &str = "id, provider_id, model_id, label, role, context_tokens, dim, enabled, price_in, \
      price_out, notes, last_probe_at, last_probe_ok, last_probe_error, last_probe_ms, created_at";
-const CHAIN_COLS: &str = "id, name, role, site_id, active, notes, created_at, updated_at";
+const CHAIN_COLS: &str = "id, name, role, site_id, active, notes, created_at, updated_at, tier";
+/// v2.3 chain tiers.
+const TIERS: &[&str] = &["low", "main", "high"];
+
+fn check_tier(t: &str) -> ApiResult<()> {
+    if TIERS.contains(&t) {
+        Ok(())
+    } else {
+        Err(ApiError::bad("tier must be one of low, main, high"))
+    }
+}
 const RUNG_COLS: &str = "id, chain_id, model_id, position, timeout_ms, max_retries, enabled";
 const PROBE_BOOLS: &[&str] = &["enabled", "last_probe_ok"];
 
@@ -955,6 +965,10 @@ pub async fn list_chains(
     let global_only = site.as_deref() == Some("global");
     let site_f = if global_only { None } else { site };
     let role = q.get("role").cloned();
+    let tier = q.get("tier").cloned().filter(|t| !t.is_empty());
+    if let Some(t) = &tier {
+        check_tier(t)?;
+    }
     let v = st
         .db
         .read(move |c| {
@@ -963,10 +977,10 @@ pub async fn list_chains(
                 &format!(
                     "SELECT {CHAIN_COLS} FROM model_chains
                       WHERE (?1 IS NULL OR role=?1) AND (?3 = 0 OR site_id IS NULL)
-                        AND (?2 IS NULL OR site_id=?2)
-                      ORDER BY role, site_id IS NOT NULL, site_id, name, id"
+                        AND (?2 IS NULL OR site_id=?2) AND (?4 IS NULL OR tier=?4)
+                      ORDER BY role, site_id IS NOT NULL, site_id, tier, name, id"
                 ),
-                &[&role, &site_f, &global_only],
+                &[&role, &site_f, &global_only, &tier],
                 &[],
                 &["active"],
             )?;
@@ -1002,24 +1016,25 @@ pub async fn list_chains(
     Ok(Json(Value::Array(v)))
 }
 
-/// Deactivates every sibling in the same (role, site) scope, then activates `id`. Run inside a txn.
+/// Deactivates every sibling in the same (role, tier, site) scope, then activates `id`. Run
+/// inside a txn.
 fn activate_within(t: &rusqlite::Transaction<'_>, id: &str) -> sf_core::Result<bool> {
-    let scope: Option<(String, Option<String>)> = t
+    let scope: Option<(String, Option<String>, String)> = t
         .query_row(
-            "SELECT role, site_id FROM model_chains WHERE id=?1",
+            "SELECT role, site_id, tier FROM model_chains WHERE id=?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(err)?;
-    let Some((role, site)) = scope else {
+    let Some((role, site, tier)) = scope else {
         return Ok(false);
     };
     let now = sf_core::now_rfc3339();
     t.execute(
         "UPDATE model_chains SET active=0, updated_at=?4
-          WHERE role=?1 AND site_id IS ?2 AND id<>?3 AND active=1",
-        params![role, site, id, now],
+          WHERE role=?1 AND site_id IS ?2 AND id<>?3 AND active=1 AND tier=?5",
+        params![role, site, id, now, tier],
     )
     .map_err(err)?;
     t.execute(
@@ -1040,6 +1055,9 @@ pub struct ChainBody {
     active: Option<bool>,
     #[serde(default)]
     notes: Option<String>,
+    /// v2.3: low | main (default) | high.
+    #[serde(default)]
+    tier: Option<String>,
 }
 
 pub async fn create_chain(
@@ -1055,7 +1073,15 @@ pub async fn create_chain(
     {
         return Err(ApiError::bad("site_id must be a uuid"));
     }
-    let notes: String = b.notes.unwrap_or_default().chars().take(4000).collect();
+    let notes: String = b
+        .notes
+        .clone()
+        .unwrap_or_default()
+        .chars()
+        .take(4000)
+        .collect();
+    let tier = b.tier.clone().unwrap_or_else(|| "main".into());
+    check_tier(&tier)?;
     let id = sf_core::new_id();
     let id2 = id.clone();
     let res: Result<Value, ApiError> = st
@@ -1071,8 +1097,8 @@ pub async fn create_chain(
                 }
             }
             t.execute(
-                "INSERT INTO model_chains(id, name, role, site_id, active, notes) VALUES(?1,?2,?3,?4,0,?5)",
-                params![id2, name, b.role, b.site_id, notes],
+                "INSERT INTO model_chains(id, name, role, site_id, active, notes, tier) VALUES(?1,?2,?3,?4,0,?5,?6)",
+                params![id2, name, b.role, b.site_id, notes, tier],
             )
             .map_err(err)?;
             if b.active == Some(true) {
@@ -1092,6 +1118,9 @@ pub struct ChainPatch {
     name: Option<String>,
     #[serde(default)]
     notes: Option<String>,
+    /// v2.3: move the chain to another tier (an active chain deactivates the active sibling there).
+    #[serde(default)]
+    tier: Option<String>,
 }
 
 pub async fn patch_chain(
@@ -1108,10 +1137,37 @@ pub async fn patch_chain(
         check_len("name", n, 1, 128)?;
     }
     let notes: Option<String> = b.notes.map(|n| n.chars().take(4000).collect());
+    if let Some(t) = &b.tier {
+        check_tier(t)?;
+    }
+    let tier = b.tier;
     let id2 = id.clone();
     let v = st
         .db
         .write(move |t| {
+            if let Some(new_tier) = &tier {
+                let cur: Option<(String, bool)> = t
+                    .query_row(
+                        "SELECT tier, active FROM model_chains WHERE id=?1",
+                        [&id2],
+                        |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
+                    )
+                    .optional()
+                    .map_err(err)?;
+                if let Some((old, active)) = cur
+                    && &old != new_tier
+                {
+                    // leave the unique active scope first, then re-activate in the new tier
+                    t.execute(
+                        "UPDATE model_chains SET active=0, tier=?2 WHERE id=?1",
+                        params![id2, new_tier],
+                    )
+                    .map_err(err)?;
+                    if active {
+                        activate_within(t, &id2)?;
+                    }
+                }
+            }
             let n = t
                 .execute(
                     "UPDATE model_chains SET name=coalesce(?2,name), notes=coalesce(?3,notes), updated_at=?4

@@ -247,8 +247,8 @@ impl ServerHandler for SiloForgeMcp {
 mod tests {
     use super::*;
 
-    /// 28 v1/v2.0 tools + the v2.1 additions.
-    const EXPECTED_TOOLS: usize = 118;
+    /// 28 v1/v2.0 tools + the v2.1-v2.4 additions.
+    const EXPECTED_TOOLS: usize = 162;
 
     #[test]
     fn scopes_and_defaults() {

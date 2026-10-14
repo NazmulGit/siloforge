@@ -1,7 +1,7 @@
 ---
 title: Anchors
 section: Linking
-order: 4
+order: 5
 ---
 
 # Anchors
@@ -70,6 +70,11 @@ with **AI anchors: on/off** on the Dashboard or in the Bulk wizard. Budget setti
 | Time budget (s) | 300 | 5-3600 | After this the plan finishes with heuristic anchors |
 
 **Semantic phrase scoring** (on by default) adds about a second per thousand links. Turn it off only to compare.
+
+Since 2.3 the anchors are sent in **batches** (20 per request by default) on the **low** tier, answers are **cached**
+for 30 days, and edges where the heuristic is already confident are **not sent at all** (anchor confidence ≥ 0.85 and
+relevance ≥ 0.80 by default). **Settings → AI Models → Always use AI** turns refinement on for every plan and run.
+Thresholds, batch size, tiers and daily budgets are in **Settings → AI Models**.
 
 AI refinement needs a chat model; see [AI models](ai-models).
 

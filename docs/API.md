@@ -45,6 +45,8 @@ token gets at most its parent's scopes, never outlives it, and is revoked with i
 ### Ownership
 Admins see every site. Users see their own sites; a foreign site answers **404** (never 403). Site tokens only reach
 their own site. Admin-only routes answer 403 `admin role required` (and 403 for a token without `admin`/`*` scope).
+From 2.4 site visibility is workspace membership with a role (see section 6); a single-user install sees exactly
+what it saw before (Default workspace).
 
 ### Rate limits
 Failed logins and handshakes are limited per client IP; repeated failures for one account lock it for 30 s, doubling
@@ -282,7 +284,87 @@ Integrations page to show a ready-to-paste client config.
 
 ---
 
-## 6. Examples
+## 6. v2.4: accounts, workspaces, plans, admin
+
+Contract: [specs/v2.4-saas.md](specs/v2.4-saas.md) (section 9 = as built). Errors in this section use
+`{error, message, statusCode}`. Paths are under `/api/v2`. Every call is written to the event log.
+
+### Headers
+| Header | Meaning |
+|---|---|
+| `X-SiloForge-Workspace: <id>` | Current workspace. Filters list routes (`GET /api/v1/sites`, `/api/v1/usage`, `/api/v2/jobs`) and is the target of creates. Without it lists show every site you can see (platform admin: all) and creates go to your default workspace. A workspace you are not a member of -> 404 `workspace not found` (platform admins may name any). MCP stdio: `SILOFORGE_WORKSPACE`. |
+| `X-SiloForge-View-As: <id>` | Platform admins only. Read-only support view scoped to that workspace; every non-GET -> 403 `view-as is read-only`; logged as `admin view-as`. |
+
+### Roles and visibility
+Role rank viewer < member < admin < owner; platform admins (`users.role = 'admin'`) pass every check. Site routes:
+GET/HEAD need viewer, other methods member; site create, `PATCH /api/v1/sites/{id}`, rotate-key, GSC
+connect/disconnect and Auto-Linker settings PUT need admin. Non-member sites -> 404. Suspended workspace: non-GET
+site routes -> 403 `workspace suspended`. API tokens carry `workspace_id`: a non-admin's token only reaches its
+workspace; a platform admin's token keeps platform-wide access (Hermes unchanged).
+
+### 402 plan limit
+```json
+{"error": "plan limit", "message": "Your plan allows 1 site.", "statusCode": 402,
+ "key": "sites", "limit": 1, "used": 1, "plan": "free", "workspace_id": "ws-example"}
+```
+`key`: `sites` (site create), `posts_per_site` (crawl/plan enqueue, plugin sync, CSV import), `link_runs_per_month`
+(Link Run create), `ai_tokens_per_month` (Link Run create with AI; other AI calls fall back to heuristics),
+`members` (invite create), `api_tokens` (token create), `schedules` (schedule create), `auto_linker` (enable), `mcp`
+(`false` = empty effective MCP policy).
+
+### Auth (`/auth/*`)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/auth/config` | public: `{registration_mode, require_email_verification, email_enabled, first_run, branding, version}` |
+| POST | `/auth/login` | `{email, password, remember?}` (true = 30 d, false = 1 d) -> `{token, user, session_id, expires_at}` or `{two_factor_required:true, challenge}`; 401 / 403 `account disabled` / 429 |
+| POST | `/auth/2fa/login` | `{challenge, code}` (TOTP or recovery code) -> same as login |
+| POST | `/auth/register` | `{email, password, name?, invite_token?, workspace_name?, website?}` (`website` = honeypot) -> 201 `{token, user, session_id, workspace, email_verification_required, verification_delivery}`; 403 closed / invite required / domain; 429 |
+| POST | `/auth/verify-email` | public `{token}` -> `{ok, email}`; `/auth/verify-email/resend` -> `{sent, delivery}` |
+| POST | `/auth/forgot` | `{email}` -> always `{ok:true}`; `/auth/reset {token, password}` -> `{ok:true}` (revokes all sessions) |
+| POST | `/auth/change-email` | `{new_email, password}` -> `{ok, pending_email, delivery}` |
+| GET / PATCH | `/auth/me` | v1 `me` + `email_verified, pending_email, two_factor_enabled, recovery_codes_left, platform_admin, default_workspace_id, workspaces[]`; PATCH `{name}` |
+| POST | `/auth/2fa/setup` · `enable` · `disable` · `recovery-codes` | `{password}` -> `{secret, otpauth_uri}` · `{code}` -> `{enabled, recovery_codes[10]}` · `{password, code}` · `{password}` -> `{recovery_codes}` |
+| GET / DELETE | `/auth/sessions`, `/auth/sessions/{id}` | `{sessions:[{id, created_at, last_seen_at, expires_at, ip, user_agent, remember, current, revoked_at}]}`; `{revoked:true}` |
+| POST | `/auth/logout` | revokes the current session (`logout-all` see above) |
+
+`/api/v1/auth/login` keeps its contract; for a 2FA user it answers 401 (sign in through the web app). JWTs without
+`sid` stay valid until expiry.
+
+### Workspaces, invites, plans, billing
+| Method | Path | Notes |
+|---|---|---|
+| GET / POST | `/workspaces[?all=1]` | `{workspaces:[{id,name,slug,role,status,is_default,owner_user_id,plan,sites,created_at}], current_id}`; POST `{name, slug?}` -> 201 |
+| GET / PATCH / DELETE | `/workspaces/{id}` | viewer: workspace + `my_role, limits, usage`; PATCH `{name?, slug?}` (admin); DELETE `{confirm:<slug>}` (owner, soft, purge after 30 d) |
+| POST | `/workspaces/{id}/transfer` | `{user_id}` (owner) |
+| GET | `/workspaces/{id}/usage[?history=1]` | `{workspace_id, month, plan, limits, usage:{sites, posts_total, posts_max_site, link_runs_month, ai_tokens_month, members, pending_invites, api_tokens, schedules}, history?}` |
+| GET / PATCH / DELETE | `/workspaces/{id}/members[/{user_id}]` | PATCH `{role: viewer\|member\|admin}` (admin) |
+| GET / POST / DELETE | `/workspaces/{id}/invites[/{invite_id}]` | POST `{email, role}` -> 201 `{invite, delivery, link?}` (7-day expiry) |
+| GET / POST | `/invites/{token}`, `/invites/{token}/accept` | public `{valid, email, role, workspace_name, expires_at}`; accept -> `{workspace}` |
+| GET / PUT | `/workspaces/{id}/mcp-policy` | `{tools, per_token}` (admin); Default = the existing `/mcp/policy` |
+| GET / POST | `/tokens?workspace_id=`, `/tokens {..., workspace_id?}` | rows carry `workspace_id` |
+| GET | `/plans` | `{plans:[{id,name,limits,price_label,public,sort}]}` |
+| GET | `/billing?workspace_id=` | `{provider, plan, limits, upgrade:{contact, note}}` |
+| POST | `/billing/webhook` | 501 `billing provider not configured` (stub) |
+
+### Admin (`/admin/*`, platform admins; API tokens need `admin`/`*`)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/admin/overview` | users, workspaces, sites, posts, runs_today, ai_tokens_month, errors_open, mail, registration_mode, health |
+| GET / POST | `/admin/users?q=&limit=&offset=` | `{users, total}`; POST `{email, name?, password?, role?, workspace_id?, workspace_role?}` -> 201 `{user, delivery?, link?}` |
+| GET / PATCH / DELETE | `/admin/users/{id}` | PATCH `{name?, email?, role?}`; DELETE `?transfer_to=<user id>` |
+| POST | `/admin/users/{id}/{reset-password\|logout\|disable\|enable\|verify-email\|reset-2fa}` | |
+| GET | `/admin/workspaces?q=&status=active\|suspended\|deleted` | `{workspaces, total}`; `/admin/workspaces/{id}` adds members, sites |
+| PATCH / DELETE | `/admin/workspaces/{id}` | PATCH `{name?, plan_id?, status?}`; DELETE = soft |
+| POST | `/admin/workspaces/{id}/{suspend\|resume\|restore}` | |
+| POST / PATCH / DELETE | `/admin/plans[/{id}]` | DELETE -> 409 while in use |
+| GET | `/admin/invites` | all workspaces |
+| GET / POST / DELETE | `/admin/email`, `/admin/email/test {to}`, `/admin/email/outbox/{id}` | `{configured, smtp (password "***"), outbox}`; test -> `{ok, delivery, error?}` |
+| GET / PUT | `/admin/platform` | sections `registration`, `smtp`, `branding`, `deployment:{public_url, trust_proxy}`, `billing`; PUT merges per section |
+| GET | `/admin/audit` | `/api/v2/logs` platform-wide, same filters |
+
+---
+
+## 7. Examples
 
 ```powershell
 $t = (Invoke-RestMethod -Method Post http://127.0.0.1:8600/api/v1/auth/login -ContentType application/json `

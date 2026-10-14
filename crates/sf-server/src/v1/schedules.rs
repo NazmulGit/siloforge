@@ -21,7 +21,7 @@ use super::sites::topology_param;
 use crate::auth::User;
 use crate::{ApiError, ApiResult, AppState};
 
-const KINDS: &[&str] = &["crawl", "plan", "link_health", "audit"];
+const KINDS: &[&str] = &["crawl", "plan", "link_health", "audit", "link_run"];
 const SCHED_JSON: &[&str] = &["payload"];
 const SCHED_BOOLS: &[&str] = &["active"];
 
@@ -282,6 +282,25 @@ pub async fn upsert(
         return Err(ApiError::bad("payload is too large"));
     }
     let active = b.active != Some(false);
+    // v2.4: `schedules` quota counts new (site, kind) rows only; updates are free.
+    {
+        let (s0, k0) = (site_id.clone(), kind.clone());
+        let exists: bool = st
+            .db
+            .read(move |c| {
+                c.query_row(
+                    "SELECT count(*) > 0 FROM site_schedules WHERE site_id=?1 AND job_kind=?2",
+                    rusqlite::params![s0, k0],
+                    |r| r.get(0),
+                )
+                .map_err(sf_store::err)
+            })
+            .await?;
+        if !exists {
+            let ws = crate::tenancy::site_ws(&st, &site_id).await?;
+            crate::tenancy::check_quota(&st, ws.as_deref(), "schedules", 1).await?;
+        }
+    }
     let next = if active { next_run(&cron, &tz) } else { None };
     let (sid, k2) = (site_id.clone(), kind.clone());
     let row = st

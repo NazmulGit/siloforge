@@ -21,6 +21,10 @@ pub struct SiteInfo {
     pub mode: String,
     pub settings: Value,
     pub secrets: SiteSecrets,
+    /// Hosts of the site's crawled post URLs (the WordPress canonical `home`, which can differ
+    /// from the configured domain, e.g. `site01.example` for a site added as 127.0.0.1).
+    /// Used only for hosts that are also a configured `[crawl.host_aliases]` key.
+    pub content_hosts: Vec<String>,
 }
 
 impl std::fmt::Debug for SiteInfo {
@@ -91,8 +95,30 @@ impl SiteInfo {
         self.http_client_from(ctx.wp_http_config())
     }
 
+    /// The site's own hosts for an HTTP client: [`SiteInfo::allow_hosts`] plus the hosts of
+    /// its post URLs that have a configured alias.
+    ///
+    /// A post URL host counts as the site's own only when the admin configured an alias for
+    /// it: live verify fetches the canonical post URL, and without this the alias never
+    /// applied, the name resolved to a private LAN address and every check came back
+    /// inconclusive (E2E 2.2). Arbitrary hosts a WordPress puts in its links stay guarded.
+    pub fn client_hosts(
+        &self,
+        aliases: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<String> {
+        let mut hosts = self.allow_hosts();
+        for h in &self.content_hosts {
+            if aliases.keys().any(|k| k.eq_ignore_ascii_case(h)) {
+                hosts.push(h.clone());
+            }
+        }
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    }
+
     fn http_client_from(&self, mut cfg: sf_crawl::HttpConfig) -> JobResult<sf_crawl::HttpClient> {
-        let hosts = self.allow_hosts();
+        let hosts = self.client_hosts(&cfg.host_aliases);
         if self.private_host_allowed() {
             cfg.allow_hosts.extend(hosts.iter().cloned());
         }
@@ -228,6 +254,7 @@ pub async fn load_site(ctx: &JobContext, site_id: &str) -> JobResult<SiteInfo> {
         o.remove("wp_app_password");
     }
     apply_wordpress_defaults(&mut settings, &ctx.live.get().wordpress);
+    let content_hosts = content_hosts(ctx, &id).await?;
     Ok(SiteInfo {
         id,
         domain,
@@ -235,7 +262,41 @@ pub async fn load_site(ctx: &JobContext, site_id: &str) -> JobResult<SiteInfo> {
         mode,
         settings,
         secrets,
+        content_hosts,
     })
+}
+
+/// Distinct hosts of a site's post URLs (at most 8).
+async fn content_hosts(ctx: &JobContext, site_id: &str) -> JobResult<Vec<String>> {
+    let sid = site_id.to_string();
+    let urls: Vec<String> = ctx
+        .db
+        .read(move |c| {
+            // scheme://host[:port] prefix of each url, grouped in SQL so big sites stay cheap
+            let mut st = c
+                .prepare(
+                    "SELECT DISTINCT CASE WHEN instr(substr(url, instr(url,'//')+2), '/') > 0
+                        THEN substr(url, 1, instr(url,'//') + instr(substr(url, instr(url,'//')+2), '/'))
+                        ELSE url END
+                     FROM posts WHERE site_id=?1 AND instr(url,'//') > 0 LIMIT 8",
+                )
+                .map_err(err)?;
+            let v = st
+                .query_map([&sid], |r| r.get::<_, String>(0))
+                .map_err(err)?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(v)
+        })
+        .await?;
+    let mut out: Vec<String> = urls
+        .iter()
+        .filter_map(|u| url::Url::parse(u).ok())
+        .filter_map(|u| u.host_str().map(str::to_ascii_lowercase))
+        .collect();
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 /// Fills keys a site leaves unset from the install-wide `[wordpress]` defaults (v2.1). The
@@ -373,5 +434,36 @@ mod tests {
             content_hash("<p>x</p>", None)
         );
         assert_eq!(placeholders(2, 3), "?2,?3,?4");
+    }
+}
+
+#[cfg(test)]
+mod e2e22_tests {
+    use super::*;
+
+    #[test]
+    fn content_hosts_count_only_with_an_alias() {
+        let site = SiteInfo {
+            id: "s".into(),
+            domain: "127.0.0.1:8391".into(),
+            wp_url: Some("http://127.0.0.1:8391".into()),
+            mode: "wp_rest".into(),
+            settings: serde_json::json!({}),
+            secrets: SiteSecrets::default(),
+            content_hosts: vec!["site01.example".into(), "intranet.lan".into()],
+        };
+        let mut aliases = std::collections::BTreeMap::new();
+        aliases.insert("site01.example".to_string(), "127.0.0.1".to_string());
+        let hosts = site.client_hosts(&aliases);
+        assert!(
+            hosts.iter().any(|h| h == "site01.example"),
+            "{hosts:?}"
+        );
+        assert!(!hosts.iter().any(|h| h == "intranet.lan"), "{hosts:?}");
+        let none = site.client_hosts(&std::collections::BTreeMap::new());
+        assert!(
+            !none.iter().any(|h| h == "site01.example"),
+            "{none:?}"
+        );
     }
 }

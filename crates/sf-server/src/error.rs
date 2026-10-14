@@ -16,6 +16,8 @@ pub struct ApiError {
     pub message: String,
     /// Server-side detail of a 5xx (never sent to the client; recorded on the Errors page, G2-16).
     pub detail: Option<String>,
+    /// Extra top-level body fields (v2.4 402 `{key, limit, used, plan}`); `error` may be overridden.
+    pub extra: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Response extension carrying the detail of a 5xx `ApiError` to [`track_errors`].
@@ -28,7 +30,15 @@ impl ApiError {
             status,
             message: message.into(),
             detail: None,
+            extra: None,
         }
+    }
+    /// Adds extra top-level fields to the error body.
+    pub fn with_extra(mut self, extra: serde_json::Value) -> Self {
+        if let serde_json::Value::Object(m) = extra {
+            self.extra = Some(m);
+        }
+        self
     }
     pub fn bad(m: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, m)
@@ -73,6 +83,7 @@ impl From<Error> for ApiError {
             status,
             message,
             detail,
+            extra: None,
         }
     }
 }
@@ -86,12 +97,17 @@ impl From<axum::extract::rejection::JsonRejection> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let reason = self.status.canonical_reason().unwrap_or("Error");
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "error": self.message,
             "message": self.message,
             "statusCode": self.status.as_u16(),
             "reason": reason,
         });
+        if let (Some(extra), Some(obj)) = (self.extra, body.as_object_mut()) {
+            for (k, v) in extra {
+                obj.insert(k, v);
+            }
+        }
         let mut res = (self.status, Json(body)).into_response();
         if self.status.is_server_error() {
             let d = self.detail.unwrap_or(self.message);

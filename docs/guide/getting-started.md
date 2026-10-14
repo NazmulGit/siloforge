@@ -35,6 +35,10 @@ data folder. Nothing is sent to a cloud service unless you configure an AI or em
 8. **Check and keep going.** Look at the changed pages, then **History**. If anything looks wrong, undo it from
    **Tools → Bulk**. Once you trust the results, work in larger batches.
 
+> **Shortcut (2.2):** Steps 4-8 are also one guided flow: **Site → Link Run** crawls, shows the opportunities, lets
+> you tick strategies and a linking mode, previews every link, deploys them and opens each one on the live page.
+> See [Link Runs](link-runs). To repeat it on a schedule, see [Auto-Linker](auto-linker).
+
 > **Tip:** Every page has a **?** button that opens the matching part of this guide in a side drawer.
 > The full guide is under **Workspace → Docs**.
 
@@ -49,6 +53,14 @@ The menu has three groups:
 | **Settings** | General, Linking Rules, Resources & Performance, WordPress, AI Models, API & MCP, Notifications, Backups, Activity, Account | How SiloForge behaves. Most sections are for admins. |
 
 Hover over buttons and labels to see short hints. You can turn hints off in **Settings → General**.
+
+## Workspaces and other users (2.4)
+
+All your sites live in a **workspace**. On a single-user install there is just one, **Default**, on the Unlimited
+plan, and SiloForge works exactly as before: you don't need to do anything. If you want to share SiloForge with a
+team or with clients, you can invite people with a role, create more workspaces with their own plans, and offer
+sign-up. Start with [Accounts and sign-in](accounts-and-login) and [Workspaces and members](workspaces-and-members);
+to put SiloForge on the internet, read [SaaS deployment](saas-deployment) first.
 
 ## The golden rule
 

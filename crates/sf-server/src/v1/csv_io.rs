@@ -65,6 +65,7 @@ pub async fn import(
     body: Bytes,
 ) -> ApiResult<Json<Value>> {
     guard_user_site(&st, &u, &site_id).await?;
+    crate::tenancy::check_posts(&st, &site_id).await?;
     let raw = String::from_utf8(body.to_vec()).map_err(|_| ApiError::bad("CSV must be UTF-8"))?;
     if raw.trim().is_empty() {
         return Err(ApiError::bad("empty CSV body"));

@@ -8,6 +8,7 @@ pub mod live;
 pub mod net;
 pub mod secrets;
 pub mod settings_file;
+pub mod totp;
 pub mod types;
 
 pub use config::Config;

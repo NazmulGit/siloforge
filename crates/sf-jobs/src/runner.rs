@@ -28,6 +28,7 @@ pub fn kind_timeout(kind: &JobKind) -> Duration {
         JobKind::Inject => 60,
         JobKind::LinkHealth => 180,
         JobKind::Audit => 360,
+        JobKind::LinkRun => 240,
         _ => 30,
     };
     Duration::from_secs(mins * 60)
@@ -655,6 +656,10 @@ pub(crate) fn plan_stats<'a>(kind: &JobKind, stats: &'a Value) -> &'a Value {
 
 fn notify_done(ctx: &JobContext, job: &Job, stats: &Value) {
     let Some(n) = &ctx.notifier else { return };
+    if job.kind == JobKind::LinkRun {
+        // link runs send their own link_run.* notifications
+        return;
+    }
     let num = |k: &str| stats.get(k).and_then(Value::as_i64).unwrap_or(0);
     let plan = plan_stats(&job.kind, stats);
     let pnum = |k: &str| plan.get(k).and_then(Value::as_i64).unwrap_or(0);

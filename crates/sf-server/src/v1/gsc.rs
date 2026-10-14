@@ -7,7 +7,9 @@ use axum::extract::{Path, State};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::common::{JsonBody, audit_user, get_site, guard_user_site, mutate_site};
+use super::common::{
+    JsonBody, audit_user, get_site, guard_site_admin, guard_user_site, mutate_site,
+};
 use crate::auth::User;
 use crate::{ApiError, ApiResult, AppState};
 
@@ -24,7 +26,7 @@ pub async fn connect(
     Path(id): Path<String>,
     JsonBody(b): JsonBody<ConnectBody>,
 ) -> ApiResult<Json<Value>> {
-    guard_user_site(&st, &u, &id).await?;
+    guard_site_admin(&st, &u, &id).await?;
     if b.credentials_json.len() > MAX_CREDENTIALS {
         return Err(ApiError::bad("credentials_json is too large"));
     }
@@ -73,7 +75,7 @@ pub async fn disconnect(
     u: User,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    guard_user_site(&st, &u, &id).await?;
+    guard_site_admin(&st, &u, &id).await?;
     mutate_site(&st, &id, None, |settings, secrets| {
         let had = secrets.gsc_credentials.take().is_some();
         if let Some(o) = settings.as_object_mut() {

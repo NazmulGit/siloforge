@@ -209,6 +209,7 @@ pub async fn document(st: &AppState) -> ApiResult<Value> {
             "event_log_retain_days": cfg.monitor.event_log_retain_days,
             "log_reads": cfg.monitor.log_reads,
         },
+        "ai": ai_document(&cfg.ai),
         "restart_required": restart_required(&st.cfg, &cfg),
         "restart_supported": hooks.as_ref().is_some_and(|h| h.restart.is_some()),
     }))
@@ -216,6 +217,134 @@ pub async fn document(st: &AppState) -> ApiResult<Value> {
 
 pub async fn get(State(st): State<AppState>, _a: Admin) -> ApiResult<Json<Value>> {
     Ok(Json(document(&st).await?))
+}
+
+/// The `ai` section (v2.3 §5): every task with its effective tier.
+pub fn ai_document(a: &sf_core::config::AiCfg) -> Value {
+    json!({
+        "always_on": a.always_on,
+        "task_tiers": a.effective_task_tiers(),
+        "batch_size": a.batch(),
+        "confidence_skip": {"anchor": a.confidence_skip.anchor, "relevance": a.confidence_skip.relevance},
+        "budget": {
+            "daily_tokens": {
+                "low": a.budget.daily_tokens.low,
+                "main": a.budget.daily_tokens.main,
+                "high": a.budget.daily_tokens.high,
+            },
+            "per_site_daily_tokens": a.budget.per_site_daily_tokens,
+        },
+        "cache_ttl_days": a.cache_ttl_days,
+        "reasoning_effort": {
+            "low": a.reasoning_effort.low,
+            "main": a.reasoning_effort.main,
+            "high": a.reasoning_effort.high,
+        },
+    })
+}
+
+const MAX_BUDGET_TOKENS: u64 = 10_000_000_000;
+
+fn obj(v: &Value) -> R<&serde_json::Map<String, Value>> {
+    v.as_object().ok_or_else(|| "must be an object".to_string())
+}
+
+fn one_of_str(v: &Value, allowed: &[&str]) -> R<String> {
+    let s = v
+        .as_str()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .ok_or_else(|| "must be a string".to_string())?;
+    if allowed.contains(&s.as_str()) {
+        Ok(s)
+    } else {
+        Err(format!("must be one of {}", allowed.join(", ")))
+    }
+}
+
+/// `ai.<key>` (v2.3). Nested objects merge into the current value; the full value is persisted.
+fn apply_ai_key(cfg: &mut Config, key: &str, v: &Value) -> R<Vec<Write>> {
+    use sf_core::config::ai_tasks::{DEFAULTS, EFFORTS, TIERS};
+    let a = &mut cfg.ai;
+    let out = match key {
+        "always_on" => {
+            a.always_on = as_bool(v)?;
+            json!(a.always_on)
+        }
+        "task_tiers" => {
+            let m = obj(v)?;
+            for (task, t) in m {
+                if !DEFAULTS.iter().any(|(k, _)| k == task) {
+                    return Err(format!(
+                        "unknown task `{task}` (known: {})",
+                        DEFAULTS.iter().map(|d| d.0).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                let tier = one_of_str(t, TIERS).map_err(|e| format!("{task}: {e}"))?;
+                a.task_tiers.insert(task.clone(), tier);
+            }
+            json!(a.effective_task_tiers())
+        }
+        "batch_size" => {
+            a.batch_size = as_uint(v, 1, 50)? as usize;
+            json!(a.batch_size)
+        }
+        "confidence_skip" => {
+            for (k, x) in obj(v)? {
+                let f = as_float(x, 0.0, 1.0).map_err(|e| format!("{k}: {e}"))?;
+                match k.as_str() {
+                    "anchor" => a.confidence_skip.anchor = f,
+                    "relevance" => a.confidence_skip.relevance = f,
+                    _ => return Err(format!("unknown key `{k}` (anchor, relevance)")),
+                }
+            }
+            json!({"anchor": a.confidence_skip.anchor, "relevance": a.confidence_skip.relevance})
+        }
+        "budget" => {
+            for (k, x) in obj(v)? {
+                match k.as_str() {
+                    "daily_tokens" => {
+                        for (t, n) in obj(x).map_err(|e| format!("daily_tokens: {e}"))? {
+                            if !TIERS.contains(&t.as_str()) {
+                                return Err(format!("daily_tokens: unknown tier `{t}`"));
+                            }
+                            let n = as_uint(n, 0, MAX_BUDGET_TOKENS)
+                                .map_err(|e| format!("daily_tokens.{t}: {e}"))?;
+                            a.budget.daily_tokens.set(t, n);
+                        }
+                    }
+                    "per_site_daily_tokens" => {
+                        a.budget.per_site_daily_tokens = as_uint(x, 0, MAX_BUDGET_TOKENS)
+                            .map_err(|e| format!("per_site_daily_tokens: {e}"))?;
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unknown key `{k}` (daily_tokens, per_site_daily_tokens)"
+                        ));
+                    }
+                }
+            }
+            json!({
+                "daily_tokens": {"low": a.budget.daily_tokens.low, "main": a.budget.daily_tokens.main, "high": a.budget.daily_tokens.high},
+                "per_site_daily_tokens": a.budget.per_site_daily_tokens,
+            })
+        }
+        "cache_ttl_days" => {
+            a.cache_ttl_days = as_uint(v, 0, 365)? as u32;
+            json!(a.cache_ttl_days)
+        }
+        "reasoning_effort" => {
+            for (t, e) in obj(v)? {
+                if !TIERS.contains(&t.as_str()) {
+                    return Err(format!("unknown tier `{t}`"));
+                }
+                let e = one_of_str(e, EFFORTS).map_err(|x| format!("{t}: {x}"))?;
+                a.reasoning_effort.set(t, e);
+            }
+            json!({"low": a.reasoning_effort.low, "main": a.reasoning_effort.main, "high": a.reasoning_effort.high})
+        }
+        _ => return Err("unknown setting".into()),
+    };
+    Ok(vec![toml("ai", key, out)])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -344,6 +473,9 @@ fn apply_key(
     mem_total_mb: u64,
 ) -> R<Vec<Write>> {
     let mut w = Vec::new();
+    if section == "ai" {
+        return apply_ai_key(cfg, key, v);
+    }
     match (section, key) {
         ("resources", "cpu_threads") => {
             let n = as_uint(v, 0, logical_cpus() as u64)?;

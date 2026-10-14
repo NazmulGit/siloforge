@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMatch, useNavigate } from 'react-router-dom';
 import { fetchSites } from './api';
-import { readRememberedSite, writeRememberedSite } from './activeSite';
+import { clearRememberedSite, readRememberedSite, writeRememberedSite } from './activeSite';
+import { useOptionalWorkspace } from './workspaces';
 import { SitePickerModal } from './components/SitePickerModal';
 import type { SiteListItem } from './types';
 
@@ -28,6 +29,9 @@ export function SitesProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const match = useMatch('/site/:siteId/*');
   const urlSite = match?.params.siteId ?? null;
+  // v2.4: the site list follows the current workspace; reload whenever the scope changes.
+  const scopeKey = useOptionalWorkspace()?.scopeKey ?? 0;
+  const firstScope = useRef(scopeKey);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -42,8 +46,27 @@ export function SitesProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let alive = true;
+    const switched = scopeKey !== firstScope.current;
+    setLoading(true);
+    setError(null);
+    fetchSites()
+      .then((list) => {
+        if (!alive) return;
+        setSites(list);
+        // After a workspace switch, forget a remembered site that is not in the new workspace.
+        const rem = readRememberedSite();
+        if (switched && rem && !list.some((s) => s.id === rem)) {
+          clearRememberedSite();
+          setRemembered(null);
+        }
+      })
+      .catch((e: unknown) => alive && setError(e instanceof Error ? e.message : 'Failed to load sites'))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [scopeKey]);
 
   const rememberSite = useCallback((id: string) => {
     setRemembered(id);

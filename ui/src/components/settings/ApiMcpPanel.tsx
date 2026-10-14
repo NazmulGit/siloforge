@@ -15,6 +15,7 @@ import {
   revokeToken,
   v2ErrorMessage,
 } from '../../api2';
+import { fetchWorkspaceMcpPolicy, putWorkspaceMcpPolicy } from '../../saas';
 import { fmtDate } from '../../format';
 import { useToast } from '../../toast';
 import { useUser } from '../../user';
@@ -303,11 +304,19 @@ function AllowlistModal({
 
 function TokensCard({
   isAdmin,
+  canPolicy,
+  canCreate,
+  workspaceId,
   tools,
   policy,
   savePolicy,
 }: {
   isAdmin: boolean;
+  /** May edit per-token tool allowlists (MCP policy). */
+  canPolicy: boolean;
+  canCreate: boolean;
+  /** v2.4: list and create the tokens of this workspace only. */
+  workspaceId?: string;
   tools: McpToolInfo[];
   policy: McpPolicy | null;
   savePolicy: (p: McpPolicy, msg: string) => Promise<boolean>;
@@ -325,14 +334,14 @@ function TokensCard({
 
   const load = useCallback(async () => {
     try {
-      setRows(await fetchTokens());
+      setRows(await fetchTokens(workspaceId));
       setError(null);
     } catch (e) {
       if (isUnavailable(e)) setUnavailable(true);
       else setError(v2ErrorMessage(e, 'Failed to load tokens'));
       setRows([]);
     }
-  }, []);
+  }, [workspaceId]);
 
   useEffect(() => {
     void load();
@@ -373,9 +382,11 @@ function TokensCard({
         <label className="check-line muted">
           <input type="checkbox" checked={showRevoked} onChange={(e) => setShowRevoked(e.target.checked)} /> Show revoked
         </label>
-        <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
-          Create token
-        </button>
+        {canCreate && (
+          <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
+            Create token
+          </button>
+        )}
       </div>
       <p className="muted card-lead">
         Tokens act as your account, limited by their scopes: <b>read</b> views data, <b>write</b> changes it (crawl, plan, approve,
@@ -437,7 +448,7 @@ function TokensCard({
                             <button className="btn btn-sm" onClick={() => setEditing(editing === t.id ? null : t.id)}>
                               Edit
                             </button>
-                            {isAdmin && policy && (
+                            {canPolicy && policy && (
                               <button className="btn btn-sm" onClick={() => setAllowFor(t)}>
                                 Tools
                               </button>
@@ -469,6 +480,7 @@ function TokensCard({
       )}
       {creating && (
         <CreateTokenModal
+          workspaceId={workspaceId}
           onClose={() => setCreating(false)}
           onCreated={(t) => {
             setCreating(false);
@@ -503,7 +515,9 @@ function ToolManager({
   stats,
   statsAvailable,
   savePolicy,
+  showHttp = true,
 }: {
+  showHttp?: boolean;
   info: McpInfo;
   saved: McpPolicy;
   stats: Map<string, McpToolStat>;
@@ -576,6 +590,7 @@ function ToolManager({
           {statsAvailable && `, ${totals.calls.toLocaleString()} calls and ${totals.errors.toLocaleString()} errors in 24 h`}
         </span>
       </div>
+      {showHttp && (
       <div className="settings-list">
         <div className="settings-row">
           <div className="settings-row-text">
@@ -585,6 +600,7 @@ function ToolManager({
           <Toggle checked={draft.http_enabled} onChange={(v) => setDraft((d) => ({ ...d, http_enabled: v }))} label="Streamable HTTP transport" />
         </div>
       </div>
+      )}
       <div className="tool-toolbar">
         <input className="input" type="search" placeholder={`Search ${tools.length} tools`} aria-label="Search tools" value={q} onChange={(e) => setQ(e.target.value)} />
         <select value={filter} onChange={(e) => setFilter(e.target.value as ToolFilter)} aria-label="Filter tools">
@@ -762,10 +778,21 @@ function ToolList({ tools }: { tools: McpToolInfo[] }) {
   );
 }
 
-export function ApiMcpPanel() {
+export interface ApiMcpPanelProps {
+  /** v2.4: scope tokens and the MCP policy to this workspace. */
+  workspaceId?: string;
+  /** Workspace admin (or platform admin): may create tokens and edit the workspace's MCP policy. */
+  canManage?: boolean;
+  /** Settings → API & MCP on a v2.4 server: only the connection info (tokens moved to Workspace). */
+  connectionOnly?: boolean;
+}
+
+export function ApiMcpPanel({ workspaceId, canManage, connectionOnly }: ApiMcpPanelProps = {}) {
   const toast = useToast();
   const { user } = useUser();
   const isAdmin = user?.role === 'admin';
+  const scoped = workspaceId !== undefined;
+  const canPolicy = scoped ? canManage === true : isAdmin;
   const [info, setInfo] = useState<McpInfo | null>(null);
   const [infoState, setInfoState] = useState<'loading' | 'ok' | 'missing'>('loading');
   const [policy, setPolicy] = useState<McpPolicy | null>(null);
@@ -788,29 +815,33 @@ export function ApiMcpPanel() {
   }, []);
 
   useEffect(() => {
-    if (!isAdmin || infoState === 'loading') return;
+    if (connectionOnly || !canPolicy || infoState === 'loading') return;
     let alive = true;
-    fetchMcpPolicy()
-      .then((p) => alive && setPolicy(normPolicy(p, info)))
-      .catch(() => alive && setPolicyMissing(true));
-    fetchMcpStats()
-      .then((s) => {
-        if (!alive) return;
-        setStats(new Map(s.map((x) => [x.name, x])));
-        setStatsAvailable(true);
-      })
-      .catch(() => {
-        /* stats are optional */
-      });
+    setPolicy(null);
+    setPolicyMissing(false);
+    const load: Promise<Partial<McpPolicy>> = scoped && workspaceId ? fetchWorkspaceMcpPolicy(workspaceId) : fetchMcpPolicy();
+    load.then((p) => alive && setPolicy(normPolicy(p, info))).catch(() => alive && setPolicyMissing(true));
+    if (isAdmin) {
+      fetchMcpStats()
+        .then((s) => {
+          if (!alive) return;
+          setStats(new Map(s.map((x) => [x.name, x])));
+          setStatsAvailable(true);
+        })
+        .catch(() => {
+          /* stats are optional */
+        });
+    }
     return () => {
       alive = false;
     };
-  }, [isAdmin, infoState, info]);
+  }, [connectionOnly, canPolicy, isAdmin, infoState, info, scoped, workspaceId]);
 
   const savePolicy = useCallback(
     async (p: McpPolicy, msg: string) => {
       try {
-        const next = await putMcpPolicy(p);
+        const next: Partial<McpPolicy> | null =
+          scoped && workspaceId ? await putWorkspaceMcpPolicy(workspaceId, p) : await putMcpPolicy(p);
         setPolicy(normPolicy(next && typeof next === 'object' && 'tools' in next ? next : p, info));
         toast.push(msg, 'success');
         return true;
@@ -819,33 +850,51 @@ export function ApiMcpPanel() {
         return false;
       }
     },
-    [toast, info],
+    [toast, info, scoped, workspaceId],
   );
 
   const tools = info?.tools ?? [];
 
+  if (connectionOnly) {
+    if (infoState === 'loading') return <Skeleton rows={3} />;
+    if (infoState === 'ok') return <McpPanel showTools={false} />;
+    return (
+      <div className="card">
+        <FeatureUnavailable feature="The MCP server" />
+      </div>
+    );
+  }
+
   return (
     <>
-      <TokensCard isAdmin={isAdmin} tools={tools} policy={policy} savePolicy={savePolicy} />
+      <TokensCard
+        isAdmin={isAdmin}
+        canPolicy={canPolicy}
+        canCreate={scoped ? canManage === true : true}
+        workspaceId={workspaceId}
+        tools={tools}
+        policy={policy}
+        savePolicy={savePolicy}
+      />
       {infoState === 'loading' ? (
         <Skeleton rows={4} />
       ) : infoState === 'missing' ? (
         <div className="card">
           <FeatureUnavailable feature="The MCP server" />
         </div>
-      ) : info && isAdmin && policy ? (
-        <ToolManager info={info} saved={policy} stats={stats} statsAvailable={statsAvailable} savePolicy={savePolicy} />
+      ) : info && canPolicy && policy ? (
+        <ToolManager info={info} saved={policy} stats={stats} statsAvailable={statsAvailable} savePolicy={savePolicy} showHttp={!scoped} />
       ) : (
         <>
-          {isAdmin && policyMissing && (
+          {canPolicy && policyMissing && (
             <div className="info-note">
-              <span className="info-note-text">Tool management needs SiloForge 2.1. The tools below are shown read-only.</span>
+              <span className="info-note-text">Tool management is not available on this server. The tools below are shown read-only.</span>
             </div>
           )}
           <ToolList tools={tools} />
         </>
       )}
-      {infoState === 'ok' && <McpPanel showTools={false} />}
+      {infoState === 'ok' && !scoped && <McpPanel showTools={false} />}
     </>
   );
 }

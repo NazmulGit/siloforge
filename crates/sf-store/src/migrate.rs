@@ -27,6 +27,17 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0006_event_log",
         include_str!("../migrations/0006_event_log.sql"),
     ),
+    (
+        7,
+        "0007_link_runs",
+        include_str!("../migrations/0007_link_runs.sql"),
+    ),
+    (
+        8,
+        "0008_ai_tiers",
+        include_str!("../migrations/0008_ai_tiers.sql"),
+    ),
+    (9, "0009_saas", include_str!("../migrations/0009_saas.sql")),
 ];
 
 pub fn current_version(conn: &Connection) -> Result<i64> {
@@ -85,6 +96,12 @@ pub fn checksum_mismatches(conn: &Connection) -> Result<Vec<String>> {
 }
 
 pub fn run(conn: &mut Connection) -> Result<()> {
+    run_until(conn, i64::MAX)
+}
+
+/// Applies migrations up to and including `max` (tests build older schemas with it, e.g. to
+/// prove an upgrade back-fill).
+pub fn run_until(conn: &mut Connection, max: i64) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
            version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL,
@@ -107,7 +124,7 @@ pub fn run(conn: &mut Connection) -> Result<()> {
         )));
     }
     for (version, name, sql) in MIGRATIONS {
-        if *version <= current {
+        if *version <= current || *version > max {
             continue;
         }
         let checksum = checksum(sql);
@@ -253,5 +270,225 @@ mod tests {
         );
         // still opens (warning only)
         run(&mut c).unwrap();
+    }
+
+    /// 0007 rebuilds site_schedules (CHECK gains 'link_run') without losing rows.
+    #[test]
+    fn v8_tiers_existing_chains_and_call_log() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        c.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL,
+               checksum TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT 'x')",
+        )
+        .unwrap();
+        for (v, name, sql) in MIGRATIONS.iter().filter(|m| m.0 < 8) {
+            c.execute_batch(sql).unwrap();
+            c.execute(
+                "INSERT INTO schema_version(version,name,checksum) VALUES(?1,?2,?3)",
+                rusqlite::params![v, name, checksum(sql)],
+            )
+            .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO model_chains(id,name,role,active) VALUES('c1','Main','chat',1);
+             INSERT INTO model_call_log(provider,role,ok,tokens_in) VALUES('p','chat',1,5);",
+        )
+        .unwrap();
+        run(&mut c).unwrap();
+        let tier: String = c
+            .query_row("SELECT tier FROM model_chains WHERE id='c1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(tier, "main");
+        let (hit, items): (i64, i64) = c
+            .query_row("SELECT cache_hit, items FROM model_call_log", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((hit, items), (0, 1));
+        // one active chain per (role, tier, scope)
+        assert!(
+            c.execute(
+                "INSERT INTO model_chains(id,name,role,active,tier) VALUES('c2','Low','chat',1,'low')",
+                []
+            )
+            .is_ok()
+        );
+        assert!(
+            c.execute(
+                "INSERT INTO model_chains(id,name,role,active,tier) VALUES('c3','Main 2','chat',1,'main')",
+                []
+            )
+            .is_err()
+        );
+        assert!(
+            c.execute(
+                "INSERT INTO model_chains(id,name,role,active,tier) VALUES('c4','x','chat',0,'ultra')",
+                []
+            )
+            .is_err()
+        );
+    }
+
+    /// 0009 back-fill: Default workspace for admin/unowned sites, personal workspaces for
+    /// non-admin users, tokens follow their user, existing users verified.
+    #[test]
+    fn v9_saas_backfill() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        c.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL,
+               checksum TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT 'x')",
+        )
+        .unwrap();
+        for (v, name, sql) in MIGRATIONS.iter().filter(|m| m.0 < 9) {
+            c.execute_batch(sql).unwrap();
+            c.execute(
+                "INSERT INTO schema_version(version,name,checksum) VALUES(?1,?2,?3)",
+                rusqlite::params![v, name, checksum(sql)],
+            )
+            .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO users(id,email,password_hash,role,created_at) VALUES
+               ('a1','a1@example.com','x','admin','2026-01-01T00:00:00Z'),
+               ('a2','a2@example.com','x','admin','2026-02-01T00:00:00Z'),
+               ('u1','u1@example.com','x','user','2026-03-01T00:00:00Z');
+             INSERT INTO sites(id,domain,api_key,user_id) VALUES
+               ('s1','one.example','k1','a1'),('s2','two.example','k2',NULL),('s3','three.example','k3','u1');
+             INSERT INTO api_tokens(id,user_id,name,token_hash,prefix) VALUES
+               ('t1','a1','hermes','h1','p'),('t2','u1','mine','h2','p');",
+        )
+        .unwrap();
+        run(&mut c).unwrap();
+        let q = |sql: &str| -> String { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(
+            q("SELECT owner_user_id FROM workspaces WHERE id='default'"),
+            "a1"
+        );
+        assert_eq!(
+            q("SELECT plan_id FROM workspaces WHERE id='default'"),
+            "unlimited"
+        );
+        assert_eq!(q("SELECT workspace_id FROM sites WHERE id='s1'"), "default");
+        assert_eq!(q("SELECT workspace_id FROM sites WHERE id='s2'"), "default");
+        assert_eq!(q("SELECT workspace_id FROM sites WHERE id='s3'"), "ws-u1");
+        assert_eq!(
+            q("SELECT workspace_id FROM api_tokens WHERE id='t1'"),
+            "default"
+        );
+        assert_eq!(
+            q("SELECT workspace_id FROM api_tokens WHERE id='t2'"),
+            "ws-u1"
+        );
+        assert_eq!(
+            q("SELECT role FROM workspace_members WHERE workspace_id='default' AND user_id='a1'"),
+            "owner"
+        );
+        assert_eq!(
+            q("SELECT role FROM workspace_members WHERE workspace_id='default' AND user_id='a2'"),
+            "admin"
+        );
+        assert_eq!(
+            q("SELECT role FROM workspace_members WHERE workspace_id='ws-u1' AND user_id='u1'"),
+            "owner"
+        );
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM workspace_members WHERE workspace_id='default' AND user_id='u1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "non-admins are not members of Default");
+        let unverified: i64 = c
+            .query_row(
+                "SELECT count(*) FROM users WHERE email_verified_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unverified, 0);
+        let plans: i64 = c
+            .query_row("SELECT count(*) FROM plans", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(plans, 4);
+    }
+
+    #[test]
+    fn v7_keeps_schedules_and_allows_link_run() {
+        let mut c = Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        c.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL,
+               checksum TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT 'x')",
+        )
+        .unwrap();
+        for (v, name, sql) in MIGRATIONS.iter().filter(|m| m.0 < 7) {
+            c.execute_batch(sql).unwrap();
+            c.execute(
+                "INSERT INTO schema_version(version,name,checksum) VALUES(?1,?2,?3)",
+                rusqlite::params![v, name, checksum(sql)],
+            )
+            .unwrap();
+        }
+        c.execute_batch(
+            "INSERT INTO sites(id,domain,api_key) VALUES('s1','a.com','k');
+             INSERT INTO site_schedules(id,site_id,job_kind,cron,payload) VALUES('r1','s1','audit','0 3 * * *','{\"x\":1}');",
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "INSERT INTO site_schedules(id,site_id,job_kind,cron) VALUES('r2','s1','link_run','* * * * *')",
+                []
+            )
+            .is_err()
+        );
+        run(&mut c).unwrap();
+        assert_eq!(current_version(&c).unwrap(), latest_version());
+        let (kind, payload): (String, String) = c
+            .query_row(
+                "SELECT job_kind, payload FROM site_schedules WHERE id='r1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((kind.as_str(), payload.as_str()), ("audit", "{\"x\":1}"));
+        c.execute(
+            "INSERT INTO site_schedules(id,site_id,job_kind,cron) VALUES('r2','s1','link_run','* * * * *')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "INSERT INTO site_schedules(id,site_id,job_kind,cron) VALUES('r3','s1','bogus','* * * * *')",
+                []
+            )
+            .is_err()
+        );
+        c.execute(
+            "INSERT INTO link_runs(id,site_id,status) VALUES('lr1','s1','ready')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            c.execute(
+                "INSERT INTO link_runs(id,site_id,status) VALUES('lr2','s1','weird')",
+                []
+            )
+            .is_err()
+        );
+        // deleting the site cascades the schedule and the run
+        c.execute("DELETE FROM sites WHERE id='s1'", []).unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT (SELECT count(*) FROM site_schedules) + (SELECT count(*) FROM link_runs)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

@@ -34,7 +34,12 @@ keep working (research/04 risk R17).
        env:
          SILOFORGE_API_URL: http://127.0.0.1:8600
          SILOFORGE_TOKEN: sfk_xxxxxxxxxxxxxxxxxxxxxxxx      # the token from step 1
+         # SILOFORGE_WORKSPACE: default                     # optional (v2.4), see below
    ```
+   `SILOFORGE_WORKSPACE` (v2.4, optional) is a workspace id (`default`, `ws-...`; see
+   `siloforge_workspaces_list`). When set, every REST call carries `X-SiloForge-Workspace: <id>`: site lists, usage
+   and jobs are scoped to that workspace, new sites/tokens/schedules land in it, and the `workspace_id` argument of
+   the workspace tools defaults to it. Unset = no header = pre-2.4 behaviour (an admin token still sees every site).
    Remove `SILOFORGE_EMAIL` and `SILOFORGE_PASSWORD`. They still work as a legacy fallback (login + one re-login on
    401), but a scoped, revocable token keeps the admin password out of the config and its many backups.
 4. New agent sessions pick up the change; kanban workers need no gateway restart. The MCP process logs to stderr
@@ -89,6 +94,40 @@ passwords, tokens) are stripped from every result, and long lists are shortened 
 | `siloforge_run_pipeline` | site, topology?, archive?, ai_refine?, skip_crawl?, timeout_secs? (900, max 1800) | Crawl -> wait -> plan -> wait; returns per-step stats, job ids, number of suggestions. **Never injects** |
 | `siloforge_create_backup` | note? | Starts a full backup (admin scope); returns `{id, status:"running", kind, encrypted, secrets_included}` |
 | `siloforge_list_notifications` | limit? (<=200), unread_only? | Recent notifications, newest first (admin scope). Events: job.done, job.failed, plan.ready, inject.done, backup.done, backup.failed, system.alert |
+
+### v2.4 workspace and admin tools (24)
+Account tools never return invite / set-password / verification links, tokens, passwords, 2FA secrets,
+`otpauth_uri` or recovery codes (stripped from the output; without SMTP a platform admin copies links from
+Admin -> Email in the UI). Over a plan limit the API answers 402 `plan limit` `{key, limit, used}`.
+`workspace_id` defaults to `SILOFORGE_WORKSPACE` where marked `ws?`.
+
+| Tool | Params | Scope | What it does |
+|---|---|---|---|
+| `siloforge_workspaces_list` | all? | read | Your workspaces (role, plan, status, sites) + `current_id`; `all` = every workspace (platform admins) |
+| `siloforge_workspace_get` | ws? | read | One workspace: plan, owner, my_role, limits, usage |
+| `siloforge_workspace_usage` | ws?, history? | read | Plan limits vs live usage this month (+ monthly history) |
+| `siloforge_workspace_members` | ws? | read | Members and roles |
+| `siloforge_workspace_invite` | ws?, email, role? (admin/member/viewer) | admin | Sends an invite email; returns `{invite, delivery}` (no link) |
+| `siloforge_plans_list` | | read | Plans and limits |
+| `siloforge_billing_get` | workspace_id? | read | Billing provider, plan, limits, upgrade contact |
+| `siloforge_admin_overview` | | admin | Platform counts: users, workspaces, sites, posts, runs, AI tokens, mail, health |
+| `siloforge_admin_users_list` | q?, limit?, offset? | admin | Users with role, verification, 2FA, sessions, workspaces |
+| `siloforge_admin_users_get` | user_id | admin | One user |
+| `siloforge_admin_users_create` | email, name?, role? (user/admin), workspace_id?, workspace_role? | admin | Creates a user; a set-password email is sent (no password parameter) |
+| `siloforge_admin_users_update` | user_id, name?, email?, role? | admin | Edit a user |
+| `siloforge_admin_users_disable` / `_enable` | user_id | admin | Block / allow sign-in (disable revokes sessions) |
+| `siloforge_admin_users_logout` | user_id | admin | Revoke all sessions |
+| `siloforge_admin_users_reset_password` | user_id | admin | Emails a reset link |
+| `siloforge_admin_users_delete` | user_id, transfer_to?, **confirm** | admin | Deletes a user; owned workspaces/sites move to `transfer_to` |
+| `siloforge_admin_workspaces_list` | q?, status? (active/suspended/deleted), limit?, offset? | admin | Every workspace with usage vs limits |
+| `siloforge_admin_workspaces_get` | ws? | admin | One workspace with members and sites |
+| `siloforge_admin_workspaces_set_plan` | ws?, plan_id | admin | Assigns a plan (manual billing) |
+| `siloforge_admin_workspaces_suspend` / `_resume` | ws? | admin | Suspend (sites read-only) / resume |
+| `siloforge_admin_workspaces_delete` | ws?, **confirm** | admin | Soft delete, purged after 30 days (not Default) |
+| `siloforge_admin_plans_list` | | admin | All plans incl. internal ones |
+
+Admin tools need an admin-scoped token of a platform admin. `siloforge_api_request` refuses `/api/v*/auth/*`,
+`/api/v2/admin/platform` and `/api/v2/admin/email` (SMTP password, mail outbox links).
 
 Error contract: a failed call returns `isError: true` with `SILOFORGE <METHOD> <path> -> <status>: <error>`.
 

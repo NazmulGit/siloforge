@@ -5,12 +5,13 @@ import { Skeleton } from '../components/Skeleton';
 import { Toggle } from '../components/Toggle';
 import { FeatureUnavailable } from '../components/V2Notice';
 import { HelpButton } from '../docs';
-import { fmtDate } from '../format';
+import { fmtDate, fmtTokens, fmtUsd } from '../format';
 import { useSites } from '../sites';
 import { useToast } from '../toast';
 import type { LogRow, LogsQuery, LogStats } from '../types2';
 
-const SOURCES = ['ui', 'api', 'mcp', 'job', 'system', 'auth', 'notify'] as const;
+const SOURCES = ['ui', 'api', 'mcp', 'job', 'system', 'auth', 'notify', 'ai'] as const;
+const CHIP_LABEL: Record<string, string> = { ai: 'AI' };
 const STATUSES = ['ok', 'error', 'denied'] as const;
 const RANGES: Array<{ id: string; label: string; ms: number | null }> = [
   { id: '1h', label: 'Last hour', ms: 3_600_000 },
@@ -33,6 +34,23 @@ function jobIdOf(row: LogRow): string | null {
   const d = row.detail as Record<string, unknown> | null | undefined;
   const fromDetail = d && typeof d === 'object' && typeof d.job_id === 'string' ? d.job_id : null;
   return fromDetail ?? row.target ?? null;
+}
+
+/** Token accounting of an `ai` row (detail.tokens_in / tokens_out / cost_usd). */
+function aiTokens(row: LogRow): { tin: number; tout: number; cost: number; cache: boolean; estimated: boolean } | null {
+  if (row.source !== 'ai') return null;
+  let d: unknown = row.detail;
+  if (typeof d === 'string') {
+    try {
+      d = JSON.parse(d);
+    } catch {
+      return null;
+    }
+  }
+  if (!d || typeof d !== 'object') return null;
+  const o = d as Record<string, unknown>;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return { tin: n(o.tokens_in), tout: n(o.tokens_out), cost: n(o.cost_usd), cache: o.cache_hit === true, estimated: o.estimated === true };
 }
 
 function detailText(detail: unknown): string {
@@ -67,7 +85,7 @@ function Chips<T extends string>({
       </button>
       {options.map((o) => (
         <button key={o} type="button" className={`fchip fchip-${o}${value === o ? ' on' : ''}`} aria-pressed={value === o} onClick={() => onChange(value === o ? '' : o)}>
-          {o}
+          {CHIP_LABEL[o] ?? o}
           {counts && counts[o] !== undefined && <span className="fchip-n">{counts[o].toLocaleString()}</span>}
         </button>
       ))}
@@ -75,7 +93,8 @@ function Chips<T extends string>({
   );
 }
 
-export function LogsPage() {
+/** `platform` = Admin → Audit: the same page over /api/v2/admin/audit (every workspace). */
+export function LogsPage({ platform = false }: { platform?: boolean } = {}) {
   const toast = useToast();
   const { sites } = useSites();
   const [source, setSource] = useState<(typeof SOURCES)[number] | ''>('');
@@ -115,7 +134,7 @@ export function LogsPage() {
     setError(null);
     setOpen(new Set());
     try {
-      const [page, st] = await Promise.all([fetchLogs({ ...query, limit: PAGE }), fetchLogStats(query.since).catch(() => null)]);
+      const [page, st] = await Promise.all([fetchLogs({ ...query, limit: PAGE }, platform), fetchLogStats(query.since).catch(() => null)]);
       page.logs.forEach((r) => r.actor && knownActors.current.add(r.actor));
       setRows(page.logs);
       setNextBefore(page.next_before_id);
@@ -125,7 +144,7 @@ export function LogsPage() {
       else setError(v2ErrorMessage(e, 'Failed to load logs'));
       setRows([]);
     }
-  }, [query]);
+  }, [query, platform]);
 
   useEffect(() => {
     void load();
@@ -140,7 +159,7 @@ export function LogsPage() {
       if (busy) return;
       busy = true;
       const maxId = (rowsRef.current ?? []).reduce((m, r) => Math.max(m, r.id), 0);
-      void fetchLogs({ ...query, limit: PAGE, after_id: maxId || undefined })
+      void fetchLogs({ ...query, limit: PAGE, after_id: maxId || undefined }, platform)
         .then((page) => {
           if (!alive) return;
           const fresh = page.logs.filter((r) => r.id > maxId);
@@ -162,13 +181,13 @@ export function LogsPage() {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [tail, query, unavailable]);
+  }, [tail, query, unavailable, platform]);
 
   async function loadMore() {
     if (nextBefore === null) return;
     setLoadingMore(true);
     try {
-      const page = await fetchLogs({ ...query, limit: PAGE, before_id: nextBefore });
+      const page = await fetchLogs({ ...query, limit: PAGE, before_id: nextBefore }, platform);
       setRows((cur) => {
         const ids = new Set((cur ?? []).map((r) => r.id));
         return [...(cur ?? []), ...page.logs.filter((r) => !ids.has(r.id))];
@@ -210,13 +229,17 @@ export function LogsPage() {
 
   return (
     <div>
-      <div className="page-head">
-        <div>
-          <h1>Logs</h1>
-          <div className="page-sub">Everything that happened: UI and API calls, MCP tool calls, jobs, sign-ins, alerts and server events.</div>
-        </div>
+      <div className={platform ? 'table-toolbar' : 'page-head'}>
+        {platform ? (
+          <div className="muted">Every workspace on this server, including support views and admin actions.</div>
+        ) : (
+          <div>
+            <h1>Logs</h1>
+            <div className="page-sub">Everything that happened: UI and API calls, MCP tool calls, jobs, sign-ins, alerts and server events.</div>
+          </div>
+        )}
         <div className="spacer" />
-        <HelpButton />
+        {!platform && <HelpButton />}
         <button className="btn" onClick={() => void exportCsv()}>
           Export CSV
         </button>
@@ -240,6 +263,20 @@ export function LogsPage() {
             <span className="log-stat-n">{(stats.by_source.mcp ?? 0).toLocaleString()}</span>
             <span className="log-stat-l">MCP calls</span>
           </div>
+          {stats.ai && (
+            <div className="log-stat" title={`${stats.ai.calls.toLocaleString()} AI calls, ${stats.ai.cache_hits.toLocaleString()} cache hits`}>
+              <span className="log-stat-n">
+                {fmtTokens(stats.ai.tokens_in)} / {fmtTokens(stats.ai.tokens_out)}
+              </span>
+              <span className="log-stat-l">AI tokens in / out</span>
+            </div>
+          )}
+          {stats.ai && (
+            <div className="log-stat">
+              <span className="log-stat-n">{fmtUsd(stats.ai.cost_usd)}</span>
+              <span className="log-stat-l">AI cost · {stats.ai.calls.toLocaleString()} calls</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -298,6 +335,8 @@ export function LogsPage() {
                   <th>Action</th>
                   <th>Actor</th>
                   <th>Site</th>
+                  <th className="num">Tokens in / out</th>
+                  <th className="num">Cost</th>
                   <th className="num">ms</th>
                 </tr>
               </thead>
@@ -305,6 +344,7 @@ export function LogsPage() {
                 {rows.map((r) => {
                   const isOpen = open.has(r.id);
                   const jobId = jobIdOf(r);
+                  const tok = aiTokens(r);
                   return (
                     <Fragment key={r.id}>
                       <tr
@@ -337,11 +377,15 @@ export function LogsPage() {
                         <td className="mono-sm log-action">{r.action}</td>
                         <td className="mono-sm">{r.actor ?? '—'}</td>
                         <td className="muted">{r.site_id ? siteName.get(r.site_id) ?? r.site_id.slice(0, 8) : '—'}</td>
+                        <td className="num log-tokens" title={tok?.estimated ? 'Estimated (characters / 4): the provider sent no usage' : undefined}>
+                          {tok ? (tok.cache ? 'cache hit' : `${fmtTokens(tok.tin)} / ${fmtTokens(tok.tout)}${tok.estimated ? '*' : ''}`) : ''}
+                        </td>
+                        <td className="num muted">{tok ? fmtUsd(tok.cost) : ''}</td>
                         <td className="num muted">{r.duration_ms ?? ''}</td>
                       </tr>
                       {isOpen && (
                         <tr className="log-detail">
-                          <td colSpan={7}>
+                          <td colSpan={9}>
                             <div className="log-detail-meta">
                               <span>id {r.id}</span>
                               {r.target && <span>target {r.target}</span>}

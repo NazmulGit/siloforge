@@ -96,6 +96,8 @@ export interface SiteSettings {
   ai_anchor_refine_timeout_s?: number;
   /** v2: turn off semantic phrase scoring (on by default when vectors exist). */
   anchor_semantic_off?: boolean;
+  /** v2.2: scheduled Link Runs (spec §5). Shape: AutoLinkerConfig in types2.ts. */
+  auto_linker?: Record<string, unknown> | null;
   /** Write-only: WP username for the REST writer (moved to encrypted storage by the server). */
   wp_user?: string;
   /** Write-only: WP application password (never returned). */
@@ -665,6 +667,8 @@ export interface ModelChain {
   /** null = global default chain for the role */
   site_id: string | null;
   active: boolean;
+  /** v2.3 AI tier; absent on pre-2.3 servers (= main). */
+  tier?: 'low' | 'main' | 'high';
   notes: string;
   created_at: string;
   updated_at: string;

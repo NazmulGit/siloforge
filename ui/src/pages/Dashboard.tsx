@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   aiRefineOpt,
   fetchDashboard,
@@ -262,6 +262,13 @@ export function DashboardPage() {
           <div className="page-sub">Link health and recent activity.</div>
         </div>
         <div className="spacer" />
+        <Link
+          className="btn"
+          to={`/site/${siteId}/link-run`}
+          data-hint="Guided bulk linking: crawl, pick strategies and a mode, review, deploy and check every link on the live page."
+        >
+          New Link Run
+        </Link>
         <button
           className="btn"
           disabled={busy}

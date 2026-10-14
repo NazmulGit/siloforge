@@ -16,12 +16,14 @@ use crate::auth::{User, audit};
 use crate::{ApiError, ApiResult, AppState};
 
 pub const SCOPES: &[&str] = &["*", "read", "write", "admin"];
-const COLS: &str = "id, user_id, name, prefix, scopes, created_at, last_used_at, expires_at, revoked_at, parent_id";
+const COLS: &str = "id, user_id, name, prefix, scopes, created_at, last_used_at, expires_at, revoked_at, parent_id, workspace_id";
 
 #[derive(Deserialize)]
 pub struct ListQ {
     all: Option<String>,
     include_revoked: Option<String>,
+    /// v2.4: tokens of one workspace (its admins see every member's tokens there).
+    workspace_id: Option<String>,
 }
 
 fn truthy(v: &Option<String>) -> bool {
@@ -33,47 +35,75 @@ pub async fn list(
     u: User,
     Query(q): Query<ListQ>,
 ) -> ApiResult<Json<Value>> {
-    let all = truthy(&q.all) && u.is_admin();
+    let mut all = truthy(&q.all) && u.is_admin();
     let revoked = truthy(&q.include_revoked);
     let uid = u.user_id.clone();
+    let ws = match q
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(w) => {
+            let (ws, role) =
+                crate::tenancy::ws_guard(&st, &u, w, crate::tenancy::Role::Viewer).await?;
+            if role >= crate::tenancy::Role::Admin {
+                all = true;
+            }
+            Some(ws.id)
+        }
+        None => None,
+    };
     let rows = st
         .db
         .read(move |c| {
-            let mut sql = format!("SELECT {COLS} FROM api_tokens WHERE (?1 OR user_id = ?2)");
+            let mut sql = format!(
+                "SELECT {COLS} FROM api_tokens WHERE (?1 OR user_id = ?2) AND (?3 IS NULL OR workspace_id = ?3)"
+            );
             if !revoked {
                 sql.push_str(" AND revoked_at IS NULL");
             }
             sql.push_str(" ORDER BY created_at DESC, id");
             let mut stmt = c.prepare(&sql).map_err(err)?;
             let rows = stmt
-                .query_map(params![all, uid], |r| Ok(row_to_json(r, &["scopes"], &[])))
+                .query_map(params![all, uid, ws], |r| Ok(row_to_json(r, &["scopes"], &[])))
                 .map_err(err)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(err)?;
             Ok(rows)
         })
         .await?;
-    let policy = super::mcp::load_policy(&st).await.unwrap_or_default();
-    let rows: Vec<Value> = rows
-        .into_iter()
-        .map(|mut r| {
-            let id = r
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if let Some(o) = r.as_object_mut() {
-                o.insert(
-                    "tool_policy".into(),
-                    policy
-                        .per_token
-                        .get(&id)
-                        .map_or(Value::Null, |p| json!({"allow": p.allow})),
-                );
-            }
-            r
-        })
-        .collect();
+    // v2.4: per-token rules live in the token's workspace policy.
+    let mut policies: std::collections::HashMap<String, super::mcp::McpPolicy> =
+        std::collections::HashMap::new();
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for mut r in rows {
+        let id = r
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let ws = r
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::tenancy::DEFAULT_WS)
+            .to_string();
+        if !policies.contains_key(&ws) {
+            let p = super::mcp::load_ws_policy(&st, &ws)
+                .await
+                .unwrap_or_default();
+            policies.insert(ws.clone(), p);
+        }
+        let rule = policies
+            .get(&ws)
+            .and_then(|p| p.per_token.get(&id))
+            .map_or(Value::Null, |p| json!({"allow": p.allow}));
+        if let Some(o) = r.as_object_mut() {
+            o.insert("tool_policy".into(), rule);
+        }
+        out.push(r);
+    }
+    let rows = out;
     Ok(Json(json!({ "tokens": rows })))
 }
 
@@ -84,6 +114,9 @@ pub struct CreateBody {
     scopes: Option<Vec<String>>,
     #[serde(default)]
     expires_in_days: Option<i64>,
+    /// v2.4: workspace the token belongs to (default: the current / default workspace).
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 /// May the caller grant `scope`? Session users: any (admin scope needs the admin role, checked
@@ -202,23 +235,48 @@ pub async fn create(
         (_, e) => e,
     };
     let parent_id = parent.map(|(pid, _)| pid);
+    // v2.4: the token's workspace (admin role there) and the plan's `api_tokens` quota.
+    let ws_id = match b
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(w) => Some(
+            crate::tenancy::ws_guard(&st, &u, w, crate::tenancy::Role::Admin)
+                .await?
+                .0
+                .id,
+        ),
+        None => match crate::tenancy::target_ws(&st, &u).await? {
+            Some(ws) => Some(
+                crate::tenancy::ws_guard(&st, &u, &ws.id, crate::tenancy::Role::Admin)
+                    .await?
+                    .0
+                    .id,
+            ),
+            None => None,
+        },
+    };
+    crate::tenancy::check_quota(&st, ws_id.as_deref(), "api_tokens", 1).await?;
     let (token, hash, prefix) = sf_core::crypto::new_api_token();
     let id = sf_core::new_id();
     let scopes_json = serde_json::to_string(&scopes).unwrap_or_else(|_| "[\"read\"]".into());
-    let (id2, uid, name2, prefix2, exp2, parent2) = (
+    let (id2, uid, name2, prefix2, exp2, parent2, ws2) = (
         id.clone(),
         u.user_id.clone(),
         name.clone(),
         prefix.clone(),
         expires_at.clone(),
         parent_id.clone(),
+        ws_id.clone(),
     );
     let created_at = st
         .db
         .write(move |t| {
             t.execute(
-                "INSERT INTO api_tokens(id, user_id, name, token_hash, prefix, scopes, expires_at, parent_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![id2, uid, name2, hash, prefix2, scopes_json, exp2, parent2],
+                "INSERT INTO api_tokens(id, user_id, name, token_hash, prefix, scopes, expires_at, parent_id, workspace_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![id2, uid, name2, hash, prefix2, scopes_json, exp2, parent2, ws2],
             )
             .map_err(err)?;
             t.query_row("SELECT created_at FROM api_tokens WHERE id=?1", [&id2], |r| {
@@ -256,6 +314,7 @@ pub async fn create(
         "expires_at": expires_at,
         "revoked_at": Value::Null,
         "parent_id": parent_id,
+        "workspace_id": ws_id,
     })))
 }
 
@@ -622,6 +681,7 @@ pub async fn logout_all(
                 [&uid],
             )
             .map_err(err)?;
+            crate::sessions::revoke_all_sync(t, &uid)?;
             let revoked = if revoke_tokens {
                 t.execute(
                     "UPDATE api_tokens SET revoked_at=?2 WHERE user_id=?1 AND revoked_at IS NULL",

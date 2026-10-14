@@ -48,6 +48,9 @@ pub(crate) struct Rung {
     pub timeout_ms: Option<u64>,
     pub max_retries: Option<u32>,
     pub chain_id: Option<String>,
+    /// USD per 1M input / output tokens (`models.price_in/out`).
+    pub price_in: Option<f64>,
+    pub price_out: Option<f64>,
 }
 
 impl std::fmt::Debug for Rung {
@@ -314,6 +317,32 @@ pub(crate) fn chat_request(
             }),
         }),
         other => Err(format!("unsupported provider kind '{}'", other.as_str())),
+    }
+}
+
+/// Models that accept `reasoning_effort` (OpenAI reasoning / codex families).
+pub(crate) fn supports_reasoning_effort(model_id: &str) -> bool {
+    let m = model_id.trim().to_ascii_lowercase();
+    let m = m.rsplit('/').next().unwrap_or(&m).to_string();
+    ["gpt-5", "gpt-6", "o1", "o3", "o4"]
+        .iter()
+        .any(|p| m.starts_with(p))
+        || m.contains("codex")
+}
+
+/// Adds `reasoning_effort` to an OpenAI-shaped chat body when the model supports it.
+pub(crate) fn apply_reasoning_effort(rung: &Rung, req: &mut WireRequest, effort: Option<&str>) {
+    let Some(e) = effort.map(str::trim) else {
+        return;
+    };
+    if !matches!(e, "low" | "medium" | "high")
+        || !rung.kind.is_openai_shaped()
+        || !supports_reasoning_effort(&rung.model_id)
+    {
+        return;
+    }
+    if let Some(o) = req.body.as_object_mut() {
+        o.insert("reasoning_effort".into(), json!(e));
     }
 }
 
@@ -605,7 +634,32 @@ mod tests {
             timeout_ms: None,
             max_retries: None,
             chain_id: None,
+            price_in: None,
+            price_out: None,
         }
+    }
+
+    #[test]
+    fn reasoning_effort_only_for_supporting_models() {
+        let mut r = rung(ProviderKind::OpenAiCompatible, KeyState::None);
+        r.model_id = "gpt-5.6-luna".into();
+        let mut req = chat_request(&r, &[ChatMessage::user("u")], 10, 0.0, false).unwrap();
+        apply_reasoning_effort(&r, &mut req, Some("low"));
+        assert_eq!(req.body["reasoning_effort"], "low");
+        let mut req = chat_request(&r, &[ChatMessage::user("u")], 10, 0.0, false).unwrap();
+        apply_reasoning_effort(&r, &mut req, Some("none"));
+        assert!(req.body.get("reasoning_effort").is_none());
+        r.model_id = "claude-haiku-4-5".into();
+        let mut req = chat_request(&r, &[ChatMessage::user("u")], 10, 0.0, false).unwrap();
+        apply_reasoning_effort(&r, &mut req, Some("high"));
+        assert!(req.body.get("reasoning_effort").is_none());
+        let a = rung(ProviderKind::Anthropic, KeyState::None);
+        let mut req = chat_request(&a, &[ChatMessage::user("u")], 10, 0.0, false).unwrap();
+        apply_reasoning_effort(&a, &mut req, Some("low"));
+        assert!(req.body.get("reasoning_effort").is_none());
+        let mut req = chat_request(&r, &[ChatMessage::user("u")], 10, 0.0, false).unwrap();
+        apply_reasoning_effort(&r, &mut req, Some("bogus"));
+        assert!(req.body.get("reasoning_effort").is_none());
     }
 
     fn header<'a>(r: &'a WireRequest, name: &str) -> Option<&'a str> {

@@ -25,6 +25,10 @@ interface ChainsPanelProps {
   providerNames: Record<string, string>;
   /** Live vector-index width; an embed rung of any other width is refused on save. */
   indexDim: number;
+  /** v2.3: show only chat chains of this AI tier, and create new chains in it. */
+  tier?: 'low' | 'main' | 'high';
+  /** Called after any change (so a parent can refresh the effective-chain view). */
+  onChanged?: () => void;
 }
 
 function modelLabel(m: ModelRow, providerName: string | undefined): string {
@@ -32,7 +36,7 @@ function modelLabel(m: ModelRow, providerName: string | undefined): string {
   return providerName ? `${providerName} · ${base}` : base;
 }
 
-export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProps) {
+export function ChainsPanel({ models, providerNames, indexDim, tier, onChanged }: ChainsPanelProps) {
   const toast = useToast();
   const [chains, setChains] = useState<ModelChainWithRungs[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -43,16 +47,18 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState<ModelRole>('chat');
   const [addModelId, setAddModelId] = useState<Record<string, string>>({});
+  const [drag, setDrag] = useState<{ chain: string; index: number } | null>(null);
 
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      setChains(await fetchChains());
+      const all = await fetchChains();
+      setChains(tier ? all.filter((c) => c.role === 'chat' && (c.tier ?? 'main') === tier) : all);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'Failed to load chains');
       setChains([]);
     }
-  }, []);
+  }, [tier]);
 
   useEffect(() => {
     void load();
@@ -66,6 +72,7 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
       await action();
       toast.push(okMessage, 'success');
       await load();
+      onChanged?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Request failed';
       setActionError(msg);
@@ -81,7 +88,7 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
       return;
     }
     void run(async () => {
-      await createChain({ name: newName.trim(), role: newRole });
+      await createChain(tier ? { name: newName.trim(), role: 'chat', tier } : { name: newName.trim(), role: newRole });
       setNewName('');
     }, 'Chain created — add rungs to it, then activate it.');
   }
@@ -94,14 +101,25 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
     void run(() => reorderChainRungs(chain.id, ids), 'Fallback order updated');
   }
 
+  function dropRung(chain: ModelChainWithRungs, to: number) {
+    const from = drag && drag.chain === chain.id ? drag.index : -1;
+    setDrag(null);
+    if (from < 0 || from === to) return;
+    const ids = chain.rungs.map((r) => r.id);
+    const [moved] = ids.splice(from, 1);
+    ids.splice(to, 0, moved);
+    void run(() => reorderChainRungs(chain.id, ids), 'Fallback order updated');
+  }
+
   return (
     <div className="card">
-      <div className="card-title">Fallback chains</div>
+      <div className="card-title">{tier ? `${tier[0].toUpperCase()}${tier.slice(1)}-tier chains` : 'Fallback chains'}</div>
       <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
         A chain is tried <b>top to bottom</b>: position <b>0</b> is called first, and each rung below it
-        is the fallback for the one above. One chain per role can be active at a time.
+        is the fallback for the one above. One chain per role and tier (per scope) can be active at a time.
       </p>
 
+      {!tier && (
       <div className="info-note" style={{ marginBottom: 14 }}>
         <span className="info-note-icon" aria-hidden="true">
           ℹ
@@ -115,6 +133,7 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
           Every embed rung saved here must still return <b>{indexDim}-d</b> vectors.
         </span>
       </div>
+      )}
 
       {loadError && <div className="error-box">{loadError}</div>}
       {actionError && (
@@ -132,7 +151,7 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
           onChange={(e) => setNewName(e.target.value)}
           aria-label="New chain name"
         />
-        <select
+        {!tier && <select
           className="input"
           value={newRole}
           onChange={(e) => setNewRole(e.target.value as ModelRole)}
@@ -144,7 +163,7 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
               {r}
             </option>
           ))}
-        </select>
+        </select>}
         <button
           className="btn btn-primary"
           disabled={busy}
@@ -173,6 +192,7 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
                   <span className="chain-name">{c.name}</span>
                   <span className="chip chip-mode">{c.role}</span>
                   <span className="chip chip-mode">{c.site_id ? 'site' : 'global'}</span>
+                  {c.role === 'chat' && <span className="chip chip-mode">{c.tier ?? 'main'} tier</span>}
                   <StatusChip status={c.active ? 'applied' : 'suggested'} />
                   <div className="spacer" />
                   <button
@@ -209,7 +229,21 @@ export function ChainsPanel({ models, providerNames, indexDim }: ChainsPanelProp
                 ) : (
                   <ol className="rung-list">
                     {c.rungs.map((r, i) => (
-                      <li key={r.id} className={`rung${r.enabled ? '' : ' rung-off'}`}>
+                      <li
+                        key={r.id}
+                        className={`rung${r.enabled ? '' : ' rung-off'}${drag && drag.chain === c.id && drag.index === i ? ' rung-dragging' : ''}`}
+                        draggable={!busy}
+                        onDragStart={() => setDrag({ chain: c.id, index: i })}
+                        onDragOver={(e) => {
+                          if (drag && drag.chain === c.id) e.preventDefault();
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          dropRung(c, i);
+                        }}
+                        onDragEnd={() => setDrag(null)}
+                        title="Drag to reorder"
+                      >
                         <span className="rung-pos" title={i === 0 ? 'Tried first' : `Fallback #${i}`}>
                           {i}
                         </span>

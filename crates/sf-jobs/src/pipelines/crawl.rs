@@ -289,6 +289,29 @@ pub async fn upsert_batch(
         .write(move |t| {
             let (mut up, mut skip) = (0usize, 0usize);
             let now = sf_core::now_rfc3339();
+            // v2.4: the workspace plan's posts_per_site cap (new posts beyond it are not stored).
+            let cap: Option<i64> = t
+                .query_row(
+                    "SELECT json_extract(p.limits, '$.posts_per_site') FROM sites s
+                       JOIN workspaces w ON w.id = s.workspace_id JOIN plans p ON p.id = w.plan_id
+                      WHERE s.id = ?1",
+                    params![site_id],
+                    |x| x.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(err)?
+                .flatten();
+            let mut have: i64 = match cap {
+                Some(_) => t
+                    .query_row(
+                        "SELECT count(*) FROM posts WHERE site_id=?1",
+                        params![site_id],
+                        |x| x.get(0),
+                    )
+                    .map_err(err)?,
+                None => 0,
+            };
+            let mut capped = 0usize;
             for r in &rows {
                 let cur: Option<String> = t
                     .query_row(
@@ -298,6 +321,23 @@ pub async fn upsert_batch(
                     )
                     .optional()
                     .map_err(err)?;
+                if let Some(cap) = cap {
+                    let exists: bool = cur.is_some()
+                        || t.query_row(
+                            "SELECT count(*) > 0 FROM posts WHERE site_id=?1 AND url=?2",
+                            params![site_id, r.url],
+                            |x| x.get(0),
+                        )
+                        .map_err(err)?;
+                    if !exists {
+                        if have >= cap {
+                            capped += 1;
+                            skip += 1;
+                            continue;
+                        }
+                        have += 1;
+                    }
+                }
                 if cur.as_deref() == Some(r.hash.as_str()) {
                     // unchanged; keep the optimistic-concurrency stamp fresh
                     t.execute(
@@ -348,6 +388,9 @@ pub async fn upsert_batch(
                 )
                 .map_err(err)?;
                 up += 1;
+            }
+            if capped > 0 {
+                tracing::warn!(site = %site_id, capped, "plan post cap reached; new posts not stored");
             }
             Ok((up, skip))
         })

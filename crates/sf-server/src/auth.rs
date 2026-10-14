@@ -33,6 +33,10 @@ pub enum Principal {
         /// `None` for UI/JWT sessions; `Some(token name)` for API tokens.
         token: Option<String>,
         scopes: Vec<String>,
+        /// v2.4: the API token's workspace (`None` for sessions and legacy tokens).
+        workspace_id: Option<String>,
+        /// v2.4: the session id (`sid` claim) of a UI session.
+        session_id: Option<String>,
     },
     Site {
         site_id: String,
@@ -50,6 +54,10 @@ pub struct User {
     pub role: String,
     pub token: Option<String>,
     pub scopes: Vec<String>,
+    /// v2.4: workspace of the API token (restricts non-admin tokens to it).
+    pub workspace_id: Option<String>,
+    /// v2.4: UI session id (`sid`).
+    pub session_id: Option<String>,
 }
 
 /// Admin user (403 otherwise).
@@ -72,6 +80,17 @@ impl User {
     }
     pub fn has_scope(&self, scope: &str) -> bool {
         self.scopes.iter().any(|s| s == "*" || s == scope)
+    }
+    /// The same caller as a [`Principal`].
+    pub fn principal(&self) -> Principal {
+        Principal::User {
+            user_id: self.user_id.clone(),
+            role: self.role.clone(),
+            token: self.token.clone(),
+            scopes: self.scopes.clone(),
+            workspace_id: self.workspace_id.clone(),
+            session_id: self.session_id.clone(),
+        }
     }
 }
 
@@ -132,7 +151,9 @@ pub async fn resolve(st: &AppState, cred: &str) -> Result<Principal, ApiError> {
             .db
             .read(move |c| {
                 c.query_row(
-                    "SELECT t.id, t.name, t.scopes, t.expires_at, u.id, u.role FROM api_tokens t
+                    "SELECT t.id, t.name, t.scopes, t.expires_at, u.id, u.role, t.workspace_id,
+                            u.disabled_at IS NOT NULL
+                       FROM api_tokens t
                      JOIN users u ON u.id = t.user_id
                      WHERE t.token_hash=?1 AND t.revoked_at IS NULL",
                     [&hash],
@@ -144,6 +165,8 @@ pub async fn resolve(st: &AppState, cred: &str) -> Result<Principal, ApiError> {
                             r.get::<_, Option<String>>(3)?,
                             r.get::<_, String>(4)?,
                             r.get::<_, String>(5)?,
+                            r.get::<_, Option<String>>(6)?,
+                            r.get::<_, bool>(7)?,
                         ))
                     },
                 )
@@ -151,9 +174,13 @@ pub async fn resolve(st: &AppState, cred: &str) -> Result<Principal, ApiError> {
                 .map_err(err)
             })
             .await?;
-        let Some((token_id, name, scopes, expires, user_id, role)) = row else {
+        let Some((token_id, name, scopes, expires, user_id, role, workspace_id, disabled)) = row
+        else {
             return Err(ApiError::unauthorized("invalid API token"));
         };
+        if disabled {
+            return Err(ApiError::unauthorized("account disabled"));
+        }
         if let Some(exp) = expires
             && exp < sf_core::now_rfc3339()
         {
@@ -180,6 +207,8 @@ pub async fn resolve(st: &AppState, cred: &str) -> Result<Principal, ApiError> {
             role,
             token: Some(name),
             scopes,
+            workspace_id,
+            session_id: None,
         }
     } else {
         let claims = sf_core::crypto::verify_jwt(&st.cfg.auth.jwt_secret, cred)?;
@@ -226,32 +255,60 @@ pub async fn resolve(st: &AppState, cred: &str) -> Result<Principal, ApiError> {
                 let user_id = claims
                     .user_id
                     .ok_or_else(|| ApiError::unauthorized("invalid token"))?;
-                let uid = user_id.clone();
+                let (uid, sid) = (user_id.clone(), claims.sid.clone());
                 let row = st
                     .db
                     .read(move |c| {
-                        c.query_row(
-                            "SELECT role, token_version FROM users WHERE id=?1",
-                            [&uid],
-                            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-                        )
-                        .optional()
-                        .map_err(err)
+                        let u = c
+                            .query_row(
+                                "SELECT role, token_version, disabled_at IS NOT NULL FROM users WHERE id=?1",
+                                [&uid],
+                                |r| {
+                                    Ok((
+                                        r.get::<_, String>(0)?,
+                                        r.get::<_, i64>(1)?,
+                                        r.get::<_, bool>(2)?,
+                                    ))
+                                },
+                            )
+                            .optional()
+                            .map_err(err)?;
+                        // v2.4: a `sid` must name a live session of this user.
+                        let session_ok = match &sid {
+                            None => true,
+                            Some(sid) => c
+                                .query_row(
+                                    "SELECT count(*) > 0 FROM sessions WHERE id=?1 AND user_id=?2
+                                       AND revoked_at IS NULL AND expires_at > ?3",
+                                    rusqlite::params![sid, uid, sf_core::now_rfc3339()],
+                                    |r| r.get::<_, bool>(0),
+                                )
+                                .map_err(err)?,
+                        };
+                        Ok(u.map(|u| (u, session_ok)))
                     })
                     .await?;
-                let Some((role, tv)) = row else {
+                let Some(((role, tv, disabled), session_ok)) = row else {
                     return Err(ApiError::unauthorized("user no longer exists"));
                 };
-                if claims.tv.unwrap_or(0) != tv {
+                if disabled {
+                    return Err(ApiError::unauthorized("account disabled"));
+                }
+                if claims.tv.unwrap_or(0) != tv || !session_ok {
                     return Err(ApiError::unauthorized(
                         "session revoked, please log in again",
                     ));
+                }
+                if let Some(sid) = claims.sid.clone() {
+                    crate::sessions::touch(st, sid);
                 }
                 Principal::User {
                     user_id,
                     role,
                     token: None,
                     scopes: vec!["*".into()],
+                    workspace_id: None,
+                    session_id: claims.sid,
                 }
             }
             _ => return Err(ApiError::unauthorized("invalid token")),
@@ -285,6 +342,7 @@ impl FromRequestParts<AppState> for Auth {
         if let Principal::User { scopes, .. } = &p {
             check_scope_for_method(scopes, &parts.method)?;
         }
+        crate::tenancy::check_view_as(st, &p, parts)?;
         Ok(Auth(p))
     }
 }
@@ -298,11 +356,15 @@ impl FromRequestParts<AppState> for User {
                 role,
                 token,
                 scopes,
+                workspace_id,
+                session_id,
             } => Ok(User {
                 user_id,
                 role,
                 token,
                 scopes,
+                workspace_id,
+                session_id,
             }),
             Principal::Site { .. } => Err(ApiError::unauthorized("user token required")),
         }
@@ -324,41 +386,18 @@ impl FromRequestParts<AppState> for Admin {
     }
 }
 
-/// Ownership gate used by every site-scoped route: admin sees all, users see their own, site tokens see
-/// only their site. Foreign sites are reported as 404 (never reveal existence).
+/// Access gate used by every site-scoped route (v2.4: workspace membership). Platform admins see
+/// all, members need the role implied by the request method (GET viewer, else member), site tokens
+/// see only their site. Foreign sites are reported as 404 (never reveal existence).
 pub async fn ensure_site_access(
     st: &AppState,
     who: &Principal,
     site_id: &str,
 ) -> Result<(), ApiError> {
-    match who {
-        Principal::Site { site_id: own } => {
-            if own == site_id {
-                Ok(())
-            } else {
-                Err(ApiError::not_found("site not found"))
-            }
-        }
-        Principal::User { user_id, role, .. } => {
-            let sid = site_id.to_string();
-            let owner = st
-                .db
-                .read(move |c| {
-                    c.query_row("SELECT user_id FROM sites WHERE id=?1", [&sid], |r| {
-                        r.get::<_, Option<String>>(0)
-                    })
-                    .optional()
-                    .map_err(err)
-                })
-                .await?;
-            match owner {
-                None => Err(ApiError::not_found("site not found")),
-                Some(_) if role == "admin" => Ok(()),
-                Some(Some(o)) if &o == user_id => Ok(()),
-                Some(_) => Err(ApiError::not_found("site not found")),
-            }
-        }
-    }
+    let need = crate::tenancy::ctx().default_role();
+    crate::tenancy::site_access(st, who, site_id, need)
+        .await
+        .map(|_| ())
 }
 
 /// Writes one audit_log row (best effort, never fails the request).

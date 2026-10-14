@@ -7,20 +7,20 @@ use serde_json::{Value, json};
 use sf_store::err;
 
 use super::common::{
-    MAX_LIMIT, Params, count, guard_user_site, int_param, is_uuid, owner_scope, query_json,
-    str_param, v1_collation,
+    MAX_LIMIT, Params, count, guard_user_site, int_param, is_uuid, query_json, str_param,
+    v1_collation,
 };
 use crate::auth::User;
 use crate::{ApiError, ApiResult, AppState};
 
 /// Footprint counters, scoped like `GET /sites` (admin = global). Joins instead of nested IN lists.
 pub async fn usage(State(st): State<AppState>, u: User) -> ApiResult<Json<Value>> {
-    let scope = owner_scope(&u);
+    let scope = crate::tenancy::site_scope(&st, &u, "s").await?;
     let v = st
         .db
         .read(move |c| {
-            let s = "(?1 IS NULL OR s.user_id = ?1)";
-            let p: &[&dyn ToSql] = &[&scope];
+            let s = scope.as_str();
+            let p: &[&dyn ToSql] = &[];
             let sites = count(c, &format!("SELECT count(*) FROM sites s WHERE {s}"), p)?;
             let posts = count(
                 c,

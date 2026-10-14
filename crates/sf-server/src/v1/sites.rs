@@ -14,19 +14,20 @@ use sf_core::types::{InsertModule, JobKind, Topology};
 use sf_store::err;
 
 use super::common::{
-    JsonBody, SITE_COLS, SiteRow, audit_user, conflict_as, enqueue, get_site, guard_user_site,
-    is_http_url, load_site, mutate_site, owner_scope,
+    JsonBody, SITE_COLS, SiteRow, audit_user, conflict_as, enqueue, get_site, guard_site_admin,
+    guard_user_site, is_http_url, load_site, mutate_site,
 };
 use crate::auth::User;
 use crate::{ApiError, ApiResult, AppState};
 
 pub async fn list(State(st): State<AppState>, u: User) -> ApiResult<Json<Value>> {
-    let scope = owner_scope(&u);
+    // v2.4: workspace membership (+ X-SiloForge-Workspace filter); admin without header = all.
+    let scope_sql = crate::tenancy::site_scope(&st, &u, "s").await?;
     let key = st.secret_key.clone();
     let out = st
         .db
         .read(move |c| {
-            let scope_sql = "(?1 IS NULL OR s.user_id = ?1)";
+            let scope_sql = scope_sql.as_str();
             let mut stmt = c
                 .prepare(&format!(
                     "SELECT {} FROM sites s WHERE {scope_sql} ORDER BY s.created_at ASC, s.id ASC",
@@ -38,7 +39,7 @@ pub async fn list(State(st): State<AppState>, u: User) -> ApiResult<Json<Value>>
                 ))
                 .map_err(err)?;
             let sites = stmt
-                .query_map([&scope], SiteRow::from_row)
+                .query_map([], SiteRow::from_row)
                 .map_err(err)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(err)?;
@@ -51,7 +52,7 @@ pub async fn list(State(st): State<AppState>, u: User) -> ApiResult<Json<Value>>
                 ))
                 .map_err(err)?;
             let rows = stmt
-                .query_map([&scope], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
                 .map_err(err)?;
             for row in rows {
                 let (sid, n) = row.map_err(err)?;
@@ -65,7 +66,7 @@ pub async fn list(State(st): State<AppState>, u: User) -> ApiResult<Json<Value>>
                 ))
                 .map_err(err)?;
             let rows = stmt
-                .query_map([&scope], |r| {
+                .query_map([], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -257,6 +258,13 @@ pub async fn create(
             "allow_private_host can only be set by an admin",
         ));
     }
+    // v2.4: target workspace (admin role there), email verification gate, `sites` quota.
+    let ws = crate::tenancy::target_ws(&st, &u).await?;
+    if let Some(w) = &ws {
+        crate::tenancy::ws_guard(&st, &u, &w.id, crate::tenancy::Role::Admin).await?;
+    }
+    crate::v2::auth2::require_verified(&st, &u).await?;
+    crate::tenancy::check_quota(&st, ws.as_ref().map(|w| w.id.as_str()), "sites", 1).await?;
     check_site_target(&st, &u, &domain, wp_url.as_deref(), allow_private).await?;
     let settings = if allow_private {
         json!({ "allow_private_host": true }).to_string()
@@ -268,13 +276,14 @@ pub async fn create(
     // L-02: only the hash is stored; the plaintext key is shown once in this response.
     let stored_key = sf_core::crypto::site_key_stored(&api_key);
     let (id2, uid) = (id.clone(), u.user_id.clone());
+    let ws_id = ws.map(|w| w.id);
     let mode = b.mode.unwrap_or_else(|| "wp_rest".into());
     let site = st
         .db
         .write(move |t| {
             t.execute(
-                "INSERT INTO sites(id, domain, wp_url, mode, api_key, user_id, settings) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![id2, domain, wp_url, mode, stored_key, uid, settings],
+                "INSERT INTO sites(id, domain, wp_url, mode, api_key, user_id, settings, workspace_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![id2, domain, wp_url, mode, stored_key, uid, settings, ws_id],
             )
             .map_err(err)?;
             load_site(t, &id2)
@@ -421,6 +430,10 @@ fn validate_setting(key: &str, v: &Value) -> ApiResult<()> {
                 "settings.anchor_semantic_min must be a number from 0 to 1",
             )),
         },
+        // v2.2 §5 Auto-Linker (its `link_run` schedule row is synced after the save)
+        "auto_linker" => sf_jobs::pipelines::link_run::parse_auto_linker(v)
+            .map(|_| ())
+            .map_err(ApiError::bad),
         other => Err(ApiError::bad(format!("unknown settings key: {other}"))),
     }
 }
@@ -434,7 +447,7 @@ pub async fn patch(
     Path(id): Path<String>,
     JsonBody(b): JsonBody<PatchBody>,
 ) -> ApiResult<Json<Value>> {
-    guard_user_site(&st, &u, &id).await?;
+    guard_site_admin(&st, &u, &id).await?;
     check_mode(&b.mode)?;
     let wp_url = check_wp_url(&b.wp_url)?;
     let mut incoming = match b.settings {
@@ -474,6 +487,19 @@ pub async fn patch(
         check_site_target(&st, &u, &cur.domain, target.as_deref(), flag).await?;
     }
     let changed_keys: Vec<String> = incoming.keys().cloned().collect();
+    let auto_linker = incoming.get("auto_linker").map(|v| {
+        if v.is_null() {
+            None
+        } else {
+            sf_jobs::pipelines::link_run::parse_auto_linker(v).ok()
+        }
+    });
+    if let Some(Some(cfg)) = &auto_linker
+        && cfg.enabled
+    {
+        let ws = crate::tenancy::site_ws(&st, &id).await?;
+        crate::tenancy::check_feature(&st, ws.as_deref(), "auto_linker").await?;
+    }
     let row = mutate_site(
         &st,
         &id,
@@ -501,6 +527,14 @@ pub async fn patch(
         },
     )
     .await?;
+    if let Some(cfg) = auto_linker {
+        let sid = id.clone();
+        st.db
+            .write(move |t| {
+                sf_jobs::pipelines::link_run::sync_auto_linker_schedule(t, &sid, cfg.as_ref())
+            })
+            .await?;
+    }
     audit_user(
         &st,
         &u,
@@ -521,7 +555,7 @@ pub async fn rotate_key(
     u: User,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    guard_user_site(&st, &u, &id).await?;
+    guard_site_admin(&st, &u, &id).await?;
     let key = sf_core::crypto::new_site_api_key();
     let stored_key = sf_core::crypto::site_key_stored(&key);
     let id2 = id.clone();
@@ -558,6 +592,7 @@ pub async fn crawl(
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
     guard_user_site(&st, &u, &id).await?;
+    crate::tenancy::check_posts(&st, &id).await?;
     enqueue(&st, &u, JobKind::Crawl, &id, json!({})).await
 }
 

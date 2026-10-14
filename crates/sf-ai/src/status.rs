@@ -253,11 +253,11 @@ impl Ai {
             Role::Embed => DimPolicy::Index(EMBED_DIM),
         };
         let r = self.resolve(role, site_id, policy).await;
-        let mut rungs: Vec<RungInfo> = r.rungs.iter().map(|x| self.info(x, None)).collect();
+        let mut rungs: Vec<RungInfo> = r.rungs.iter().map(|x| self.rung_info(x, None)).collect();
         rungs.extend(
             r.skipped
                 .iter()
-                .map(|(x, why)| self.info(x, Some(why.clone()))),
+                .map(|(x, why)| self.rung_info(x, Some(why.clone()))),
         );
         Ok(ChainDetail {
             role,
@@ -268,7 +268,7 @@ impl Ai {
         })
     }
 
-    fn info(&self, r: &Rung, skip: Option<String>) -> RungInfo {
+    pub(crate) fn rung_info(&self, r: &Rung, skip: Option<String>) -> RungInfo {
         let skip = skip.or_else(|| match r.key {
             KeyState::Undecryptable => Some("api key cannot be decrypted".into()),
             _ => None,

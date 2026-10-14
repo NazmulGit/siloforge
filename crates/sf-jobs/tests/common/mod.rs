@@ -434,6 +434,20 @@ fn env_inner(tag: &str, embedder: Arc<dyn Embedder>, batch: usize, ai_url: Optio
     env_cfg_inner(tag, embedder, batch, ai_url, |_| {})
 }
 
+/// Env with the stub AI at `ai_url` and a config tweak (`[ai]` settings).
+#[allow(dead_code)]
+pub fn env_ai_cfg(tag: &str, ai_url: &str, tweak: impl FnOnce(&mut Config)) -> Env {
+    env_cfg_inner(
+        tag,
+        Arc::new(FakeEmbedder {
+            delay: Duration::ZERO,
+        }),
+        16,
+        Some(ai_url.to_string()),
+        tweak,
+    )
+}
+
 /// Default env with a config tweak (e.g. the install-wide GSC fallback).
 #[allow(dead_code)]
 pub fn env_cfg(tag: &str, tweak: impl FnOnce(&mut Config)) -> Env {
@@ -462,6 +476,10 @@ fn env_cfg_inner(
         ..Config::default()
     };
     cfg.auth.jwt_secret = "test-secret-0123456789".into();
+    if let Some(url) = &ai_url {
+        cfg.llm.fallback_url = url.clone();
+        cfg.llm.fallback_models = vec!["stub-model".into()];
+    }
     tweak(&mut cfg);
     let cfg = Arc::new(cfg);
     let embed = Arc::new(EmbedChain::new(
@@ -479,11 +497,11 @@ fn env_cfg_inner(
         embed,
         key.clone(),
     );
-    if let Some(url) = ai_url {
-        let mut llm = cfg.llm.clone();
-        llm.fallback_url = url;
-        llm.fallback_models = vec!["stub-model".into()];
-        ctx.ai = Some(Arc::new(sf_ai::Ai::new(db.clone(), key, llm).unwrap()));
+    if ai_url.is_some() {
+        // v2.3: the AI layer reads `[llm]` and `[ai]` from the live config (tests change it)
+        ctx.ai = Some(Arc::new(
+            sf_ai::Ai::with_live(db.clone(), key, ctx.live.clone()).unwrap(),
+        ));
     }
     ctx.http.politeness_delay = Duration::ZERO;
     ctx.http.allow_private = true;

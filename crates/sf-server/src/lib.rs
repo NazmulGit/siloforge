@@ -8,7 +8,11 @@
 pub mod auth;
 pub mod error;
 pub mod eventlog;
+pub mod mail;
+pub mod platform;
+pub mod sessions;
 pub mod state;
+pub mod tenancy;
 pub mod ui;
 pub mod v1;
 pub mod v2;
@@ -72,6 +76,8 @@ pub fn router(state: AppState, extra: Option<Router<AppState>>) -> Router {
             state.clone(),
             eventlog::middleware,
         ))
+        // v2.4: request context (method, workspace / view-as headers) for the tenancy checks
+        .layer(axum::middleware::from_fn(tenancy::middleware))
         .with_state(state)
 }
 
@@ -123,6 +129,8 @@ pub fn cors_layer(origins: &[String]) -> Option<tower_http::cors::CorsLayer> {
                 header::ACCEPT,
                 HeaderName::from_static("x-api-key"),
                 HeaderName::from_static("x-site-key"),
+                HeaderName::from_static(tenancy::WORKSPACE_HEADER),
+                HeaderName::from_static(tenancy::VIEW_AS_HEADER),
             ])
             .max_age(std::time::Duration::from_secs(600)),
     )

@@ -19,6 +19,37 @@ impl Role {
     }
 }
 
+/// AI task tier (v2.3): which chain family serves a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Low,
+    #[default]
+    Main,
+    High,
+}
+
+impl Tier {
+    pub const ALL: [Tier; 3] = [Tier::Low, Tier::Main, Tier::High];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Low => "low",
+            Tier::Main => "main",
+            Tier::High => "high",
+        }
+    }
+
+    /// Unknown values are `main`.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" => Tier::Low,
+            "high" => Tier::High,
+            _ => Tier::Main,
+        }
+    }
+}
+
 /// `model_providers.kind`. Unknown values are kept (golden rule 5) and fail the rung clearly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -104,6 +135,21 @@ pub struct ChatRequest {
     pub site_id: Option<String>,
     /// Ask for a JSON reply (native flag where the provider has a safe one, plus a system nudge).
     pub json_mode: bool,
+    /// v2.3 task name (`sf_core::config::ai_tasks`): routes to a tier and is accounted.
+    #[serde(default)]
+    pub task: Option<String>,
+    /// Explicit tier (wins over the task routing).
+    #[serde(default)]
+    pub tier: Option<Tier>,
+    /// `none` | `low` | `medium` | `high`; None = the tier's configured effort.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// Link Run id (or job id) for accounting.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Edges carried by this (batched) call, for accounting (0 is treated as 1).
+    #[serde(default)]
+    pub items: u32,
 }
 
 impl Default for ChatRequest {
@@ -114,6 +160,11 @@ impl Default for ChatRequest {
             temperature: 0.3,
             site_id: None,
             json_mode: false,
+            task: None,
+            tier: None,
+            reasoning_effort: None,
+            run_id: None,
+            items: 1,
         }
     }
 }
@@ -132,6 +183,15 @@ pub struct ChatResponse {
     pub tokens_out: Option<i64>,
     /// Rungs that failed or were skipped (open circuit) before this one served.
     pub fallbacks_used: usize,
+    /// Tier that served the call.
+    #[serde(default)]
+    pub tier: Tier,
+    /// True when the token counts are chars/4 estimates (provider sent no usage).
+    #[serde(default)]
+    pub tokens_estimated: bool,
+    /// From `models.price_in/out` (USD per 1M tokens); 0 when unpriced.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +222,8 @@ pub enum AiError {
     BadRequest(String),
     NotFound(String),
     Db(String),
+    /// The daily token budget of the tier or the site is used up (v2.3): no provider was called.
+    BudgetExhausted(String),
 }
 
 impl std::fmt::Display for AiError {
@@ -174,6 +236,7 @@ impl std::fmt::Display for AiError {
             AiError::BadRequest(m) => write!(f, "{m}"),
             AiError::NotFound(m) => write!(f, "{m}"),
             AiError::Db(m) => write!(f, "database: {m}"),
+            AiError::BudgetExhausted(m) => write!(f, "budget exhausted: {m}"),
         }
     }
 }

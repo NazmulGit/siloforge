@@ -60,7 +60,7 @@ fn int(v: &Option<String>, name: &str) -> ApiResult<Option<i64>> {
 }
 
 /// RFC 3339 passes through; `<n>m|h|d` is relative to now.
-fn time_arg(v: &Option<String>, name: &str) -> ApiResult<Option<String>> {
+pub(crate) fn time_arg(v: &Option<String>, name: &str) -> ApiResult<Option<String>> {
     let Some(s) = opt(v) else { return Ok(None) };
     if s.len() > 64 {
         return Err(ApiError::bad(format!("{name} is too long")));
@@ -295,7 +295,7 @@ pub async fn stats(
         ..Default::default()
     };
     let (wh, args) = filters(&u, &scoped, false)?;
-    let (by_source, by_status) = st
+    let (by_source, by_status, ai) = st
         .db
         .read(move |c| {
             let count = |col: &str| -> sf_core::Result<Map<String, Value>> {
@@ -310,7 +310,27 @@ pub async fn stats(
                     .map_err(err)?;
                 Ok(rows.into_iter().map(|(k, n)| (k, json!(n))).collect())
             };
-            Ok((count("source")?, count("status")?))
+            let ai_sql = format!(
+                "SELECT count(*),
+                        coalesce(sum(json_extract(detail,'$.tokens_in')),0),
+                        coalesce(sum(json_extract(detail,'$.tokens_out')),0),
+                        coalesce(sum(json_extract(detail,'$.cost_usd')),0.0),
+                        coalesce(sum(CASE WHEN json_extract(detail,'$.cache_hit') THEN coalesce(json_extract(detail,'$.items'),1) ELSE 0 END),0)
+                   FROM event_log{wh} AND source='ai' AND json_valid(detail)"
+            );
+            let ai = c
+                .query_row(&ai_sql, rusqlite::params_from_iter(args.iter()), |r| {
+                    let cost: f64 = r.get::<_, Option<f64>>(3)?.unwrap_or(0.0);
+                    Ok(json!({
+                        "calls": r.get::<_, i64>(0)?,
+                        "tokens_in": r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        "tokens_out": r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                        "cost_usd": (cost * 1e6).round() / 1e6,
+                        "cache_hits": r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    }))
+                })
+                .map_err(err)?;
+            Ok((count("source")?, count("status")?, ai))
         })
         .await?;
     let total: i64 = by_source.values().filter_map(Value::as_i64).sum();
@@ -318,5 +338,6 @@ pub async fn stats(
         "by_source": by_source,
         "by_status": by_status,
         "total": total,
+        "ai": ai,
     })))
 }

@@ -13,8 +13,7 @@ use sf_store::{err, placeholders};
 
 use super::common::{
     EDGE_JSON, JsonBody, MAX_LIMIT, Params, audit_user, conflict_as, count, enqueue_raw,
-    guard_child, guard_user_site, int_param, is_uuid, owner_scope, query_json, query_one_json,
-    str_param,
+    guard_child, guard_user_site, int_param, is_uuid, query_json, query_one_json, str_param,
 };
 use crate::auth::User;
 use crate::{ApiError, ApiResult, AppState};
@@ -246,7 +245,8 @@ pub async fn bulk_decide(
     if ids.is_empty() {
         return Ok(Json(json!({ "updated": 0 })));
     }
-    let scope = owner_scope(&u);
+    let scope = crate::tenancy::site_scope(&st, &u, "s").await?;
+    let member = crate::tenancy::writable_pred(&u, "s");
     let decision = b.decision.clone();
     let updated = st
         .db
@@ -257,10 +257,10 @@ pub async fn bulk_decide(
                 let sql = format!(
                     "UPDATE link_edges SET status=?1, decided_at=?2
                       WHERE id IN ({}) AND status IN ('suggested','reverted')
-                        AND (?3 IS NULL OR site_id IN (SELECT id FROM sites WHERE user_id=?3))",
-                    placeholders_from(4, chunk.len())
+                        AND site_id IN (SELECT s.id FROM sites s WHERE {scope} AND {member})",
+                    placeholders_from(3, chunk.len())
                 );
-                let mut p: Vec<&dyn ToSql> = vec![&decision, &now, &scope];
+                let mut p: Vec<&dyn ToSql> = vec![&decision, &now];
                 for id in chunk {
                     p.push(id);
                 }

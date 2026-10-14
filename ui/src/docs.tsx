@@ -35,7 +35,26 @@ const PAGE_DOCS: Record<string, string[]> = {
   'settings:notifications': ['notifications'],
   'settings:backups': ['backups-and-migration'],
   'settings:activity': ['logs'],
-  'settings:account': ['faq'],
+  'settings:account': ['accounts-and-login', 'faq'],
+  'settings:platform': ['admin-console', 'saas-deployment'],
+  // v2.4
+  workspace: ['workspaces-and-members'],
+  'workspace:profile': ['workspaces-and-members'],
+  'workspace:members': ['workspaces-and-members'],
+  'workspace:plan': ['plans-and-usage', 'workspaces-and-members'],
+  'workspace:tokens': ['api-and-mcp', 'workspaces-and-members'],
+  'workspace:danger': ['workspaces-and-members'],
+  admin: ['admin-console'],
+  'admin:overview': ['admin-console'],
+  'admin:users': ['admin-console', 'accounts-and-login'],
+  'admin:workspaces': ['admin-console', 'workspaces-and-members'],
+  'admin:plans': ['plans-and-usage', 'admin-console'],
+  'admin:invites': ['workspaces-and-members', 'admin-console'],
+  'admin:email': ['admin-console', 'saas-deployment'],
+  'admin:registration': ['accounts-and-login', 'admin-console'],
+  'admin:branding': ['admin-console'],
+  'admin:audit': ['admin-console', 'logs'],
+  'admin:deployment': ['saas-deployment', 'admin-console'],
 };
 
 export function pageKey(pathname: string, search: string): string {
@@ -46,6 +65,11 @@ export function pageKey(pathname: string, search: string): string {
     return `settings:${sec}`;
   }
   if (pathname === '/jobs') return 'alljobs';
+  if (pathname === '/workspace' || pathname === '/admin') {
+    const base = pathname.slice(1);
+    const tab = new URLSearchParams(search).get('tab');
+    return tab ? `${base}:${tab}` : base;
+  }
   return pathname.replace(/^\//, '').split('/')[0] || 'sites';
 }
 
@@ -54,7 +78,7 @@ export function resolveDocSlug(key: string, docs: DocMeta[]): string | null {
   const slugs = new Set(docs.map((d) => d.slug));
   for (const c of PAGE_DOCS[key] ?? []) if (slugs.has(c)) return c;
   const words = key
-    .replace(/^settings:/, '')
+    .replace(/^(settings|workspace|admin):/, '')
     .split(/[-:]/)
     .filter((w) => w.length > 2);
   for (const w of words) {

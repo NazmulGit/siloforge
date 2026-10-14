@@ -69,3 +69,25 @@ export function fmtMs(ms: number | null | undefined): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return fmtUptime(ms / 1000);
 }
+
+/** Token count: 1.2k / 3.45M / 1.20B. */
+export function fmtTokens(n: number | null | undefined): string {
+  const v = typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  if (Math.abs(v) >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (Math.abs(v) >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (Math.abs(v) >= 1e4) return `${(v / 1e3).toFixed(1)}k`;
+  return Math.round(v).toLocaleString();
+}
+
+export function fmtUsd(n: number | null | undefined): string {
+  const v = typeof n === 'number' && Number.isFinite(n) ? n : 0;
+  if (v === 0) return '$0';
+  if (v < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+/** A server link ("/invite/…" or a full URL) as an absolute URL for copying. */
+export function absoluteLink(link: string): string {
+  if (/^https?:\/\//i.test(link)) return link;
+  return `${window.location.origin}${link.startsWith('/') ? '' : '/'}${link}`;
+}

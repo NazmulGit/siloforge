@@ -84,17 +84,33 @@ pub fn is_http_url(s: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Client IP from the socket (never from forwarded headers: the server binds to loopback).
+/// Client IP from the socket. v2.4: with Settings → Platform `trust_proxy` on (SiloForge behind a
+/// reverse proxy), the first valid address of `X-Forwarded-For` is used instead.
 pub struct ClientIp(pub String);
 
-impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+/// First syntactically valid IP of an `X-Forwarded-For` value.
+pub fn forwarded_ip(h: &axum::http::HeaderMap) -> Option<String> {
+    let v = h.get("x-forwarded-for")?.to_str().ok()?;
+    v.split(',')
+        .map(str::trim)
+        .find_map(|s| s.parse::<std::net::IpAddr>().ok())
+        .map(|ip| ip.to_string())
+}
+
+impl FromRequestParts<AppState> for ClientIp {
     type Rejection = ApiError;
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
-        let ip = parts
+    async fn from_request_parts(parts: &mut Parts, st: &AppState) -> Result<Self, Self::Rejection> {
+        let socket = parts
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map(|c| c.0.ip().to_string())
             .unwrap_or_else(|| "local".to_string());
+        let trust = crate::platform::get(st).await.deployment.trust_proxy;
+        let ip = if trust {
+            forwarded_ip(&parts.headers).unwrap_or(socket)
+        } else {
+            socket
+        };
         Ok(ClientIp(ip))
     }
 }
@@ -175,12 +191,7 @@ pub fn v1_collation(c: &rusqlite::Connection) -> sf_core::Result<()> {
 // ---------------------------------------------------------------------------
 
 pub fn principal(u: &User) -> Principal {
-    Principal::User {
-        user_id: u.user_id.clone(),
-        role: u.role.clone(),
-        token: u.token.clone(),
-        scopes: u.scopes.clone(),
-    }
+    u.principal()
 }
 
 /// Ownership gate for a site id taken from a path/body (non-uuid -> 404, foreign -> 404).
@@ -193,6 +204,14 @@ pub async fn guard_site(st: &AppState, who: &Principal, site_id: &str) -> ApiRes
 
 pub async fn guard_user_site(st: &AppState, u: &User, site_id: &str) -> ApiResult<()> {
     guard_site(st, &principal(u), site_id).await
+}
+
+/// v2.4: site gate for workspace-admin routes (site settings, keys, credentials, Auto-Linker).
+pub async fn guard_site_admin(st: &AppState, u: &User, site_id: &str) -> ApiResult<()> {
+    guard_user_site(st, u, site_id).await?;
+    crate::tenancy::require_site_role(st, u, site_id, crate::tenancy::Role::Admin)
+        .await
+        .map(|_| ())
 }
 
 /// Same as `guard_site` but with a custom 404 message (child rows: edge, rule, schedule, ...).

@@ -4,7 +4,7 @@ use sf_core::config::LlmCfg;
 use sf_store::rusqlite::{self, Connection, OptionalExtension, params};
 
 use crate::adapters::{KeyState, Rung, headers_from_json, normalize_base_url};
-use crate::types::{ChainSource, ProviderKind, Role};
+use crate::types::{ChainSource, ProviderKind, Role, Tier};
 
 pub(crate) const ENV_PROVIDER: &str = "env:dario";
 
@@ -25,6 +25,8 @@ pub(crate) struct Resolved {
     pub rungs: Vec<Rung>,
     /// Rungs of the active chain excluded at resolution, with the reason (display only).
     pub skipped: Vec<(Rung, String)>,
+    /// Tier of the chain that serves (requested tier, or `main` when it fell back).
+    pub tier: Tier,
 }
 
 /// One joined rung/model/provider row as stored.
@@ -42,11 +44,13 @@ pub(crate) struct RawRow {
     pub base_url: String,
     pub api_key_enc: String,
     pub headers: String,
+    pub price_in: Option<f64>,
+    pub price_out: Option<f64>,
 }
 
 const RUNG_COLS: &str = "r.position, r.timeout_ms, r.max_retries,
        m.id, m.model_id, m.role, m.dim,
-       p.id, p.name, p.kind, p.base_url, p.api_key_enc, p.headers";
+       p.id, p.name, p.kind, p.base_url, p.api_key_enc, p.headers, m.price_in, m.price_out";
 
 fn map_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
     Ok(RawRow {
@@ -63,6 +67,8 @@ fn map_raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
         base_url: row.get(10)?,
         api_key_enc: row.get(11)?,
         headers: row.get(12)?,
+        price_in: row.get(13)?,
+        price_out: row.get(14)?,
     })
 }
 
@@ -105,6 +111,8 @@ pub(crate) fn to_rung(raw: RawRow, key: &[u8; 32], chain_id: Option<&str>) -> Ru
             .and_then(|r| u32::try_from(r).ok())
             .map(|r| r.min(10)),
         chain_id: chain_id.map(str::to_string),
+        price_in: raw.price_in.filter(|p| p.is_finite() && *p >= 0.0),
+        price_out: raw.price_out.filter(|p| p.is_finite() && *p >= 0.0),
     }
 }
 
@@ -141,6 +149,8 @@ pub(crate) fn env_rungs(role: Role, llm: &LlmCfg) -> Vec<Rung> {
             timeout_ms: Some(llm.timeout_ms).filter(|t| *t > 0),
             max_retries: None,
             chain_id: None,
+            price_in: None,
+            price_out: None,
         })
         .collect()
 }
@@ -150,34 +160,58 @@ pub(crate) struct ActiveChain {
     pub name: String,
     pub source: ChainSource,
     pub rows: Vec<RawRow>,
+    /// The tier of the chain that was found (the requested one, or `main` as the fallback).
+    pub tier: Tier,
 }
 
-/// Reads the active chain for (role, site) with its enabled rungs. Runs on a reader connection.
+/// The active chain for (role, tier, site): site chain for the tier -> global chain for the tier
+/// -> `main` chain (site -> global). Returns `(id, name, source, tier)`.
+pub(crate) fn find_active(
+    conn: &Connection,
+    role: Role,
+    tier: Tier,
+    site_id: Option<&str>,
+) -> rusqlite::Result<Option<(String, String, ChainSource, Tier)>> {
+    let mut tiers = vec![tier];
+    if tier != Tier::Main {
+        tiers.push(Tier::Main);
+    }
+    for t in tiers {
+        if let Some(site) = site_id {
+            let f = conn
+                .query_row(
+                    "SELECT id, name FROM model_chains WHERE role = ?1 AND tier = ?2 AND site_id = ?3 AND active = 1 ORDER BY id LIMIT 1",
+                    params![role.as_str(), t.as_str(), site],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if let Some((id, name)) = f {
+                return Ok(Some((id, name, ChainSource::Site, t)));
+            }
+        }
+        let f = conn
+            .query_row(
+                "SELECT id, name FROM model_chains WHERE role = ?1 AND tier = ?2 AND site_id IS NULL AND active = 1 ORDER BY id LIMIT 1",
+                params![role.as_str(), t.as_str()],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        if let Some((id, name)) = f {
+            return Ok(Some((id, name, ChainSource::Global, t)));
+        }
+    }
+    Ok(None)
+}
+
+/// Reads the active chain for (role, tier, site) with its enabled rungs. Runs on a reader
+/// connection.
 pub(crate) fn load_active(
     conn: &Connection,
     role: Role,
+    tier: Tier,
     site_id: Option<&str>,
 ) -> rusqlite::Result<Option<ActiveChain>> {
-    let mut found: Option<(String, String, ChainSource)> = None;
-    if let Some(site) = site_id {
-        found = conn
-            .query_row(
-                "SELECT id, name FROM model_chains WHERE role = ?1 AND site_id = ?2 AND active = 1 ORDER BY id LIMIT 1",
-                params![role.as_str(), site],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, ChainSource::Site)),
-            )
-            .optional()?;
-    }
-    if found.is_none() {
-        found = conn
-            .query_row(
-                "SELECT id, name FROM model_chains WHERE role = ?1 AND site_id IS NULL AND active = 1 ORDER BY id LIMIT 1",
-                params![role.as_str()],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, ChainSource::Global)),
-            )
-            .optional()?;
-    }
-    let Some((id, name, source)) = found else {
+    let Some((id, name, source, found_tier)) = find_active(conn, role, tier, site_id)? else {
         return Ok(None);
     };
     let sql = format!(
@@ -197,6 +231,7 @@ pub(crate) fn load_active(
         name,
         source,
         rows,
+        tier: found_tier,
     }))
 }
 
@@ -206,7 +241,7 @@ pub(crate) fn load_model(
     model_row_id: &str,
 ) -> rusqlite::Result<Option<RawRow>> {
     let sql = "SELECT 0, NULL, NULL, m.id, m.model_id, m.role, m.dim,
-                      p.id, p.name, p.kind, p.base_url, p.api_key_enc, p.headers
+                      p.id, p.name, p.kind, p.base_url, p.api_key_enc, p.headers, m.price_in, m.price_out
                  FROM models m JOIN model_providers p ON p.id = m.provider_id
                 WHERE m.id = ?1";
     conn.query_row(sql, params![model_row_id], map_raw)
@@ -254,5 +289,6 @@ pub(crate) fn build(
         source: active.source,
         rungs,
         skipped,
+        tier: active.tier,
     }
 }

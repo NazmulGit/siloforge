@@ -93,6 +93,38 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
     Ok(stats)
 }
 
+/// Which candidate sources a plan uses (link runs narrow it; the default is everything).
+#[derive(Debug, Clone)]
+pub struct PlanScope {
+    /// Silo topology candidates (`topology`).
+    pub topology: bool,
+    /// Semantic (embedding similarity) candidates.
+    pub semantic: bool,
+    /// Density overrides (`None` = the site setting).
+    pub max_links_per_post: Option<f64>,
+    pub max_new_links_per_pass: Option<f64>,
+    /// AI anchor refinement override (link run option `ai_refine`); None = payload / site setting.
+    pub ai_refine: Option<bool>,
+    /// v2.3: AI work on the `priority` tier.
+    pub high_priority: bool,
+    /// Link Run id for AI accounting (None = this job's id).
+    pub run_id: Option<String>,
+}
+
+impl Default for PlanScope {
+    fn default() -> Self {
+        Self {
+            topology: true,
+            semantic: true,
+            max_links_per_post: None,
+            max_new_links_per_pass: None,
+            ai_refine: None,
+            high_priority: false,
+            run_id: None,
+        }
+    }
+}
+
 /// The whole pipeline for one site (used by `plan` and the `audit` plan stage).
 pub async fn plan_site(
     ctx: &JobContext,
@@ -101,6 +133,19 @@ pub async fn plan_site(
     topology: &str,
     archive: bool,
     k: Option<usize>,
+) -> JobResult<Value> {
+    plan_site_scoped(ctx, job, site, topology, archive, k, &PlanScope::default()).await
+}
+
+/// [`plan_site`] with a candidate scope (link runs).
+pub async fn plan_site_scoped(
+    ctx: &JobContext,
+    job: &Job,
+    site: &SiteInfo,
+    topology: &str,
+    archive: bool,
+    k: Option<usize>,
+    scope: &PlanScope,
 ) -> JobResult<Value> {
     let topo = Topology::parse(topology);
     job.info(format!(
@@ -174,7 +219,10 @@ pub async fn plan_site(
         .await;
     }
     let clusters = load_clusters(ctx, &site.id, &posts).await?;
-    let topo_set = build_topology_candidates(&topo, &clusters, &pagerank, &skip);
+    let mut topo_set = build_topology_candidates(&topo, &clusters, &pagerank, &skip);
+    if !scope.topology {
+        topo_set.candidates.clear();
+    }
     let mut skipped = topo_set.skipped;
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut cands: Vec<Cand> = Vec::new();
@@ -214,7 +262,10 @@ pub async fn plan_site(
             .collect()
     })
     .await?;
-    let sem = semantic_candidates(&neighbors, SEMANTIC_MIN_SCORE, &current, &skip);
+    let mut sem = semantic_candidates(&neighbors, SEMANTIC_MIN_SCORE, &current, &skip);
+    if !scope.semantic {
+        sem.candidates.clear();
+    }
     add_skips(&mut skipped, &sem.skipped);
     for c in sem.candidates {
         if seen.insert((c.source.clone(), c.target.clone())) {
@@ -254,7 +305,14 @@ pub async fn plan_site(
 
     tm.lap("score");
     // 8. density (after scoring)
-    let limits = resolve_limits(&density_settings(site));
+    let mut dset = density_settings(site);
+    if scope.max_links_per_post.is_some() {
+        dset.max_links_per_post = scope.max_links_per_post;
+    }
+    if scope.max_new_links_per_pass.is_some() {
+        dset.max_new_links_per_pass = scope.max_new_links_per_pass;
+    }
+    let limits = resolve_limits(&dset);
     let mut dctx = DensityContext::default();
     // committed outbound = distinct targets linked live/applied or approved (about to be applied)
     let mut committed: HashSet<(&str, &str)> = g
@@ -329,9 +387,10 @@ pub async fn plan_site(
             anchor: c.anchor.clone(),
             paragraphs: c.top_paras.clone(),
             score: c.scored.map_or(0.0, |s| s.composite_score),
+            relevance: c.scored.map(|s| s.score_breakdown.semantic),
         })
         .collect();
-    let run = anchor_run_options(job, site, &vectors);
+    let run = anchor_run_options(ctx, job, site, &vectors, scope);
     if let Some(ai) = &run.ai {
         job.info(format!(
             "anchors: AI refinement on (top {} new edges, concurrency {}, budget {} s)",
@@ -393,6 +452,9 @@ pub async fn plan_site(
         if let Some(b) = breakdown.as_object_mut() {
             if let Some(m) = &p.meta {
                 b.insert("anchor".into(), m.clone());
+            }
+            if !p.alternates.is_empty() {
+                b.insert("alternates".into(), Value::Array(p.alternates.clone()));
             }
             if let Some(a) = ai {
                 b.insert("ai".into(), a);
@@ -480,25 +542,42 @@ pub async fn plan_site(
     }))
 }
 
-/// Anchor options for a plan: semantic scoring when vectors exist; AI refinement from the payload
-/// (`ai_refine` / `aiRefine`, overrides) or the site setting `ai_anchor_refine` (default off),
-/// budget from `ai_anchor_refine_max` (default 200), `ai_anchor_refine_concurrency` (4) and
-/// `ai_anchor_refine_timeout_s` (300).
-fn anchor_run_options(job: &Job, site: &SiteInfo, vectors: &Arc<SiteVectors>) -> AnchorRunOptions {
-    let payload = job
-        .payload
-        .get("ai_refine")
-        .or_else(|| job.payload.get("aiRefine"))
-        .and_then(Value::as_bool);
-    let enabled = payload.unwrap_or_else(|| site.setting_bool("ai_anchor_refine"));
+/// Anchor options for a plan: semantic scoring when vectors exist; AI refinement from the link
+/// run option, the payload (`ai_refine` / `aiRefine`, overrides) or the site setting
+/// `ai_anchor_refine` (default off) — always on with `ai.always_on` (v2.3) — budget from
+/// `ai_anchor_refine_max` (default 200, 5000 with always_on), `ai_anchor_refine_concurrency` (4)
+/// and `ai_anchor_refine_timeout_s` (300). Batch size and skip thresholds come from `[ai]`.
+fn anchor_run_options(
+    ctx: &JobContext,
+    job: &Job,
+    site: &SiteInfo,
+    vectors: &Arc<SiteVectors>,
+    scope: &PlanScope,
+) -> AnchorRunOptions {
+    let ai_cfg = ctx.live.get().ai.clone();
+    let payload = scope.ai_refine.or_else(|| {
+        job.payload
+            .get("ai_refine")
+            .or_else(|| job.payload.get("aiRefine"))
+            .and_then(Value::as_bool)
+    });
+    let enabled =
+        ai_cfg.always_on || payload.unwrap_or_else(|| site.setting_bool("ai_anchor_refine"));
+    let default_max = if ai_cfg.always_on { 5000.0 } else { 200.0 };
     let num = |k: &str, d: f64, lo: f64, hi: f64| {
         site.setting_f64(k)
             .filter(|v| v.is_finite())
             .unwrap_or(d)
             .clamp(lo, hi)
     };
+    let run_id = scope.run_id.clone().unwrap_or_else(|| job.id.clone());
     let ai = enabled.then(|| AiRefineOptions {
-        max_edges: num("ai_anchor_refine_max", 200.0, 0.0, 5000.0) as usize,
+        max_edges: num("ai_anchor_refine_max", default_max, 0.0, 5000.0) as usize,
+        batch_size: ai_cfg.batch(),
+        skip_anchor: ai_cfg.confidence_skip.anchor,
+        skip_relevance: ai_cfg.confidence_skip.relevance,
+        run_id: Some(run_id),
+        high_priority: scope.high_priority || site.setting_bool("ai_high_priority"),
         concurrency: num("ai_anchor_refine_concurrency", 4.0, 1.0, 16.0) as usize,
         timeout: std::time::Duration::from_secs(num(
             "ai_anchor_refine_timeout_s",
@@ -969,7 +1048,7 @@ async fn cluster_site(
 
 /// Replace the site's auto clusters. An auto cluster whose member set is unchanged keeps its id
 /// (label/pillar refreshed) and its posts are not touched: every `posts` UPDATE rewrites the whole
-/// row (content + embedding, ~40 KB on site24), and the old delete-all (FK SET NULL) +
+/// row (content + embedding, ~40 KB on site30), and the old delete-all (FK SET NULL) +
 /// re-assign rewrote every post twice per plan. k-means is seeded, so a re-plan of an unchanged
 /// site now writes no post rows here.
 fn write_clusters(

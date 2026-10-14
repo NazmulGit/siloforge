@@ -31,6 +31,9 @@ pub struct Claims {
     /// v2: token version; bumping `users.token_version` revokes older tokens. Absent in v1 tokens (= 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tv: Option<i64>,
+    /// v2.4: session id (`sessions.id`); revoking the session revokes the token. Absent in older tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -64,9 +67,24 @@ pub fn user_claims(role: &str, user_id: &str, token_version: i64) -> Claims {
         user_id: Some(user_id.to_string()),
         site_id: None,
         tv: (token_version > 0).then_some(token_version),
+        sid: None,
         iat,
         exp: iat + JWT_TTL_SECS,
     }
+}
+
+/// User token bound to a session (`sid`) with a custom lifetime (v2.4 remember-me: 30 d / 1 d).
+pub fn session_claims(
+    role: &str,
+    user_id: &str,
+    token_version: i64,
+    sid: &str,
+    ttl_secs: i64,
+) -> Claims {
+    let mut c = user_claims(role, user_id, token_version);
+    c.sid = Some(sid.to_string());
+    c.exp = c.iat.saturating_add(ttl_secs.max(60));
+    c
 }
 
 /// Site token. `tv` carries a fingerprint of the site's current api_key, so rotating the key
@@ -79,6 +97,7 @@ pub fn site_claims(site_id: &str, stored: &str) -> Claims {
         user_id: None,
         site_id: Some(site_id.to_string()),
         tv: Some(stored_key_fingerprint(stored)),
+        sid: None,
         iat,
         exp: iat + JWT_TTL_SECS,
     }

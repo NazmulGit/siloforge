@@ -1,7 +1,7 @@
 ---
 title: Keyword rules
 section: Linking
-order: 6
+order: 7
 ---
 
 # Keyword rules

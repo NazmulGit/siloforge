@@ -41,6 +41,7 @@ import type {
   SiteSettings,
   SiloTopology,
 } from './types';
+import { emitEmailUnverified, emitPlanLimit, scopeHeaders, type PlanLimitDetail } from './wsStore';
 
 const TOKEN_KEY = 'sf_token';
 
@@ -58,11 +59,28 @@ export function clearToken(): void {
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** Machine-readable `error` field of the body, when the server sent one. */
+  readonly code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
+}
+
+/** HTTP 402 from a plan limit (v2.4 §9.2). The upgrade prompt is shown globally. */
+export class PlanLimitError extends ApiError {
+  readonly detail: PlanLimitDetail;
+  constructor(message: string, detail: PlanLimitDetail) {
+    super(402, message, 'plan limit');
+    this.name = 'PlanLimitError';
+    this.detail = detail;
+  }
+}
+
+export function isPlanLimit(e: unknown): e is PlanLimitError {
+  return e instanceof PlanLimitError;
 }
 
 export interface RequestInitLite {
@@ -77,21 +95,71 @@ export function handleUnauthorized(): never {
   throw new ApiError(401, 'Session expired');
 }
 
-function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  const headers: Record<string, string> = { ...extra };
+/** Bearer + workspace scope headers for every API call (also used by blob downloads). */
+export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...scopeHeaders(), ...extra };
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
   return headers;
 }
 
-async function errorMessage(res: Response, fallback: string): Promise<string> {
+interface ErrorBody {
+  message?: string;
+  error?: string;
+  key?: string;
+  limit?: number | null;
+  used?: number | null;
+  plan?: string;
+  workspace_id?: string;
+}
+
+async function errorBody(res: Response): Promise<ErrorBody> {
   try {
-    const body = (await res.json()) as { message?: string; error?: string };
-    return body.message ?? body.error ?? fallback;
+    const b = (await res.json()) as unknown;
+    return b && typeof b === 'object' ? (b as ErrorBody) : {};
   } catch {
-    return fallback; /* non-JSON error body */
+    return {}; /* non-JSON error body */
   }
 }
+
+/**
+ * Turn a non-OK response into an ApiError. 402 plan limits raise the global upgrade prompt;
+ * 403 "email not verified" raises the verify-email banner.
+ */
+async function toApiError(res: Response, fallback: string): Promise<ApiError> {
+  const body = await errorBody(res);
+  const msg = body.message ?? body.error ?? fallback;
+  if (res.status === 402 && (body.error === 'plan limit' || body.key)) {
+    const detail: PlanLimitDetail = {
+      key: body.key ?? 'usage',
+      limit: typeof body.limit === 'number' ? body.limit : null,
+      used: typeof body.used === 'number' ? body.used : null,
+      plan: body.plan ?? 'current',
+      workspace_id: body.workspace_id,
+      message: body.message,
+    };
+    emitPlanLimit(detail);
+    return new PlanLimitError(msg, detail);
+  }
+  if (res.status === 403 && /email not verified/i.test(`${body.error ?? ''} ${body.message ?? ''}`)) emitEmailUnverified();
+  return new ApiError(res.status, msg, body.error);
+}
+
+/** Auth routes where a 401 means "wrong credentials / password", not "session expired". */
+const NO_REDIRECT_401 = new Set([
+  '/auth/login',
+  '/auth/register',
+  '/auth/2fa/login',
+  '/auth/forgot',
+  '/auth/reset',
+  '/auth/verify-email',
+  '/auth/config',
+  '/auth/2fa/setup',
+  '/auth/2fa/disable',
+  '/auth/2fa/recovery-codes',
+  '/auth/change-email',
+  '/auth/change-password',
+]);
 
 /** JSON request against an API base (`/api/v1` or `/api/v2`). */
 export async function requestAt<T>(base: string, path: string, init: RequestInitLite = {}): Promise<T> {
@@ -108,10 +176,10 @@ export async function requestAt<T>(base: string, path: string, init: RequestInit
     throw new ApiError(0, 'Network error — is the API reachable?');
   }
 
-  const isAuthCall = base === '/api/v1' && (path === '/auth/login' || path === '/auth/register');
+  const isAuthCall = NO_REDIRECT_401.has(path.split('?')[0] ?? path) || path.startsWith('/invites/');
   if (res.status === 401 && !isAuthCall) handleUnauthorized();
 
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res, `Request failed (${res.status})`));
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status})`);
 
   return (await res.json()) as T;
 }
@@ -129,7 +197,7 @@ export async function fetchBlob(url: string, failLabel = 'Download failed'): Pro
     throw new ApiError(0, 'Network error — is the API reachable?');
   }
   if (res.status === 401) handleUnauthorized();
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res, `${failLabel} (${res.status})`));
+  if (!res.ok) throw await toApiError(res, `${failLabel} (${res.status})`);
   return res.blob();
 }
 
@@ -139,15 +207,66 @@ export interface AuthUser {
   email: string;
   name: string;
   role: 'admin' | 'user';
+  /** v2.4 /api/v2/auth/me extras (absent on older servers). */
+  email_verified?: boolean;
+  email_verified_at?: string | null;
+  pending_email?: string | null;
+  two_factor_enabled?: boolean;
+  recovery_codes_left?: number;
+  platform_admin?: boolean;
+  created_at?: string;
+  default_workspace_id?: string | null;
+  workspaces?: Array<{ id: string; name: string; slug: string; role: string; status: string; plan?: { id: string; name: string } }>;
+}
+
+export function isPlatformAdmin(u: AuthUser | null | undefined): boolean {
+  return !!u && (u.platform_admin === true || u.role === 'admin');
 }
 
 export interface AuthResponse {
   token: string;
   user: AuthUser;
+  session_id?: string;
+  expires_at?: string;
 }
 
+export type LoginResult = AuthResponse | { two_factor_required: true; challenge: string };
+
+export function needsTwoFactor(r: LoginResult): r is { two_factor_required: true; challenge: string } {
+  return (r as { two_factor_required?: boolean }).two_factor_required === true;
+}
+
+/** v1 login (kept for older servers and scripts). */
 export function login(email: string, password: string): Promise<AuthResponse> {
   return request<AuthResponse>('/auth/login', { method: 'POST', body: { email, password } });
+}
+
+function v2Missing(e: unknown): boolean {
+  return (e instanceof ApiError && (e.status === 404 || e.status === 405)) || e instanceof SyntaxError;
+}
+
+/** v2.4 login (remember me + 2FA); falls back to v1 when the server has no v2 auth. */
+export async function loginV2(email: string, password: string, remember: boolean): Promise<LoginResult> {
+  try {
+    return await requestAt<LoginResult>('/api/v2', '/auth/login', { method: 'POST', body: { email, password, remember } });
+  } catch (e) {
+    if (v2Missing(e)) return login(email, password);
+    throw e;
+  }
+}
+
+export function loginTwoFactor(challenge: string, code: string): Promise<AuthResponse> {
+  return requestAt<AuthResponse>('/api/v2', '/auth/2fa/login', { method: 'POST', body: { challenge, code } });
+}
+
+/** Revoke the current session server-side; never throws and never redirects. */
+export async function logoutSession(): Promise<void> {
+  if (!getToken()) return;
+  try {
+    await fetch('/api/v2/auth/logout', { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: '{}' });
+  } catch {
+    /* offline — the token is dropped locally anyway */
+  }
 }
 
 export function register(email: string, password: string, name?: string): Promise<AuthResponse> {
@@ -157,8 +276,14 @@ export function register(email: string, password: string, name?: string): Promis
   });
 }
 
-export function fetchMe(): Promise<AuthUser> {
-  return request<AuthUser>('/auth/me');
+/** v2.4 /auth/me (workspaces, 2FA, verification), falling back to the v1 shape. */
+export async function fetchMe(): Promise<AuthUser> {
+  try {
+    return await requestAt<AuthUser>('/api/v2', '/auth/me');
+  } catch (e) {
+    if (v2Missing(e)) return request<AuthUser>('/auth/me');
+    throw e;
+  }
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<{ ok?: boolean }> {
@@ -456,7 +581,7 @@ export async function importCsv(siteId: string, csvText: string): Promise<CsvImp
     throw new ApiError(0, 'Network error — is the API reachable?');
   }
   if (res.status === 401) handleUnauthorized();
-  if (!res.ok) throw new ApiError(res.status, await errorMessage(res, `Import failed (${res.status})`));
+  if (!res.ok) throw await toApiError(res, `Import failed (${res.status})`);
   return (await res.json()) as CsvImportResult;
 }
 
@@ -620,10 +745,11 @@ export function probeModel(id: string): Promise<ProbeResult> {
   return request<ProbeResult>(`/models/${id}/probe`, { method: 'POST', body: {} });
 }
 
-export function fetchChains(query: { role?: ModelRole; site_id?: string } = {}): Promise<ModelChainWithRungs[]> {
+export function fetchChains(query: { role?: ModelRole; site_id?: string; tier?: 'low' | 'main' | 'high' } = {}): Promise<ModelChainWithRungs[]> {
   const params = new URLSearchParams();
   if (query.role) params.set('role', query.role);
   if (query.site_id) params.set('site_id', query.site_id);
+  if (query.tier) params.set('tier', query.tier);
   const qs = params.toString();
   return request<ModelChainWithRungs[]>(`/model-chains${qs ? `?${qs}` : ''}`);
 }
@@ -634,11 +760,13 @@ export function createChain(body: {
   site_id?: string | null;
   active?: boolean;
   notes?: string;
+  /** v2.3 AI tier (default main). */
+  tier?: 'low' | 'main' | 'high';
 }): Promise<ModelChain> {
   return request<ModelChain>('/model-chains', { method: 'POST', body });
 }
 
-export function patchChain(id: string, body: { name?: string; notes?: string }): Promise<ModelChain> {
+export function patchChain(id: string, body: { name?: string; notes?: string; tier?: 'low' | 'main' | 'high' }): Promise<ModelChain> {
   return request<ModelChain>(`/model-chains/${id}`, { method: 'PATCH', body });
 }
 

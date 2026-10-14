@@ -480,6 +480,124 @@ pub fn remove_link(
     Ok(out)
 }
 
+/// Byte span of the `href` attribute VALUE (without quotes) inside an open tag `tag`
+/// (`<a ...>`). Case-insensitive attribute name; quoted or unquoted values.
+fn href_value_span(tag: &str) -> Option<(usize, usize)> {
+    let b = tag.as_bytes();
+    let lower = tag.to_ascii_lowercase();
+    let mut from = 0usize;
+    while let Some(rel) = lower.get(from..).and_then(|r| r.find("href")) {
+        let at = from + rel;
+        from = at + 4;
+        // must be a whole attribute name: preceded by whitespace
+        if at == 0 || !b.get(at - 1).is_some_and(|c| c.is_ascii_whitespace()) {
+            continue;
+        }
+        let mut i = at + 4;
+        while b.get(i).is_some_and(|c| c.is_ascii_whitespace()) {
+            i += 1;
+        }
+        if b.get(i) != Some(&b'=') {
+            continue;
+        }
+        i += 1;
+        while b.get(i).is_some_and(|c| c.is_ascii_whitespace()) {
+            i += 1;
+        }
+        return match b.get(i) {
+            Some(q @ (b'"' | b'\'')) => {
+                let start = i + 1;
+                let len = b.get(start..)?.iter().position(|c| c == q)?;
+                Some((start, start + len))
+            }
+            Some(_) => {
+                let start = i;
+                let len = b
+                    .get(start..)?
+                    .iter()
+                    .position(|c| c.is_ascii_whitespace() || *c == b'>')
+                    .unwrap_or(b.len() - start);
+                Some((start, start + len))
+            }
+            None => None,
+        };
+    }
+    None
+}
+
+/// Point one existing link at a new URL (fix-broken-links): the `<a>` whose href matches
+/// `old_url` (and whose text equals `anchor`, when given and such a link exists) gets its href
+/// VALUE replaced by `new_url`; every other byte (other attributes, link text, block comments)
+/// is kept. `near` = preferred byte offset (closest match wins). Replacing back with the
+/// original href restores the content byte-for-byte when the original value needed no
+/// escaping. `wrapped` = the original raw href value.
+pub fn replace_link(
+    raw: &str,
+    old_url: &str,
+    new_url: &str,
+    anchor: Option<&str>,
+    near: Option<usize>,
+) -> Result<InsertOutcome, InsertError> {
+    if raw.len() > MAX_HTML_BYTES {
+        return Err(InsertError::TooLarge);
+    }
+    let url = validate_target_url(new_url)?;
+    if old_url.trim().is_empty() {
+        return Err(InsertError::LinkNotFound);
+    }
+    let dom = Dom::parse(raw);
+    let want = anchor
+        .map(|a| normalize_ws(a).to_lowercase())
+        .filter(|a| !a.is_empty());
+    let links: Vec<(usize, usize, bool)> = dom
+        .all_in_order()
+        .into_iter()
+        .filter_map(|ix| {
+            let n = dom.node(ix)?;
+            if n.name() != Some("a") || !n.attr("href").is_some_and(|h| urls_match(h, old_url)) {
+                return None;
+            }
+            let text_ok = want
+                .as_ref()
+                .is_none_or(|w| normalize_ws(&dom.text_content(ix)).to_lowercase() == *w);
+            Some((n.start, n.inner().0, text_ok))
+        })
+        .collect();
+    let pool: Vec<&(usize, usize, bool)> = if links.iter().any(|l| l.2) {
+        links.iter().filter(|l| l.2).collect()
+    } else {
+        links.iter().collect()
+    };
+    let chosen = match near {
+        Some(p) => pool.iter().min_by_key(|l| l.0.abs_diff(p)),
+        None => pool.first(),
+    };
+    let Some(&&(start, tag_end, _)) = chosen else {
+        return Err(InsertError::LinkNotFound);
+    };
+    let tag = raw.get(start..tag_end).ok_or(InsertError::LinkNotFound)?;
+    let (vs, ve) = href_value_span(tag).ok_or(InsertError::LinkNotFound)?;
+    let old_value = tag.get(vs..ve).unwrap_or("").to_string();
+    let new_value = escape_attr(url);
+    let mut content = String::with_capacity(raw.len() + new_value.len());
+    content.push_str(raw.get(..start + vs).unwrap_or(""));
+    content.push_str(&new_value);
+    content.push_str(raw.get(start + ve..).unwrap_or(""));
+    let delta_end = |e: usize| (e + new_value.len()).saturating_sub(old_value.len());
+    let end = dom
+        .all_in_order()
+        .into_iter()
+        .filter_map(|ix| dom.node(ix))
+        .find(|n| n.start == start && n.name() == Some("a"))
+        .map_or(delta_end(tag_end), |n| delta_end(n.end));
+    Ok(InsertOutcome {
+        content,
+        link_start: start,
+        link_end: end,
+        wrapped: old_value,
+    })
+}
+
 /// Number of links to `target_url` whose text equals `anchor` (case/whitespace-insensitive,
 /// curly quotes/dashes normalized like v1 `verify.ts`).
 pub fn count_links(html: &str, target_url: &str, anchor: &str) -> usize {
@@ -542,17 +660,32 @@ pub fn append_to_paragraph(
 ) -> Result<String, InsertError> {
     let parsed = parse(raw, mode)?;
     let b = locate(&parsed.blocks, index, expected_hash)?;
+    let end_tag = |ix: usize| {
+        parsed.dom.node(ix).and_then(|n| match &n.kind {
+            NodeKind::Element {
+                end_tag_start: Some(e),
+                ..
+            } => Some(*e),
+            _ => None,
+        })
+    };
+    // a plain list is one block (`<ul>`): the sentence goes inside its last item, never
+    // between `</li>` and `</ul>` (E2E 2.2: invalid HTML)
+    let last_item = |ix: usize| {
+        let n = parsed.dom.node(ix)?;
+        if !matches!(n.name(), Some("ul" | "ol")) {
+            return None;
+        }
+        n.children
+            .iter()
+            .rev()
+            .copied()
+            .find(|&c| parsed.dom.node(c).and_then(|k| k.name()) == Some("li"))
+    };
     let at = match b.pieces.as_slice() {
-        [Piece::Node(ix)] => parsed
-            .dom
-            .node(*ix)
-            .and_then(|n| match &n.kind {
-                NodeKind::Element {
-                    end_tag_start: Some(e),
-                    ..
-                } => Some(*e),
-                _ => None,
-            })
+        [Piece::Node(ix)] => last_item(*ix)
+            .and_then(end_tag)
+            .or_else(|| end_tag(*ix))
             .unwrap_or(b.para.end),
         _ => b.para.end,
     };

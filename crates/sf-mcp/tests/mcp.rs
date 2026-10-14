@@ -34,6 +34,8 @@ struct Rec {
     auth: String,
     via: String,
     tool: String,
+    /// `X-SiloForge-Workspace` (v2.4).
+    workspace: String,
     raw_body: String,
 }
 
@@ -143,6 +145,7 @@ async fn handle(
         auth: auth.clone(),
         via: hdr("x-siloforge-via"),
         tool: hdr("x-siloforge-tool"),
+        workspace: hdr("x-siloforge-workspace"),
         raw_body: String::from_utf8_lossy(&raw).into_owned(),
     });
     if path == POLICY_PATH {
@@ -221,6 +224,35 @@ async fn handle(
             "source_url,target_url\nhttp://a/1,http://a/2\n",
         )
             .into_response();
+    }
+    // v2.4 account routes answer with links / 2FA material that MCP must strip.
+    if m == "POST" && path.starts_with("/api/v2/workspaces/") && path.ends_with("/invites") {
+        return j(
+            StatusCode::CREATED,
+            json!({"invite": {"id": "i1", "email": body["email"], "role": "member", "token": "inv-secret-token"},
+                "delivery": "manual", "link": "https://sf.example/invite/inv-secret-token"}),
+        );
+    }
+    if m == "POST" && path == "/api/v2/admin/users" {
+        return j(
+            StatusCode::CREATED,
+            json!({"user": {"id": "u9", "email": body["email"], "recovery_codes": ["aaaaa-bbbbb"],
+                "otpauth_uri": "otpauth://totp/x?secret=JBSWY3DP", "secret": "JBSWY3DP"},
+                "delivery": "manual", "link": "https://sf.example/reset?token=rst-secret"}),
+        );
+    }
+    if m == "GET" && path == "/api/v2/admin/users/u1" {
+        return j(
+            StatusCode::OK,
+            json!({"id": "u1", "email": "a@b.c", "two_factor_enabled": true, "challenge": "chl-secret",
+                "sessions": [{"id": "s1", "token": "jwt-secret"}], "password": "pw-secret"}),
+        );
+    }
+    if m == "GET" && path == "/api/v2/workspaces" {
+        return j(
+            StatusCode::OK,
+            json!({"workspaces": [{"id": "default", "name": "Default", "role": "owner"}], "current_id": "default"}),
+        );
     }
     if path == "/health" {
         return j(
@@ -334,8 +366,8 @@ impl Client {
     }
 }
 
-/// 28 v1/v2.0 tools + 90 v2.1 tools.
-const ALL_TOOLS: usize = 118;
+/// 28 v1/v2.0 tools + 110 v2.1-v2.3 tools + 24 v2.4 workspace/admin tools.
+const ALL_TOOLS: usize = 162;
 
 const V1_TOOLS: [&str; 20] = [
     "siloforge_list_sites",
@@ -874,6 +906,10 @@ async fn stdio_ping_and_unknown_tool() {
     assert!(v["result"].is_object());
 }
 
+fn big_ws() -> String {
+    "w".repeat(10_000)
+}
+
 #[tokio::test]
 async fn hostile_arguments_never_panic() {
     let (st, url) = start_stub().await;
@@ -898,6 +934,8 @@ async fn hostile_arguments_never_panic() {
         json!({"method": "DELETE", "path": "/api/v1/../../etc", "query": {"a": {"b": 1}}, "body": [1, 2], "confirm": "maybe"}),
         json!({"method": 7, "path": ["x"], "settings": "str", "clusters": [1, 2], "rungs": {}, "ids": ["a"], "scopes": [1]}),
         json!({"site": "a.com", "rule_id": "../x", "token_id": "a b", "slug": "..", "backup_id": "%2e%2e", "fingerprint": "", "csv": 5}),
+        json!({"workspace_id": "../admin", "user_id": "u1/../../x", "email": 5, "role": "owner", "plan_id": "%2e", "all": "1", "history": [], "transfer_to": "a b", "status": "gone"}),
+        json!({"workspace_id": big_ws(), "user_id": "", "q": 7, "limit": 0}),
         json!({"site": "a.com", "expires_in_days": null, "tool_policy": [], "price_in": "NaN", "dim": 1e300, "window": "1y", "confirm": false}),
     ];
     let names = sf_mcp::tool_names();
@@ -1763,6 +1801,380 @@ fn v21_cases() -> Vec<Case> {
             "",
             None,
         ),
+        // link runs (v2.2)
+        c(
+            "siloforge_opportunities",
+            json!({"site": "a.com", "min_score": 0.6}),
+            "GET",
+            &format!("/api/v2/sites/{a}/opportunities"),
+            "min_score=0.6",
+            None,
+        ),
+        c(
+            "siloforge_link_run_create",
+            json!({"site": "a.com", "name": "r", "options": {"mode": "reverse"}}),
+            "POST",
+            &format!("/api/v2/sites/{a}/link-runs"),
+            "",
+            Some(json!({"name": "r", "options": {"mode": "reverse"}})),
+        ),
+        c(
+            "siloforge_link_runs_list",
+            json!({"site": "a.com", "limit": 5}),
+            "GET",
+            &format!("/api/v2/sites/{a}/link-runs"),
+            "limit=5",
+            None,
+        ),
+        c(
+            "siloforge_link_run_status",
+            json!({"run_id": "r1"}),
+            "GET",
+            "/api/v2/link-runs/r1",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_link_run_items",
+            json!({"run_id": "r1", "status": "applied", "group": "post", "limit": 10}),
+            "GET",
+            "/api/v2/link-runs/r1/items",
+            "status=applied&limit=10&group=post",
+            None,
+        ),
+        c(
+            "siloforge_link_run_select",
+            json!({"run_id": "r1", "all": true, "deselect": true}),
+            "POST",
+            "/api/v2/link-runs/r1/select",
+            "",
+            Some(json!({"all": true, "deselect": true})),
+        ),
+        c(
+            "siloforge_link_run_item_update",
+            json!({"run_id": "r1", "edge_id": "e1", "anchor": "bike locks"}),
+            "PATCH",
+            "/api/v2/link-runs/r1/items/e1",
+            "",
+            Some(json!({"anchor": "bike locks"})),
+        ),
+        c(
+            "siloforge_link_run_deploy",
+            json!({"run_id": "r1", "confirm": true}),
+            "POST",
+            "/api/v2/link-runs/r1/deploy",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_link_run_verify",
+            json!({"run_id": "r1"}),
+            "POST",
+            "/api/v2/link-runs/r1/verify",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_link_run_repair",
+            json!({"run_id": "r1", "confirm": true}),
+            "POST",
+            "/api/v2/link-runs/r1/repair",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_link_run_undo",
+            json!({"run_id": "r1", "confirm": true}),
+            "POST",
+            "/api/v2/link-runs/r1/undo",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_link_run_cancel",
+            json!({"run_id": "r1"}),
+            "POST",
+            "/api/v2/link-runs/r1/cancel",
+            "",
+            empty.clone(),
+        ),
+        // v2.3
+        c(
+            "siloforge_link_run_estimate",
+            json!({"site": "a.com", "options": {"ai_refine": true}}),
+            "POST",
+            &format!("/api/v2/sites/{a}/link-runs/estimate"),
+            "",
+            Some(json!({"options": {"ai_refine": true}})),
+        ),
+        c(
+            "siloforge_ai_tiers",
+            json!({"site_id": a}),
+            "GET",
+            "/api/v2/ai/tiers",
+            &format!("site_id={a}"),
+            None,
+        ),
+        c(
+            "siloforge_ai_usage",
+            json!({"since": "24h", "group": "tier"}),
+            "GET",
+            "/api/v2/ai/usage",
+            "since=24h&group=tier",
+            None,
+        ),
+        c(
+            "siloforge_ai_settings_get",
+            json!({}),
+            "GET",
+            "/api/v2/ai/settings",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_ai_settings_update",
+            json!({"always_on": true, "budget": {"daily_tokens": {"low": 5}}}),
+            "PUT",
+            "/api/v2/ai/settings",
+            "",
+            Some(json!({"always_on": true, "budget": {"daily_tokens": {"low": 5}}})),
+        ),
+        c(
+            "siloforge_auto_linker_get",
+            site.clone(),
+            "GET",
+            &format!("/api/v2/sites/{a}/auto-linker"),
+            "",
+            None,
+        ),
+        c(
+            "siloforge_auto_linker_update",
+            json!({"site": "a.com", "enabled": true, "live": false}),
+            "PUT",
+            &format!("/api/v2/sites/{a}/auto-linker"),
+            "",
+            Some(json!({"enabled": true, "live": false})),
+        ),
+        c(
+            "siloforge_auto_linker_run_now",
+            site.clone(),
+            "POST",
+            &format!("/api/v2/sites/{a}/auto-linker/run"),
+            "",
+            empty.clone(),
+        ),
+        // v2.4 workspaces
+        c(
+            "siloforge_workspaces_list",
+            json!({}),
+            "GET",
+            "/api/v2/workspaces",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_workspaces_list",
+            json!({"all": false}),
+            "GET",
+            "/api/v2/workspaces",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_workspaces_list",
+            json!({"all": true}),
+            "GET",
+            "/api/v2/workspaces",
+            "all=1",
+            None,
+        ),
+        c(
+            "siloforge_workspace_get",
+            json!({"workspace_id": "ws-1"}),
+            "GET",
+            "/api/v2/workspaces/ws-1",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_workspace_usage",
+            json!({"workspace_id": "default", "history": true}),
+            "GET",
+            "/api/v2/workspaces/default/usage",
+            "history=1",
+            None,
+        ),
+        c(
+            "siloforge_workspace_members",
+            json!({"workspace_id": "ws-1"}),
+            "GET",
+            "/api/v2/workspaces/ws-1/members",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_workspace_invite",
+            json!({"workspace_id": "ws-1", "email": "x@y.z", "role": "viewer"}),
+            "POST",
+            "/api/v2/workspaces/ws-1/invites",
+            "",
+            Some(json!({"email": "x@y.z", "role": "viewer"})),
+        ),
+        c(
+            "siloforge_plans_list",
+            json!({}),
+            "GET",
+            "/api/v2/plans",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_billing_get",
+            json!({"workspace_id": "ws-1"}),
+            "GET",
+            "/api/v2/billing",
+            "workspace_id=ws-1",
+            None,
+        ),
+        // v2.4 admin console
+        c(
+            "siloforge_admin_overview",
+            json!({}),
+            "GET",
+            "/api/v2/admin/overview",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_admin_users_list",
+            json!({"q": "bob", "limit": 50, "offset": 100}),
+            "GET",
+            "/api/v2/admin/users",
+            "q=bob&limit=50&offset=100",
+            None,
+        ),
+        c(
+            "siloforge_admin_users_get",
+            json!({"user_id": "u1"}),
+            "GET",
+            "/api/v2/admin/users/u1",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_admin_users_create",
+            json!({"email": "n@y.z", "name": "N", "role": "user", "workspace_id": "ws-1", "workspace_role": "member", "password": "ignored"}),
+            "POST",
+            "/api/v2/admin/users",
+            "",
+            Some(
+                json!({"email": "n@y.z", "name": "N", "role": "user", "workspace_id": "ws-1", "workspace_role": "member"}),
+            ),
+        ),
+        c(
+            "siloforge_admin_users_update",
+            json!({"user_id": "u1", "role": "admin"}),
+            "PATCH",
+            "/api/v2/admin/users/u1",
+            "",
+            Some(json!({"role": "admin"})),
+        ),
+        c(
+            "siloforge_admin_users_disable",
+            json!({"user_id": "u1"}),
+            "POST",
+            "/api/v2/admin/users/u1/disable",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_admin_users_enable",
+            json!({"user_id": "u1"}),
+            "POST",
+            "/api/v2/admin/users/u1/enable",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_admin_users_logout",
+            json!({"user_id": "u1"}),
+            "POST",
+            "/api/v2/admin/users/u1/logout",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_admin_users_reset_password",
+            json!({"user_id": "u1"}),
+            "POST",
+            "/api/v2/admin/users/u1/reset-password",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_admin_users_delete",
+            json!({"user_id": "u2", "transfer_to": "u1", "confirm": true}),
+            "DELETE",
+            "/api/v2/admin/users/u2",
+            "transfer_to=u1",
+            none.clone(),
+        ),
+        c(
+            "siloforge_admin_workspaces_list",
+            json!({"status": "suspended", "limit": 10}),
+            "GET",
+            "/api/v2/admin/workspaces",
+            "status=suspended&limit=10",
+            None,
+        ),
+        c(
+            "siloforge_admin_workspaces_get",
+            json!({"workspace_id": "ws-1"}),
+            "GET",
+            "/api/v2/admin/workspaces/ws-1",
+            "",
+            None,
+        ),
+        c(
+            "siloforge_admin_workspaces_set_plan",
+            json!({"workspace_id": "ws-1", "plan_id": "pro"}),
+            "PATCH",
+            "/api/v2/admin/workspaces/ws-1",
+            "",
+            Some(json!({"plan_id": "pro"})),
+        ),
+        c(
+            "siloforge_admin_workspaces_suspend",
+            json!({"workspace_id": "ws-1"}),
+            "POST",
+            "/api/v2/admin/workspaces/ws-1/suspend",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_admin_workspaces_resume",
+            json!({"workspace_id": "ws-1"}),
+            "POST",
+            "/api/v2/admin/workspaces/ws-1/resume",
+            "",
+            empty.clone(),
+        ),
+        c(
+            "siloforge_admin_workspaces_delete",
+            json!({"workspace_id": "ws-1", "confirm": true}),
+            "DELETE",
+            "/api/v2/admin/workspaces/ws-1",
+            "",
+            none.clone(),
+        ),
+        c(
+            "siloforge_admin_plans_list",
+            json!({}),
+            "GET",
+            "/api/v2/plans",
+            "",
+            None,
+        ),
     ]
 }
 
@@ -1803,6 +2215,7 @@ async fn each_v21_tool_maps_to_method_path_body_with_headers() {
         assert_eq!(r.auth, "Bearer sfk_testtoken");
         assert_eq!(r.via, "mcp", "{tool}");
         assert_eq!(r.tool, tool, "{tool}");
+        assert_eq!(r.workspace, "", "{tool}: no SILOFORGE_WORKSPACE, no header");
     }
     // CSV import sends the CSV text as-is.
     let csv = st
@@ -1853,6 +2266,8 @@ async fn destructive_tools_need_confirm_and_send_nothing() {
         "siloforge_mcp_policy_update",
         "siloforge_delete_notification_channel",
         "siloforge_import_clusters",
+        "siloforge_admin_users_delete",
+        "siloforge_admin_workspaces_delete",
     ] {
         assert!(gated.iter().any(|g| g == n), "{n} must need confirm");
     }
@@ -1865,7 +2280,8 @@ async fn destructive_tools_need_confirm_and_send_nothing() {
             let args = json!({"site": SITE_A, "token_id": "t1", "backup_id": "b1", "rule_id": "r1",
                 "phrase_id": "p1", "schedule_id": "s1", "provider_id": "p1", "model_row_id": "m1",
                 "chain_id": "c1", "rung_id": "r1", "channel_id": "ch1", "http_enabled": true,
-                "clusters": [], "rungs": [], "confirm": confirm});
+                "clusters": [], "rungs": [], "user_id": "u1", "workspace_id": "ws-1",
+                "confirm": confirm});
             let (text, is_err, _) = c.call(name, args).await;
             assert!(is_err && text.contains("confirm: true"), "{name}: {text}");
         }
@@ -2122,6 +2538,10 @@ async fn api_request_is_validated_and_default_disabled() {
         "/api/v1/auth/login",
         "/api/v1/sync",
         "/api/v2/backups/b1/download",
+        "/api/v2/auth/2fa/setup",
+        "/api/v2/admin/platform",
+        "/api/v2/admin/email",
+        "/api/v2/admin/email/outbox/o1",
     ] {
         let (text, is_err, _) = c
             .call(
@@ -2191,8 +2611,18 @@ async fn capabilities_and_doctor() {
         .map(|g| g["category"].as_str().unwrap())
         .collect();
     for want in [
-        "sites", "runs", "edges", "inject", "reports", "ai", "settings", "tokens", "mcp", "logs",
+        "sites",
+        "runs",
+        "edges",
+        "inject",
+        "reports",
+        "ai",
+        "settings",
+        "tokens",
+        "mcp",
+        "logs",
         "docs",
+        "link_runs",
     ] {
         assert!(cats.contains(&want), "missing category {want}: {cats:?}");
     }
@@ -2235,8 +2665,199 @@ fn catalogue_metadata_for_the_server() {
         "siloforge_mcp_policy_update",
         "siloforge_logs_query",
         "siloforge_create_ai_model",
+        "siloforge_workspace_invite",
     ] {
         assert!(admin(n), "{n} must be admin");
     }
+    // v2.4: every admin-console tool is admin scope, every workspace read tool is read scope.
+    for t in &all {
+        if t.category == "admin" {
+            assert_eq!(t.min_scope, "admin", "{}", t.name);
+            assert!(t.name.starts_with("siloforge_admin_"), "{}", t.name);
+        }
+    }
+    assert_eq!(all.iter().filter(|t| t.category == "admin").count(), 17);
+    assert_eq!(all.iter().filter(|t| t.category == "workspaces").count(), 7);
+    for n in [
+        "siloforge_workspaces_list",
+        "siloforge_workspace_get",
+        "siloforge_workspace_usage",
+        "siloforge_workspace_members",
+        "siloforge_plans_list",
+        "siloforge_billing_get",
+    ] {
+        let t = all.iter().find(|t| t.name == n).unwrap();
+        assert!(t.read_only && t.min_scope == "read", "{n}");
+    }
+    // No account tool takes a password.
+    for t in all
+        .iter()
+        .filter(|t| matches!(t.category, "admin" | "workspaces"))
+    {
+        assert!(t.schema["properties"]["password"].is_null(), "{}", t.name);
+    }
     assert!(!admin("siloforge_list_sites") && !admin("siloforge_docs_get"));
+}
+
+// ---------------------------------------------------------------- v2.4 workspaces / admin
+
+#[tokio::test]
+async fn workspace_header_is_sent_on_every_call_when_configured() {
+    let (st, url) = start_stub().await;
+    let mut cf = cfg(&url);
+    cf.workspace = Some("ws-42".into());
+    let mut c = Client::start(cf).await;
+    let (text, is_err, _) = c
+        .call("siloforge_dashboard", json!({"site": "a.com"}))
+        .await;
+    assert!(!is_err, "{text}");
+    // workspace_id falls back to SILOFORGE_WORKSPACE.
+    let (text, is_err, _) = c.call("siloforge_workspace_usage", json!({})).await;
+    assert!(!is_err, "{text}");
+    assert_eq!(st.last().path, "/api/v2/workspaces/ws-42/usage");
+    let (text, is_err, _) = c
+        .call("siloforge_workspace_get", json!({"workspace_id": "other"}))
+        .await;
+    assert!(!is_err, "{text}");
+    assert_eq!(st.last().path, "/api/v2/workspaces/other");
+    let reqs = st.reqs.lock().clone();
+    assert!(reqs.len() >= 4, "{reqs:?}");
+    for r in &reqs {
+        assert_eq!(r.workspace, "ws-42", "{} {}", r.method, r.path);
+    }
+    // From the environment too.
+    let envd = McpConfig::from_lookup(|k| (k == "SILOFORGE_WORKSPACE").then(|| "default".into()));
+    assert_eq!(envd.workspace.as_deref(), Some("default"));
+}
+
+#[tokio::test]
+async fn workspace_id_is_required_without_a_configured_workspace() {
+    let (st, url) = start_stub().await;
+    let mut c = Client::start(cfg(&url)).await;
+    for name in [
+        "siloforge_workspace_get",
+        "siloforge_workspace_usage",
+        "siloforge_workspace_members",
+        "siloforge_admin_workspaces_get",
+    ] {
+        let (text, is_err, _) = c.call(name, json!({})).await;
+        assert!(is_err && text.contains("workspace_id"), "{name}: {text}");
+    }
+    let (text, is_err, _) = c
+        .call(
+            "siloforge_workspace_invite",
+            json!({"workspace_id": "ws-1"}),
+        )
+        .await;
+    assert!(is_err && text.contains("email"), "{text}");
+    let (text, is_err, _) = c
+        .call("siloforge_admin_users_update", json!({"user_id": "u1"}))
+        .await;
+    assert!(is_err && text.contains("nothing to change"), "{text}");
+    let (text, is_err, _) = c
+        .call(
+            "siloforge_admin_workspaces_set_plan",
+            json!({"workspace_id": "ws-1"}),
+        )
+        .await;
+    assert!(is_err && text.contains("plan_id"), "{text}");
+    assert!(st.api_reqs().is_empty(), "{:?}", st.api_reqs());
+}
+
+#[tokio::test]
+async fn account_tools_never_return_links_tokens_or_2fa_material() {
+    let (st, url) = start_stub().await;
+    let mut c = Client::start(cfg(&url)).await;
+    let secrets = [
+        "inv-secret-token",
+        "rst-secret",
+        "aaaaa-bbbbb",
+        "otpauth",
+        "JBSWY3DP",
+        "chl-secret",
+        "jwt-secret",
+        "pw-secret",
+        "\"link\"",
+    ];
+    let calls = [
+        (
+            "siloforge_workspace_invite",
+            json!({"workspace_id": "ws-1", "email": "x@y.z"}),
+        ),
+        ("siloforge_admin_users_create", json!({"email": "n@y.z"})),
+        ("siloforge_admin_users_get", json!({"user_id": "u1"})),
+    ];
+    for (name, args) in calls {
+        let (text, is_err, res) = c.call(name, args).await;
+        assert!(!is_err, "{name}: {text}");
+        let all = format!("{text}{res}");
+        for sec in secrets {
+            assert!(!all.contains(sec), "{name} leaked {sec}: {all}");
+        }
+        assert!(
+            all.contains("delivery") || all.contains("two_factor_enabled"),
+            "{all}"
+        );
+    }
+    // The escape hatch applies the same redaction under the account prefixes.
+    st.allow_all();
+    let mut c = Client::start(cfg(&url)).await;
+    let (text, is_err, _) = c
+        .call(
+            "siloforge_api_request",
+            json!({"method": "GET", "path": "/api/v2/admin/users/u1"}),
+        )
+        .await;
+    assert!(!is_err, "{text}");
+    for sec in secrets {
+        assert!(!text.contains(sec), "escape hatch leaked {sec}: {text}");
+    }
+    for path in [
+        "/api/v2/admin/platform",
+        "/api/v2/admin/email",
+        "/api/v2/auth/sessions",
+    ] {
+        let (text, is_err, _) = c
+            .call(
+                "siloforge_api_request",
+                json!({"method": "GET", "path": path}),
+            )
+            .await;
+        assert!(is_err && text.contains("not available"), "{path}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn capabilities_describe_workspace_and_admin_workflows() {
+    let (_st, url) = start_stub().await;
+    let mut c = Client::start(cfg(&url)).await;
+    let (text, is_err, res) = c.call("siloforge_capabilities", json!({})).await;
+    assert!(!is_err, "{text}");
+    let s = &res["structuredContent"];
+    let cats: Vec<&str> = s["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["category"].as_str().unwrap())
+        .collect();
+    assert!(
+        cats.contains(&"workspaces") && cats.contains(&"admin"),
+        "{cats:?}"
+    );
+    let wf = s["workflow"].to_string();
+    assert!(wf.contains("siloforge_workspace_usage") && wf.contains("siloforge_admin_overview"));
+    let admin = s["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["category"] == "admin")
+        .unwrap();
+    let del = admin["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "siloforge_admin_workspaces_delete")
+        .unwrap();
+    assert_eq!(del["needs_confirm"], true);
+    assert_eq!(del["min_scope"], "admin");
 }

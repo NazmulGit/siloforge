@@ -204,3 +204,85 @@ fall back to the CPU session automatically.
 | Restore refuses: newer schema | backup from a newer version | install that version first |
 | High RAM after a plan | site vectors cached | expected (bounded by `vector_cache_mb`); lower it if needed |
 | `database is locked` in logs | an external tool holds a write lock on `siloforge.db` | never write to the DB with other tools; read-only queries are fine (WAL) |
+
+## 10. SaaS deployment (2.4)
+
+A single-user install needs none of this: keep the loopback binds and closed registration. Everything below is for
+offering SiloForge to other people. User-facing summary: guide page `saas-deployment`.
+
+### 10.1 TLS in front, always
+
+**Never expose SiloForge over plain HTTP.** Passwords, session JWTs and `sfk_` tokens would cross the network in
+clear text. Keep SiloForge on `127.0.0.1` and let a TLS reverse proxy on the same machine reach it. Only bind
+`0.0.0.0` (`server.binds` in `siloforge.toml`, or `SILOFORGE_BINDS=0.0.0.0:8600`) when the proxy runs on another
+host, the connection between them is private, and a firewall rule allows only the proxy to reach port 8600.
+
+**Caddy** (automatic Let's Encrypt certificates), `Caddyfile`:
+```caddy
+links.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8600
+}
+```
+Caddy sets `X-Forwarded-For` / `X-Forwarded-Proto` itself. Test with `caddy run --config Caddyfile`, then run it as
+a service, with its data dir on `D:\`.
+
+**Cloudflare Tunnel** (no inbound ports at all), `config.yml` for `cloudflared`:
+```yaml
+tunnel: <tunnel-id>
+credentials-file: D:\Programs\cloudflared\<tunnel-id>.json
+ingress:
+  - hostname: links.example.com
+    service: http://127.0.0.1:8600
+  - service: http_status:404
+```
+`cloudflared tunnel route dns <tunnel-id> links.example.com`, then run `cloudflared tunnel run <tunnel-id>` as a
+service. Turn on "Always Use HTTPS" for the zone. Optionally put Cloudflare Access in front of `/api/v2/admin/*`.
+
+Notes:
+- `/mcp` over HTTP accepts only a loopback `Host` header; remote agents should use the stdio transport with
+  `SILOFORGE_API_URL=https://links.example.com` and a token (plus `SILOFORGE_WORKSPACE` to pick a workspace).
+- CORS and auth are unchanged (Bearer tokens, no cookies); CSP and security headers are already sent.
+
+### 10.2 Settings → Platform
+
+`GET/PUT /api/v2/admin/platform` (stored in the DB, kv `platform_settings`; applies live and travels with backups):
+- `deployment.public_url` = `https://links.example.com`. Used in every emailed link (verify, reset, invite,
+  set-password). Without it links point at the loopback address and are useless to remote users.
+- `deployment.trust_proxy` = `true` **only** when a proxy is in front. SiloForge then takes the client IP from
+  `X-Forwarded-For` (rate limits, lockouts, sessions, audit) and the scheme from `X-Forwarded-Proto`. With it on and
+  no proxy, any client can fake its IP and dodge the rate limits.
+
+### 10.3 Email (SMTP)
+
+Admin → Email (`smtp` section): host, port, TLS mode (`starttls` on 587, `tls` on 465, `none` only for a local relay),
+username, password (write-only; stored encrypted with the secret key; `"***"` keeps it, `""` clears it), from
+address and name (for example `SiloForge <no-reply@example.com>`). Then **Send test email**
+(`POST /api/v2/admin/email/test {"to":"admin@example.com"}` -> `{ok, delivery, error?}`).
+
+Without SMTP nothing breaks: every mail is written to the **outbox** (`mail_outbox`) with its link. Platform admins
+copy the link from Admin → Email (`GET /api/v2/admin/email`), deliver it by hand and delete the entry
+(`DELETE /api/v2/admin/email/outbox/{id}`). Invite creation also returns the `link` directly when delivery is manual.
+
+### 10.4 Registration modes
+
+`registration.mode`: `closed` (default; only platform admins create users, the first-run bootstrap from loopback still
+works) | `invite_only` (sign-up needs a valid invite token, the user joins that workspace) | `open` (sign-up creates a
+user and a workspace on `registration.default_plan_id`, default `free`). Further keys:
+`require_email_verification` (unverified users can log in but not create sites), `allowed_domains` /
+`denied_domains`, `rate_limit_per_hour` (per IP, default 5). Legacy `auth.allow_registration = true` counts as
+`open` until the platform settings are saved once.
+
+### 10.5 Security checklist
+
+- [ ] TLS proxy (Caddy / Cloudflare Tunnel) in front; port 8600 not reachable from the internet; no plain HTTP.
+- [ ] `public_url` set; `trust_proxy` on only behind the proxy.
+- [ ] Registration **closed** by default; open it as `invite_only`, or `open` with `require_email_verification`.
+- [ ] Email verification on for open sign-up; SMTP tested, or the outbox watched.
+- [ ] **2FA for every platform admin** (Admin → Users shows who has it; recovery codes stored offline).
+- [ ] Backups scheduled and verified (§4), copied off the machine; restore tested.
+- [ ] `secrets.env` (`JWT_SECRET`, `SILOFORGE_ENCRYPTION_KEY`, backup passphrase) readable only by the service
+      account, never in a repo or shared folder, and backed up separately from the data.
+- [ ] Admin console audit (`/api/v2/admin/audit`) reviewed regularly: admin actions, view-as, failed logins.
+- [ ] Rate limits left on: login lockout, per-IP sign-up limit, forgot-password limit.
+- [ ] Hermes / agent tokens use the least scope (`read,write`); `admin` only for operator agents; unused tokens revoked.

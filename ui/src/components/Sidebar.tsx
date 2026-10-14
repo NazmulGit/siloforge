@@ -1,6 +1,8 @@
 import { NavLink, useLocation, useSearchParams } from 'react-router-dom';
 import { useSites } from '../sites';
 import { useUser } from '../user';
+import { useBranding, Wordmark } from '../branding';
+import { isPlatformAdmin } from '../api';
 import { Icon, type IconName } from './Icon';
 
 interface SiteNavItem {
@@ -13,6 +15,7 @@ interface SiteNavItem {
 export const SITE_NAV: SiteNavItem[] = [
   { label: 'Dashboard', seg: 'dashboard', icon: 'dashboard', hint: 'Overview of this site: link health score, orphan / dead-end counts, opportunities and recent jobs.' },
   { label: 'Tools', seg: 'tools', icon: 'tools', hint: 'Review, approve and inject candidate internal links — inbound, outbound, silo, bulk, anchors and keyword rules.' },
+  { label: 'Link Run', seg: 'link-run', icon: 'linkrun', hint: 'Guided bulk linking: crawl, pick strategies and a linking mode, review, deploy, then open each link on the live page.' },
   { label: 'Reports', seg: 'reports', icon: 'reports', hint: 'Per-post link metrics (PageRank, click depth, link flow) and an interactive graph of the site.' },
   { label: 'Link Health', seg: 'link-health', icon: 'health', hint: 'Broken links, redirect chains, internal links that carry rel=nofollow, and breadcrumb coverage.' },
   { label: 'History', seg: 'history', icon: 'history', hint: 'Audit trail of every internal link that was actually applied or reverted, with CSV export.' },
@@ -31,6 +34,13 @@ function LogoGlyph() {
 
 const linkCls = ({ isActive }: { isActive: boolean }) => `nav-link${isActive ? ' active' : ''}`;
 
+/** Admin console shortcuts (platform admins only). */
+const ADMIN_LINKS: Array<{ label: string; tab: string; icon: IconName; hint: string }> = [
+  { label: 'Admin console', tab: '', icon: 'shield', hint: 'Platform overview, registration, email, branding, plans, audit and deployment. Platform admins only.' },
+  { label: 'Users', tab: 'users', icon: 'user', hint: 'Every account on this server: create, edit, reset passwords, disable or delete.' },
+  { label: 'Workspaces', tab: 'workspaces', icon: 'building', hint: 'Every workspace: plans, usage, suspend or delete, and a read-only support view.' },
+];
+
 /** Settings shortcuts shown under the Settings group (query-param sections). */
 const SETTINGS_LINKS: Array<{ label: string; section: string; icon: IconName; hint: string }> = [
   { label: 'Settings', section: '', icon: 'settings', hint: 'Every setting: linking rules, resources, WordPress, AI models, API & MCP, backups and more.' },
@@ -44,6 +54,10 @@ export function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () =>
   const location = useLocation();
   const [params] = useSearchParams();
   const isAdmin = user?.role === 'admin';
+  const platform = isPlatformAdmin(user);
+  const { branding } = useBranding();
+  const onAdmin = location.pathname === '/admin';
+  const adminTab = onAdmin ? (params.get('tab') ?? '') : null;
   const current = sites.find((s) => s.id === currentSiteId);
   const onSettings = location.pathname === '/settings';
   const section = params.get('section') ?? '';
@@ -53,7 +67,7 @@ export function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () =>
       <div className="logo">
         <LogoGlyph />
         <span>
-          Silo<b>Forge</b>
+          <Wordmark name={branding.app_name.trim() || 'SiloForge'} />
         </span>
       </div>
       <nav onClick={onNavigate}>
@@ -100,6 +114,10 @@ export function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () =>
             <Icon name="sites" />
             Sites
           </NavLink>
+          <NavLink to="/workspace" className={linkCls} data-hint="This workspace: members and invitations, plan and usage, API tokens and MCP tools.">
+            <Icon name="team" />
+            Workspace
+          </NavLink>
           <NavLink to="/jobs" end className={linkCls} data-hint="Every job across all your sites: progress, resource use, logs and cancel.">
             <Icon name="alljobs" />
             All jobs
@@ -123,6 +141,28 @@ export function Sidebar({ open, onNavigate }: { open: boolean; onNavigate: () =>
             Docs
           </NavLink>
         </div>
+        {platform && (
+          <div className="nav-group">
+            <div className="nav-group-head">
+              <span>Admin</span>
+            </div>
+            {ADMIN_LINKS.map((l) => {
+              const known = ADMIN_LINKS.some((x) => x.tab && x.tab === adminTab);
+              const active = adminTab !== null && (l.tab ? adminTab === l.tab : !known);
+              return (
+                <NavLink
+                  key={l.label}
+                  to={l.tab ? `/admin?tab=${l.tab}` : '/admin'}
+                  className={() => `nav-link${active ? ' active' : ''}`}
+                  data-hint={l.hint}
+                >
+                  <Icon name={l.icon} />
+                  {l.label}
+                </NavLink>
+              );
+            })}
+          </div>
+        )}
         <div className="nav-group">
           <div className="nav-group-head">
             <span>Settings</span>

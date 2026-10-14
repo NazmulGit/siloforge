@@ -32,6 +32,11 @@ struct EdgeRow {
     snapshot_id: Option<String>,
     wp_id: Option<i64>,
     post_type: String,
+    /// Fix-broken edge: undo points the link back at this href instead of unwrapping it.
+    replace_href: Option<String>,
+    /// AI insertion (`score_breakdown.llm_edit`): undo removes the whole inserted sentence or
+    /// restores the rephrased paragraph, not just the `<a>` (E2E 2.2: the AI sentences stayed).
+    llm_edit: Option<Value>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -51,7 +56,21 @@ pub async fn run(ctx: &Arc<JobContext>, job: &Job) -> JobResult<Value> {
     let ids = job.payload_ids("edge_ids", "edgeIds", super::inject::MAX_EDGES);
     let snapshot_mode = job.payload_str("mode", "mode").as_deref() == Some("snapshot");
     let force = job.payload_bool("force", "force");
-    let edges = load_applied(ctx, &site.id, &ids).await?;
+    undo_edges(ctx, job, &site, &ids, snapshot_mode, force).await
+}
+
+/// Undo these applied edges (precise removal, or snapshot restore). The caller holds the site
+/// lock and has reconciled the inject journal. Returns the undo stats JSON.
+pub async fn undo_edges(
+    ctx: &JobContext,
+    job: &Job,
+    site: &SiteInfo,
+    ids: &[String],
+    snapshot_mode: bool,
+    force: bool,
+) -> JobResult<Value> {
+    let site = site.clone();
+    let edges = load_applied(ctx, &site.id, ids).await?;
     let mut stats = UndoStats::default();
     if edges.is_empty() {
         return done(stats);
@@ -112,7 +131,9 @@ async fn load_applied(ctx: &JobContext, site_id: &str, ids: &[String]) -> JobRes
             .db
             .read(move |c| {
                 let sql = format!(
-                    "SELECT e.id, e.source_post_id, e.anchor, t.url, e.link_start, e.snapshot_id, s.wp_post_id, s.post_type
+                    "SELECT e.id, e.source_post_id, e.anchor, t.url, e.link_start, e.snapshot_id, s.wp_post_id, s.post_type,
+                       json_extract(CASE WHEN json_valid(e.score_breakdown) THEN e.score_breakdown ELSE '{{}}' END, '$.replace_href'),
+                       json_extract(CASE WHEN json_valid(e.score_breakdown) THEN e.score_breakdown ELSE '{{}}' END, '$.llm_edit')
                      FROM link_edges e JOIN posts s ON s.id=e.source_post_id JOIN posts t ON t.id=e.target_post_id
                      WHERE e.site_id=?1 AND e.status='applied' AND e.origin <> 'existing' AND e.id IN ({})
                      ORDER BY e.source_post_id, e.id",
@@ -134,6 +155,12 @@ async fn load_applied(ctx: &JobContext, site_id: &str, ids: &[String]) -> JobRes
                             snapshot_id: r.get(5)?,
                             wp_id: r.get(6)?,
                             post_type: r.get(7)?,
+                            replace_href: r.get::<_, Option<String>>(8).ok().flatten(),
+                            llm_edit: r
+                                .get::<_, Option<String>>(9)
+                                .ok()
+                                .flatten()
+                                .and_then(|s| serde_json::from_str(&s).ok()),
                         })
                     })
                     .map_err(err)?
@@ -159,7 +186,15 @@ fn remove_all(
     let (mut ok, mut gone, mut failed) = (Vec::new(), Vec::new(), Vec::new());
     for e in order {
         let near = e.link_start.and_then(|s| usize::try_from(s).ok());
-        match remove_link(&content, &e.target_url, &e.anchor, near) {
+        let undone = match (e.replace_href.as_deref(), undo_llm_edit(&content, e, near)) {
+            (_, Some(new)) => Ok(new),
+            (Some(old), None) => {
+                sf_engine::insert::replace_link(&content, &e.target_url, old, Some(&e.anchor), near)
+                    .map(|o| o.content)
+            }
+            (None, None) => remove_link(&content, &e.target_url, &e.anchor, near),
+        };
+        match undone {
             Ok(new) => {
                 content = new;
                 ok.push(e.id.clone());
@@ -169,6 +204,41 @@ fn remove_all(
         }
     }
     (content, ok, gone, failed)
+}
+
+/// Take back an AI edit exactly: remove the inserted context sentence, or put the original
+/// paragraph back in place of the rephrased one. `None` when the edit is not recorded or the
+/// text was changed since (then only the link is removed, as before).
+fn undo_llm_edit(content: &str, e: &EdgeRow, near: Option<usize>) -> Option<String> {
+    let edit = e.llm_edit.as_ref()?;
+    let (find, put) = match edit["kind"].as_str()? {
+        "context" => (edit["inserted"].as_str()?, ""),
+        "rephrase" => (edit["after"].as_str()?, edit["before"].as_str()?),
+        _ => return None,
+    };
+    // the edited text must still hold this edge's link
+    let href = format!(
+        "href=\"{}\"",
+        sf_engine::html::escape_attr(e.target_url.trim())
+    );
+    if find.is_empty() || !find.contains(&href) {
+        return None;
+    }
+    // the occurrence that contains the recorded link start (else the first one)
+    let starts: Vec<usize> = content.match_indices(find).map(|(i, _)| i).collect();
+    let at = near
+        .and_then(|n| {
+            starts
+                .iter()
+                .copied()
+                .find(|&s| s <= n && n < s + find.len())
+        })
+        .or_else(|| starts.first().copied())?;
+    let mut out = String::with_capacity(content.len());
+    out.push_str(content.get(..at)?);
+    out.push_str(put);
+    out.push_str(content.get(at + find.len()..)?);
+    Some(out)
 }
 
 #[allow(clippy::too_many_arguments)]

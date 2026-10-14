@@ -32,6 +32,18 @@ can skip them.
 **Why does a suggestion say "anchor not found" at inject time?**
 The post was edited after the plan and the phrase is gone. Re-crawl and re-plan.
 
+**What is the quickest way to link a whole site?**
+A [Link Run](link-runs): tick strategies, pick a linking mode, review the preview, click **Deploy links**. Start with
+a small **Max total** (50-100) on the first run.
+
+**Why does "Open ↗" not jump to the link?**
+It uses a text fragment (`#:~:text=`), which Chrome, Brave and Edge support. Other browsers open the page at the top.
+If the link is missing on the page, use **Verify again** or **Apply properly** in the run's results.
+
+**Can SiloForge add links on its own every week?**
+Yes, with the [Auto-Linker](auto-linker). It runs as a dry-run by default (links wait for you to deploy) and pauses
+itself if too many links fail.
+
 **Can I use it with page builders (Elementor, Divi)?**
 Crawling and analysis work. Writing works on the stored post content; always check a few pages first, because some
 builders store text elsewhere. The live-page check catches links that do not show up.

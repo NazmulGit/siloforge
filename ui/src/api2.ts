@@ -4,7 +4,7 @@
 // the feature is switched off); callers check isUnavailable() and show a notice
 // instead of an error.
 
-import { ApiError, getToken, handleUnauthorized, requestAt, type RequestInitLite } from './api';
+import { ApiError, authHeaders, handleUnauthorized, requestAt, type RequestInitLite } from './api';
 import type {
   ApiTokenCreated,
   ApiTokenRow,
@@ -39,6 +39,17 @@ import type {
   NotificationRow,
   SystemInfo,
   TokenScope,
+  LinkRun,
+  LinkRunItem,
+  LinkRunItemsQuery,
+  LinkRunOptions,
+  LinkRunPostGroup,
+  LinkRunPostRef,
+  Opportunities,
+  AiTierView,
+  AiUsage,
+  AiUsageGroup,
+  LinkRunEstimate,
 } from './types2';
 
 const V2 = '/api/v2';
@@ -198,11 +209,10 @@ export function deleteBackup(id: string): Promise<unknown> {
 
 /** Download a backup archive with the auth header and hand it to the browser as a file. */
 export async function downloadBackup(id: string, fallbackName: string): Promise<void> {
-  const token = getToken();
   let res: Response;
   try {
     res = await fetch(`${V2}/backups/${encodeURIComponent(id)}/download`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: authHeaders(),
     });
   } catch {
     throw new ApiError(0, 'Network error — is the API reachable?');
@@ -229,11 +239,12 @@ export function saveBlob(blob: Blob, name: string): void {
 
 // ---- API tokens ----
 
-export async function fetchTokens(): Promise<ApiTokenRow[]> {
-  return listOf<ApiTokenRow>(await v2<unknown>('/tokens'), 'tokens');
+/** API tokens; v2.4 `workspace_id` narrows to one workspace's tokens. */
+export async function fetchTokens(workspaceId?: string): Promise<ApiTokenRow[]> {
+  return listOf<ApiTokenRow>(await v2<unknown>(`/tokens${qs({ workspace_id: workspaceId })}`), 'tokens');
 }
 
-export function createToken(body: { name: string; scopes: TokenScope[]; expires_in_days?: number }): Promise<ApiTokenCreated> {
+export function createToken(body: { name: string; scopes: TokenScope[]; expires_in_days?: number; workspace_id?: string }): Promise<ApiTokenCreated> {
   return v2<ApiTokenCreated>('/tokens', { method: 'POST', body });
 }
 
@@ -320,11 +331,10 @@ export async function fetchDownloads(): Promise<DownloadsList> {
 
 /** Download a release file with the auth header (fetch + blob). */
 export async function downloadRelease(file: string): Promise<void> {
-  const token = getToken();
   let res: Response;
   try {
     res = await fetch(`${V2}/downloads/${encodeURIComponent(file)}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: authHeaders(),
     });
   } catch {
     throw new ApiError(0, 'Network error — is the API reachable?');
@@ -337,8 +347,9 @@ export async function downloadRelease(file: string): Promise<void> {
 
 // ---- v2.1: unified logs ----
 
-export async function fetchLogs(query: LogsQuery): Promise<LogsPage> {
-  const res = await v2<unknown>(`/logs${qs({ ...query })}`);
+/** `platform` = the v2.4 admin audit route (`/admin/audit`, same filters, every workspace). */
+export async function fetchLogs(query: LogsQuery, platform = false): Promise<LogsPage> {
+  const res = await v2<unknown>(`${platform ? '/admin/audit' : '/logs'}${qs({ ...query })}`);
   const logs = listOf<LogRow>(res, 'logs');
   const nb = res && typeof res === 'object' && !Array.isArray(res) ? (res as { next_before_id?: unknown }).next_before_id : null;
   return { logs, next_before_id: typeof nb === 'number' ? nb : null };
@@ -364,19 +375,23 @@ function countMap(v: unknown): Record<string, number> {
 export async function fetchLogStats(since?: string): Promise<LogStats> {
   const res = (await v2<unknown>(`/logs/stats${qs({ since })}`)) as Record<string, unknown> | null;
   const o = res ?? {};
+  const ai = o.ai && typeof o.ai === 'object' ? (o.ai as Record<string, unknown>) : null;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
   return {
     total: typeof o.total === 'number' ? o.total : undefined,
     by_source: countMap(o.by_source ?? o.sources),
     by_status: countMap(o.by_status ?? o.statuses),
+    ai: ai
+      ? { calls: n(ai.calls), tokens_in: n(ai.tokens_in), tokens_out: n(ai.tokens_out), cost_usd: n(ai.cost_usd), cache_hits: n(ai.cache_hits) }
+      : null,
   };
 }
 
 export async function downloadLogsCsv(query: LogsQuery): Promise<void> {
-  const token = getToken();
   let res: Response;
   try {
     res = await fetch(`${V2}/logs/export${qs({ ...query, limit: undefined, before_id: undefined, after_id: undefined })}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: authHeaders(),
     });
   } catch {
     throw new ApiError(0, 'Network error — is the API reachable?');
@@ -385,4 +400,222 @@ export async function downloadLogsCsv(query: LogsQuery): Promise<void> {
   if (res.status === 404 || res.status === 503) throw new FeatureUnavailableError(res.status);
   if (!res.ok) throw new ApiError(res.status, `Export failed (${res.status})`);
   saveBlob(await res.blob(), `siloforge-logs-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+
+// ---- v2.2: Link Runs (docs/specs/v2.2-link-runs.md §3) ----
+
+function numField(o: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const k of keys) if (typeof o[k] === 'number') return o[k] as number;
+  return undefined;
+}
+
+/** Known opportunity counters in display order (other numeric keys are appended). */
+const OPP_KEYS = ['orphans', 'under_linked', 'semantic_pairs', 'keyword_rule_hits', 'broken_internal', 'silo_gaps'];
+const OPP_META = new Set([
+  'posts_total',
+  'posts',
+  'total_posts',
+  'last_crawl_at',
+  'last_crawl_age_hours',
+  'last_crawl_age_h',
+  'last_crawl_age_s',
+  'last_crawl_age_secs',
+  'limit',
+]);
+
+export async function fetchOpportunities(siteId: string, limit?: number): Promise<Opportunities> {
+  const res = await v2<unknown>(`/sites/${encodeURIComponent(siteId)}/opportunities${qs({ limit })}`);
+  const o = res && typeof res === 'object' && !Array.isArray(res) ? (res as Record<string, unknown>) : {};
+  const counts: Record<string, number> = { ...countMap(o.counts ?? o.by_type ?? o.opportunities) };
+  for (const [k, v] of Object.entries(o)) {
+    if (typeof v === 'number' && !OPP_META.has(k) && !(k in counts)) counts[k] = v;
+  }
+  const ordered = [
+    ...OPP_KEYS.filter((k) => k in counts),
+    ...Object.keys(counts)
+      .filter((k) => !OPP_KEYS.includes(k))
+      .sort(),
+  ];
+  const ageS = numField(o, 'last_crawl_age_s', 'last_crawl_age_secs');
+  const ageH = numField(o, 'last_crawl_age_hours', 'last_crawl_age_h');
+  const last = o.last_crawl_at;
+  return {
+    posts_total: numField(o, 'posts_total', 'posts', 'total_posts'),
+    last_crawl_at: typeof last === 'string' ? last : null,
+    last_crawl_age_hours: ageH ?? (ageS !== undefined ? ageS / 3600 : null),
+    counts: ordered.map((key) => ({ key, count: counts[key] ?? 0 })),
+    by_strategy: strategyCounts(o.by_strategy),
+  };
+}
+
+/** The headline number per strategy key of `by_strategy`; the 2.2 server sends objects
+ * (`semantic: {pairs, threshold, …}`), older mocks plain numbers. */
+const STRATEGY_COUNT_FIELD: Record<string, string> = {
+  semantic: 'pairs',
+  keyword_rules: 'hits',
+  silo: 'gaps',
+  orphan_rescue: 'contextual_orphans',
+  money_pages: 'money_pages',
+  fix_broken: 'broken_links',
+};
+function strategyCounts(v: unknown): Record<string, number> {
+  const out = countMap(v);
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    for (const [k, field] of Object.entries(STRATEGY_COUNT_FIELD)) {
+      const n = ((v as Record<string, unknown>)[k] as Record<string, unknown> | undefined)?.[field];
+      if (typeof n === 'number' && !(k in out)) out[k] = n;
+    }
+  }
+  return out;
+}
+
+function runOf(res: unknown): LinkRun {
+  if (res && typeof res === 'object' && 'run' in res && (res as { run?: unknown }).run) {
+    return (res as { run: LinkRun }).run;
+  }
+  return res as LinkRun;
+}
+
+export async function createLinkRun(siteId: string, options: LinkRunOptions, name?: string): Promise<LinkRun> {
+  const res = await v2<unknown>(`/sites/${encodeURIComponent(siteId)}/link-runs`, {
+    method: 'POST',
+    body: name ? { name, options } : { options },
+  });
+  return runOf(res);
+}
+
+export async function fetchLinkRuns(siteId: string): Promise<LinkRun[]> {
+  return listOf<LinkRun>(await v2<unknown>(`/sites/${encodeURIComponent(siteId)}/link-runs`), 'runs', 'link_runs');
+}
+
+export async function fetchLinkRun(runId: string): Promise<LinkRun> {
+  return runOf(await v2<unknown>(`/link-runs/${encodeURIComponent(runId)}`, {}, { item: true }));
+}
+
+function postRef(v: unknown): LinkRunPostRef {
+  const r = (v ?? {}) as Record<string, unknown>;
+  return { id: String(r.id ?? ''), title: String(r.title ?? ''), url: String(r.url ?? '') };
+}
+
+function normItem(raw: unknown): LinkRunItem {
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const alts = o.alternates ?? o.anchor_alternates;
+  return {
+    ...(o as unknown as LinkRunItem),
+    edge_id: String(o.edge_id ?? o.id ?? ''),
+    source: postRef(o.source),
+    target: postRef(o.target),
+    anchor: String(o.anchor ?? ''),
+    status: String(o.status ?? 'suggested'),
+    alternates: Array.isArray(alts)
+      ? alts.map((a) => (typeof a === 'string' ? a : String((a as { anchor?: unknown } | null)?.anchor ?? ''))).filter(Boolean)
+      : [],
+  };
+}
+
+/** Items grouped by source post (`group=post`). A flat `{items}` answer is grouped client-side. */
+export async function fetchLinkRunGroups(
+  runId: string,
+  query: LinkRunItemsQuery = {},
+): Promise<{ posts: LinkRunPostGroup[]; total: number; totalPosts: number }> {
+  const res = await v2<unknown>(
+    `/link-runs/${encodeURIComponent(runId)}/items${qs({ ...query, group: 'post' })}`,
+    {},
+    { item: true },
+  );
+  const o = res && typeof res === 'object' && !Array.isArray(res) ? (res as Record<string, unknown>) : {};
+  let posts: LinkRunPostGroup[];
+  if (Array.isArray(o.posts)) {
+    posts = (o.posts as Array<{ post?: unknown; links?: unknown[] } | null>).map((g) => {
+      const links = (Array.isArray(g?.links) ? g.links : []).map(normItem);
+      const p = postRef(g?.post);
+      return {
+        post: {
+          id: p.id || (links[0]?.source.id ?? ''),
+          title: p.title || (links[0]?.source.title ?? ''),
+          url: p.url || (links[0]?.source.url ?? ''),
+        },
+        links,
+      };
+    });
+  } else {
+    const map = new Map<string, LinkRunPostGroup>();
+    for (const it of listOf<unknown>(res, 'items').map(normItem)) {
+      const g = map.get(it.source.id) ?? { post: it.source, links: [] };
+      g.links.push(it);
+      map.set(it.source.id, g);
+    }
+    posts = [...map.values()];
+  }
+  // group=post: `total` counts posts (the paging unit), `total_items` the links (2.2 §8)
+  const items = posts.reduce((n, g) => n + g.links.length, 0);
+  const total = typeof o.total_items === 'number' ? o.total_items : typeof o.total === 'number' && !Array.isArray(o.posts) ? o.total : items;
+  const totalPosts = Array.isArray(o.posts) && typeof o.total === 'number' ? o.total : posts.length;
+  return { posts, total, totalPosts };
+}
+
+export function selectLinkRunItems(
+  runId: string,
+  body: { edge_ids?: string[]; all?: boolean; deselect?: boolean },
+): Promise<unknown> {
+  return v2<unknown>(`/link-runs/${encodeURIComponent(runId)}/select`, { method: 'POST', body }, { item: true });
+}
+
+export async function patchLinkRunItem(
+  runId: string,
+  edgeId: string,
+  body: { anchor?: string; insert_module?: string },
+): Promise<LinkRunItem | null> {
+  const res = await v2<unknown>(
+    `/link-runs/${encodeURIComponent(runId)}/items/${encodeURIComponent(edgeId)}`,
+    { method: 'PATCH', body },
+    { item: true },
+  );
+  if (res && typeof res === 'object') {
+    if ('edge_id' in res) return normItem(res);
+    if ('item' in res) return normItem((res as { item: unknown }).item);
+  }
+  return null;
+}
+
+export type LinkRunAction = 'deploy' | 'verify' | 'repair' | 'undo' | 'cancel';
+
+/** POST /link-runs/{id}/<action>. Returns the run when the server sends one back. */
+export async function linkRunAction(runId: string, action: LinkRunAction): Promise<LinkRun | null> {
+  const res = await v2<unknown>(`/link-runs/${encodeURIComponent(runId)}/${action}`, { method: 'POST', body: {} }, { item: true });
+  const r = runOf(res) as unknown;
+  if (r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string' && 'status' in r) return r as LinkRun;
+  return null;
+}
+
+// ---- v2.3: AI tiers, usage, Link Run estimate (docs/specs/v2.3-ai-tiers.md §6) ----
+
+export async function fetchAiTiers(siteId?: string): Promise<AiTierView[]> {
+  return listOf<AiTierView>(await v2<unknown>(`/ai/tiers${qs({ site_id: siteId })}`), 'tiers');
+}
+
+export async function fetchAiUsage(query: {
+  since?: string;
+  until?: string;
+  group?: AiUsageGroup;
+  site_id?: string;
+  run_id?: string;
+}): Promise<AiUsage> {
+  const res = (await v2<unknown>(`/ai/usage${qs({ ...query })}`)) as Partial<AiUsage> | null;
+  const r = res ?? {};
+  return {
+    group: typeof r.group === 'string' ? r.group : (query.group ?? 'day'),
+    since: r.since,
+    until: r.until,
+    rows: Array.isArray(r.rows) ? r.rows : [],
+    totals: r.totals ?? { key: 'total', calls: 0, tokens_in: 0, tokens_out: 0, cost_usd: 0, cache_hits: 0, errors: 0 },
+    budget: r.budget ?? null,
+  };
+}
+
+export function estimateLinkRun(siteId: string, options: LinkRunOptions): Promise<LinkRunEstimate> {
+  return v2<LinkRunEstimate>(`/sites/${encodeURIComponent(siteId)}/link-runs/estimate`, {
+    method: 'POST',
+    body: { options },
+  });
 }

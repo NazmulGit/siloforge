@@ -26,7 +26,16 @@ export function tokenState(t: ApiTokenRow): { label: string; cls: string } {
   return { label: 'active', cls: 'done' };
 }
 
-export function CreateTokenModal({ onClose, onCreated }: { onClose: () => void; onCreated: (t: ApiTokenCreated) => void }) {
+export function CreateTokenModal({
+  onClose,
+  onCreated,
+  workspaceId,
+}: {
+  onClose: () => void;
+  onCreated: (t: ApiTokenCreated) => void;
+  /** v2.4: the workspace the token belongs to (default = current workspace). */
+  workspaceId?: string;
+}) {
   const { user } = useUser();
   const isAdmin = user?.role === 'admin';
   const [name, setName] = useState('');
@@ -47,7 +56,7 @@ export function CreateTokenModal({ onClose, onCreated }: { onClose: () => void; 
     }
     setBusy(true);
     try {
-      const t = await createToken({ name: name.trim(), scopes, ...(days ? { expires_in_days: days } : {}) });
+      const t = await createToken({ name: name.trim(), scopes, ...(days ? { expires_in_days: days } : {}), ...(workspaceId ? { workspace_id: workspaceId } : {}) });
       onCreated(t);
     } catch (e) {
       setError(v2ErrorMessage(e, 'Could not create token'));

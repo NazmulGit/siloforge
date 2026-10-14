@@ -43,7 +43,14 @@ pub mod events {
     pub const PLAN_READY: &str = "plan.ready";
     pub const INJECT_DONE: &str = "inject.done";
     pub const TEST: &str = "test";
+    /// v2.2 link runs / Auto-Linker.
+    pub const LINK_RUN_READY: &str = "link_run.ready";
+    pub const LINK_RUN_DONE: &str = "link_run.done";
+    pub const AUTO_LINKER_PAUSED: &str = "auto_linker.paused";
+    /// v2.3: a daily AI token budget (tier or site) is used up; heuristics only until 00:00 UTC.
+    pub const AI_BUDGET_EXHAUSTED: &str = "ai.budget_exhausted";
     pub const ALL: &[&str] = &[
+        AI_BUDGET_EXHAUSTED,
         JOB_DONE,
         JOB_FAILED,
         BACKUP_DONE,
@@ -51,6 +58,9 @@ pub mod events {
         SYSTEM_ALERT,
         PLAN_READY,
         INJECT_DONE,
+        LINK_RUN_READY,
+        LINK_RUN_DONE,
+        AUTO_LINKER_PAUSED,
     ];
 }
 
@@ -81,7 +91,7 @@ impl Notification {
     pub fn new(event: &str, title: impl Into<String>, body: impl Into<String>) -> Self {
         let level = match event {
             events::JOB_FAILED | events::BACKUP_FAILED => "error",
-            events::SYSTEM_ALERT => "warn",
+            events::SYSTEM_ALERT | events::AI_BUDGET_EXHAUSTED => "warn",
             _ => "info",
         };
         Self {

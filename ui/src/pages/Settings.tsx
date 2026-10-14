@@ -1,28 +1,29 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import {
-  changePassword,
   disconnectGsc,
   fetchGscStatus,
   fetchHistory,
   fetchJobs,
   fetchUsage,
   saveGsc,
-  ApiError,
   type GscStatus,
   type UsageSummary,
 } from '../api';
 import { AuditLogPanel } from '../components/AuditLogPanel';
 import { BackupsPanel } from '../components/BackupsPanel';
 import { LinkRulesPanel } from '../components/LinkRulesPanel';
+import { AutoLinkerCard } from '../components/linkrun/AutoLinkerCard';
 import { NotificationsPanel } from '../components/NotificationsPanel';
-import { ModelsPanel } from '../components/ModelsPanel';
+import { AiModelsPanel } from '../components/settings/AiModelsPanel';
 import { PostLink } from '../components/PostLink';
 import { EmptyState, Skeleton } from '../components/Skeleton';
 import { StatusChip } from '../components/StatusChip';
 import { Toggle } from '../components/Toggle';
 import { ApiMcpPanel } from '../components/settings/ApiMcpPanel';
-import { BackupSettingsCard, LlmFallbackCard, ServerSettingsCard } from '../components/settings/ExtraCards';
+import { AccountPanel } from '../components/settings/AccountPanel';
+import { useOptionalWorkspace } from '../workspaces';
+import { BackupSettingsCard, ServerSettingsCard } from '../components/settings/ExtraCards';
 import { ResourcesPanel } from '../components/settings/ResourcesPanel';
 import { WordPressServerCards } from '../components/settings/WordPressPanel';
 import { WpCredentialsForm } from '../components/WpCredentialsForm';
@@ -50,7 +51,8 @@ type SectionId =
   | 'notifications'
   | 'backups'
   | 'activity'
-  | 'account';
+  | 'account'
+  | 'platform';
 
 interface SectionDef {
   id: SectionId;
@@ -70,12 +72,18 @@ const SECTIONS: SectionDef[] = [
     adminOnly: true,
   },
   { id: 'wordpress', label: 'WordPress', hint: 'Site credentials, defaults for new sites, crawling, Search Console and other CMSes.' },
-  { id: 'models', label: 'AI Models', hint: 'LLM providers, models, fallback chains and the last-resort fallback. Admins only.', adminOnly: true },
+  { id: 'models', label: 'AI Models', hint: 'Always use AI, chains by tier (low / main / high), task routing, budgets, cache, usage, providers and models. Admins only.', adminOnly: true },
   { id: 'api', label: 'API & MCP', hint: 'API tokens and their scopes, the MCP tool manager and how to connect Hermes Agent.' },
   { id: 'notifications', label: 'Notifications', hint: 'Where alerts go: webhook, ntfy, Telegram, Hermes, desktop toast. Admins only.', adminOnly: true },
   { id: 'backups', label: 'Backups', hint: 'Create, verify, download and schedule backups of the whole install. Admins only.', adminOnly: true },
   { id: 'activity', label: 'Activity', hint: 'Current jobs and the most recent applied links for the active site (plus the audit log for admins).' },
-  { id: 'account', label: 'Account', hint: 'Your signed-in email and role, and change your password.' },
+  { id: 'account', label: 'Account', hint: 'Your name, email, password, two-factor sign-in and the devices you are signed in on.' },
+  {
+    id: 'platform',
+    label: 'Platform',
+    hint: 'Run SiloForge for several people: registration, email, branding, plans and deployment. Platform admins only.',
+    adminOnly: true,
+  },
 ];
 
 /** Section ids from older links, mapped onto the v2.1 sections. */
@@ -222,121 +230,6 @@ function GeneralPanel() {
         </div>
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 2. Account
-// ---------------------------------------------------------------------------
-
-function AccountPanel() {
-  const { user } = useUser();
-  const toast = useToast();
-  const [current, setCurrent] = useState('');
-  const [next, setNext] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    if (next.length < 8) {
-      setError('New password must be at least 8 characters.');
-      return;
-    }
-    if (next !== confirm) {
-      setError('New password and confirmation do not match.');
-      return;
-    }
-    if (!current) {
-      setError('Enter your current password.');
-      return;
-    }
-    setBusy(true);
-    try {
-      await changePassword(current, next);
-      toast.push('Password updated', 'success');
-      setCurrent('');
-      setNext('');
-      setConfirm('');
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Could not update password';
-      setError(msg);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <div className="card">
-        <PanelHead title="Account" sub="Your identity in SiloForge." />
-        <div className="settings-list">
-          <div className="settings-row">
-            <div className="settings-row-text">
-              <div className="settings-row-label">Signed in as</div>
-              <div className="settings-row-desc mono">{user?.email ?? '—'}</div>
-            </div>
-            {user && (
-              <span
-                className={`role-chip role-${user.role}`}
-                data-hint="Your access level. Admins can manage every site; users are limited to their own."
-              >
-                {user.role}
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">Change password</div>
-        <form className="form-grid" onSubmit={(e) => void submit(e)}>
-          {error && <div className="error-box">{error}</div>}
-          <label className="field">
-            Current password
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={current}
-              onChange={(e) => setCurrent(e.target.value)}
-            />
-          </label>
-          <label className="field">
-            New password
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={next}
-              onChange={(e) => setNext(e.target.value)}
-            />
-            <span className="faint" style={{ fontSize: 12 }}>
-              At least 8 characters.
-            </span>
-          </label>
-          <label className="field">
-            Confirm new password
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-            />
-          </label>
-          <div className="form-actions">
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={busy}
-              data-hint="Update your account password. You'll need your current password to confirm the change."
-            >
-              {busy ? 'Updating…' : 'Update password'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </>
   );
 }
 
@@ -748,6 +641,15 @@ function ActivityBody({ siteId }: { siteId: string }) {
 // Page
 // ---------------------------------------------------------------------------
 
+const PLATFORM_LINKS = [
+  { tab: 'registration', title: 'Registration', desc: 'Closed, invite only or open sign-up, email verification and allowed domains.' },
+  { tab: 'email', title: 'Email', desc: 'SMTP server for account emails and the outbox of links to pass on.' },
+  { tab: 'branding', title: 'Branding', desc: 'App name, logo, colour, support address and legal links.' },
+  { tab: 'plans', title: 'Plans', desc: 'Limits per workspace: sites, posts, runs, AI tokens, members.' },
+  { tab: 'deployment', title: 'Deployment', desc: 'Public address, reverse proxy, and the SaaS deployment guide.' },
+  { tab: 'overview', title: 'Admin console', desc: 'Users, workspaces, invites and the platform audit log.' },
+];
+
 export function SettingsPage() {
   const [params, setParams] = useSearchParams();
   const { sites } = useSites();
@@ -755,6 +657,7 @@ export function SettingsPage() {
   const { siteId, setSiteId } = useActiveSite(sites);
 
   const isAdmin = user?.role === 'admin';
+  const wsAvailable = useOptionalWorkspace()?.available === true;
   // Admin-only sections are removed from the nav AND from the set of reachable
   // ids, so a hand-typed ?section=models cannot open a panel the user may not see.
   const sections = useMemo(() => SECTIONS.filter((s) => !s.adminOnly || isAdmin), [isAdmin]);
@@ -818,7 +721,12 @@ export function SettingsPage() {
             <>
               <PanelHead title="Linking Rules" sub="How many internal links a page may carry, and how carefully they're written." />
               <SiteScope siteId={effectiveSiteId} sites={sites} onChange={setSiteId}>
-                {(id) => <LinkRulesPanel siteId={id} />}
+                {(id) => (
+                  <>
+                    <LinkRulesPanel siteId={id} />
+                    <AutoLinkerCard siteId={id} />
+                  </>
+                )}
               </SiteScope>
             </>
           )}
@@ -845,9 +753,8 @@ export function SettingsPage() {
           )}
           {section === 'models' && isAdmin && (
             <>
-              <PanelHead title="AI Models" sub="Providers, the models under them, and the fallback chain each role runs on." />
-              <ModelsPanel />
-              <LlmFallbackCard />
+              <PanelHead title="AI Models" sub="Which model each kind of AI work runs on, how many tokens it may spend, and what it has used." />
+              <AiModelsPanel />
             </>
           )}
           {section === 'activity' && (
@@ -878,7 +785,35 @@ export function SettingsPage() {
           {section === 'api' && (
             <>
               <PanelHead title="API & MCP" sub="Tokens for Hermes, MCP clients and scripts, which MCP tools they may use, and how to connect." />
-              <ApiMcpPanel />
+              {wsAvailable ? (
+                <>
+                  <div className="card moved-card">
+                    <div>
+                      <div className="settings-row-label">API tokens and the MCP tool manager are per workspace</div>
+                      <div className="settings-row-desc">Create tokens and choose which MCP tools they may use under Workspace, API tokens & MCP.</div>
+                    </div>
+                    <Link className="btn btn-primary" to="/workspace?tab=tokens">
+                      Open workspace tokens
+                    </Link>
+                  </div>
+                  <ApiMcpPanel connectionOnly />
+                </>
+              ) : (
+                <ApiMcpPanel />
+              )}
+            </>
+          )}
+          {section === 'platform' && isAdmin && (
+            <>
+              <PanelHead title="Platform" sub="Settings for running SiloForge as a service for several people or teams." />
+              <div className="platform-links">
+                {PLATFORM_LINKS.map((l) => (
+                  <Link key={l.tab} to={`/admin?tab=${l.tab}`} className="platform-link">
+                    <span className="platform-link-title">{l.title}</span>
+                    <span className="platform-link-desc">{l.desc}</span>
+                  </Link>
+                ))}
+              </div>
             </>
           )}
         </div>

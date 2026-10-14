@@ -25,6 +25,15 @@ export function writeRememberedSite(id: string): void {
   }
 }
 
+export function clearRememberedSite(): void {
+  try {
+    localStorage.removeItem(ACTIVE_SITE_KEY);
+    localStorage.removeItem(LEGACY_KEY);
+  } catch {
+    /* storage unavailable — ignore */
+  }
+}
+
 /**
  * Resolves the active site for a global (non-site-scoped) route: the remembered site
  * when it still exists, otherwise the first site. `sites` is accepted for backwards

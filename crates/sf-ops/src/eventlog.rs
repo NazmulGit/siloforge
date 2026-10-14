@@ -32,7 +32,9 @@ pub mod source {
     pub const SYSTEM: &str = "system";
     pub const AUTH: &str = "auth";
     pub const NOTIFY: &str = "notify";
-    pub const ALL: &[&str] = &[UI, API, MCP, JOB, SYSTEM, AUTH, NOTIFY];
+    /// v2.3: one row per AI call (tokens, cost, cache hits).
+    pub const AI: &str = "ai";
+    pub const ALL: &[&str] = &[UI, API, MCP, JOB, SYSTEM, AUTH, NOTIFY, AI];
 }
 
 /// `status` values.

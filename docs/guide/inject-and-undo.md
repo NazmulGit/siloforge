@@ -1,7 +1,7 @@
 ---
 title: Inject and undo
 section: Linking
-order: 5
+order: 6
 ---
 
 # Inject and undo

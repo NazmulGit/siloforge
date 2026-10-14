@@ -6,6 +6,7 @@ import { useUser } from '../user';
 import { Icon } from './Icon';
 import { NotificationBell } from './NotificationBell';
 import { SiteSelect } from './SiteSelect';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 export function Topbar({ onMenu }: { onMenu: () => void }) {
   const navigate = useNavigate();
@@ -18,6 +19,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       <button type="button" className="icon-btn menu-btn" aria-label="Open menu" onClick={onMenu}>
         <Icon name="menu" size={18} />
       </button>
+      <WorkspaceSwitcher />
       <SiteSelect />
       <div className="spacer" />
       {/* notifications are admin-only on the server (A4) */}
@@ -50,15 +52,14 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       {user && (
         <span className="topbar-user">
           <span className="topbar-email">{user.email}</span>
-          <span className={`role-chip role-${user.role}`}>{user.role}</span>
+          <span className={`role-chip role-${user.role}`}>{user.role === 'admin' ? 'platform admin' : user.role}</span>
         </span>
       )}
       <button
         className="btn btn-ghost btn-sm"
         data-hint="Signs you out and clears your session token from this browser. No data is changed."
         onClick={() => {
-          logout();
-          navigate('/login');
+          void logout().then(() => navigate('/login'));
         }}
       >
         Log out

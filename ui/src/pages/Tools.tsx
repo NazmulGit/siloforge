@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   bulkRun,
   bulkUndo,
@@ -356,6 +356,14 @@ export function ToolsPage() {
           <h1>Tools</h1>
           <div className="page-sub">Review, approve and inject candidate internal links.</div>
         </div>
+        <div className="spacer" />
+        <Link
+          className="btn btn-primary"
+          to={`/site/${siteId}/link-run`}
+          data-hint="Guided bulk linking: crawl, pick strategies and a mode, review, deploy and check every link on the live page."
+        >
+          New Link Run
+        </Link>
       </div>
 
       <div className="tabs">

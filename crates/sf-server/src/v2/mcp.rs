@@ -181,6 +181,74 @@ async fn store_policy(st: &AppState, p: &McpPolicy) -> ApiResult<()> {
     Ok(())
 }
 
+/// v2.4: kv key of a workspace's policy (the Default workspace uses the global `mcp_policy`).
+fn ws_key(ws: &str) -> Option<String> {
+    (ws != crate::tenancy::DEFAULT_WS).then(|| format!("{KV_POLICY}:ws:{ws}"))
+}
+
+/// v2.4: a workspace's MCP policy (`http_enabled` always comes from the global policy).
+pub async fn load_ws_policy(st: &AppState, ws: &str) -> ApiResult<McpPolicy> {
+    let global = load_policy(st).await?;
+    let Some(key) = ws_key(ws) else {
+        return Ok(global);
+    };
+    let raw: Option<String> = st
+        .db
+        .read(move |c| {
+            c.query_row("SELECT value FROM kv WHERE key=?1", [&key], |r| r.get(0))
+                .optional()
+                .map_err(err)
+        })
+        .await?;
+    let mut p = raw
+        .and_then(|r| serde_json::from_str::<McpPolicy>(&r).ok())
+        .unwrap_or_default();
+    p.http_enabled = global.http_enabled;
+    Ok(p)
+}
+
+async fn store_ws_policy(st: &AppState, ws: &str, p: &McpPolicy) -> ApiResult<()> {
+    let Some(key) = ws_key(ws) else {
+        let mut g = load_policy(st).await?;
+        g.tools = p.tools.clone();
+        g.per_token = p.per_token.clone();
+        return store_policy(st, &g).await;
+    };
+    let text = serde_json::to_string(p).map_err(|e| ApiError::internal(e.to_string()))?;
+    st.db
+        .write(move |t| {
+            t.execute(
+                "INSERT INTO kv(key, value, updated_at) VALUES(?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                params![key, text],
+            )
+            .map_err(err)?;
+            Ok(())
+        })
+        .await
+        .map_err(Into::into)
+}
+
+/// Workspace of a token (`default` for legacy rows).
+async fn token_ws(st: &AppState, token_id: &str) -> String {
+    let id = token_id.to_string();
+    st.db
+        .read(move |c| {
+            c.query_row(
+                "SELECT workspace_id FROM api_tokens WHERE id=?1",
+                [&id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(err)
+        })
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or_else(|| crate::tenancy::DEFAULT_WS.to_string())
+}
+
 /// Turns MCP-over-HTTP on/off (also `server.mcp_http_enabled` in settings).
 pub async fn set_http_enabled(st: &AppState, on: bool) -> ApiResult<()> {
     let mut p = load_policy(st).await?;
@@ -193,7 +261,13 @@ pub async fn set_http_enabled(st: &AppState, on: bool) -> ApiResult<()> {
 
 /// Per-token allow list (`None` = no restriction), for the token rows (`tool_policy`).
 pub async fn token_rule(st: &AppState, token_id: &str) -> Option<TokenRule> {
-    load_policy(st).await.ok()?.per_token.get(token_id).cloned()
+    let ws = token_ws(st, token_id).await;
+    load_ws_policy(st, &ws)
+        .await
+        .ok()?
+        .per_token
+        .get(token_id)
+        .cloned()
 }
 
 /// Sets or clears one token's allow list (PATCH /tokens/{id} `tool_policy`).
@@ -202,7 +276,8 @@ pub async fn set_token_rule(
     token_id: &str,
     rule: Option<TokenRule>,
 ) -> ApiResult<()> {
-    let mut p = load_policy(st).await?;
+    let ws = token_ws(st, token_id).await;
+    let mut p = load_ws_policy(st, &ws).await?;
     match rule {
         Some(r) if r.allow.is_some() => {
             if let Some(a) = &r.allow {
@@ -214,7 +289,7 @@ pub async fn set_token_rule(
             p.per_token.remove(token_id);
         }
     }
-    store_policy(st, &p).await
+    store_ws_policy(st, &ws, &p).await
 }
 
 fn valid_tool_name(n: &str) -> bool {
@@ -304,6 +379,75 @@ pub async fn put_policy(
     if let Some(h) = b.http_enabled {
         p.http_enabled = h;
     }
+    apply_policy(&st, &cat, &mut p, b, None).await?;
+    store_policy(&st, &p).await?;
+    audit(
+        &st,
+        &u.actor(),
+        u.via(),
+        "mcp.policy.update",
+        None,
+        json!({"http_enabled": p.http_enabled, "tool_overrides": p.tools.len(), "per_token": p.per_token.len()}),
+    )
+    .await;
+    Ok(Json(full_view(&cat, &p)))
+}
+
+/// v2.4 `GET /workspaces/{id}/mcp-policy` (workspace admin).
+pub async fn ws_get_policy(
+    State(st): State<AppState>,
+    u: User,
+    axum::extract::Path(ws): axum::extract::Path<String>,
+) -> ApiResult<Json<Value>> {
+    let (w, _) = crate::tenancy::ws_guard(&st, &u, &ws, crate::tenancy::Role::Admin).await?;
+    let p = load_ws_policy(&st, &w.id).await?;
+    let mut v = full_view(&catalogue(&st), &p);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("workspace_id".into(), json!(w.id));
+    }
+    Ok(Json(v))
+}
+
+/// v2.4 `PUT /workspaces/{id}/mcp-policy` (workspace admin): `{tools?, per_token?}`
+/// (`http_enabled` is platform-wide and ignored here).
+pub async fn ws_put_policy(
+    State(st): State<AppState>,
+    u: User,
+    axum::extract::Path(ws): axum::extract::Path<String>,
+    JsonBody(mut b): JsonBody<PolicyBody>,
+) -> ApiResult<Json<Value>> {
+    let (w, _) = crate::tenancy::ws_guard(&st, &u, &ws, crate::tenancy::Role::Admin).await?;
+    b.http_enabled = None;
+    let mut p = load_ws_policy(&st, &w.id).await?;
+    let cat = catalogue(&st);
+    apply_policy(&st, &cat, &mut p, b, Some(&w.id)).await?;
+    store_ws_policy(&st, &w.id, &p).await?;
+    audit(
+        &st,
+        &u.actor(),
+        u.via(),
+        "mcp.policy.update",
+        Some(&w.id),
+        json!({"workspace_id": w.id, "tool_overrides": p.tools.len(), "per_token": p.per_token.len()}),
+    )
+    .await;
+    let mut v = full_view(&cat, &p);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("workspace_id".into(), json!(w.id));
+    }
+    Ok(Json(v))
+}
+
+/// Validates and applies `tools` / `per_token` of a PUT body (`ws`: tokens must belong to it).
+async fn apply_policy(
+    st: &AppState,
+    cat: &[CatalogueTool],
+    p: &mut McpPolicy,
+    b: PolicyBody,
+    ws: Option<&str>,
+) -> ApiResult<()> {
+    let st = st.clone();
+    let ws = ws.map(str::to_string);
     if let Some(tools) = b.tools {
         let names: Vec<String> = tools.keys().cloned().collect();
         check_tool_names(&st, &names)?;
@@ -337,15 +481,19 @@ pub async fn put_policy(
             return Err(ApiError::bad("too many per_token entries"));
         }
         let ids: Vec<String> = per.keys().cloned().collect();
+        let ws2 = ws.clone();
         let known: Vec<String> = st
             .db
             .read(move |c| {
                 let mut out = Vec::new();
                 let mut stmt = c
-                    .prepare("SELECT id FROM api_tokens WHERE id=?1 AND revoked_at IS NULL")
+                    .prepare(
+                        "SELECT id FROM api_tokens WHERE id=?1 AND revoked_at IS NULL
+                           AND (?2 IS NULL OR coalesce(workspace_id, 'default') = ?2)",
+                    )
                     .map_err(err)?;
                 for id in &ids {
-                    if stmt.exists([id]).map_err(err)? {
+                    if stmt.exists(params![id, ws2]).map_err(err)? {
                         out.push(id.clone());
                     }
                 }
@@ -367,17 +515,7 @@ pub async fn put_policy(
         }
         p.per_token = clean;
     }
-    store_policy(&st, &p).await?;
-    audit(
-        &st,
-        &u.actor(),
-        u.via(),
-        "mcp.policy.update",
-        None,
-        json!({"http_enabled": p.http_enabled, "tool_overrides": p.tools.len(), "per_token": p.per_token.len()}),
-    )
-    .await;
-    Ok(Json(full_view(&cat, &p)))
+    Ok(())
 }
 
 /// Allowed tool names for a caller.
@@ -411,7 +549,26 @@ pub async fn effective(
     u: User,
     headers: axum::http::HeaderMap,
 ) -> ApiResult<Json<Value>> {
-    let p = load_policy(&st).await?;
+    // v2.4: the policy of the caller's workspace (token workspace, else selected, else default);
+    // a plan without MCP allows no tools (platform admins are exempt).
+    let ws = match &u.workspace_id {
+        Some(w) => Some(w.clone()),
+        None => crate::tenancy::target_ws(&st, &u)
+            .await
+            .ok()
+            .flatten()
+            .map(|w| w.id),
+    };
+    let p = match &ws {
+        Some(w) => load_ws_policy(&st, w).await?,
+        None => load_policy(&st).await?,
+    };
+    let plan_mcp = match (&ws, u.is_admin()) {
+        (Some(w), false) => crate::tenancy::plan_of_ws(&st, w)
+            .await?
+            .is_none_or(|pl| pl.feature("mcp")),
+        _ => true,
+    };
     let cat = catalogue(&st);
     let token_id = if u.token.is_some() {
         super::tokens::caller_token(&st, &headers)
@@ -422,9 +579,15 @@ pub async fn effective(
         None
     };
     let scope = caller_scope(&u);
-    let allowed = allowed_for(&cat, &p, scope, token_id.as_deref());
+    let allowed = if plan_mcp {
+        allowed_for(&cat, &p, scope, token_id.as_deref())
+    } else {
+        Vec::new()
+    };
     let view = full_view(&cat, &p);
     Ok(Json(json!({
+        "workspace_id": ws,
+        "plan_mcp": plan_mcp,
         "http_enabled": p.http_enabled,
         "scope": scope,
         "allowed": allowed,

@@ -1,8 +1,8 @@
 //! Golden anchor-quality set (`golden_anchors.json`, labels by hand; see
-//! docs/testing/anchor-quality.md): 61 site65 pilot cases, 35 unit/spec-fragment cases (v2.0.1)
+//! docs/testing/anchor-quality.md): 61 site69 pilot cases, 35 unit/spec-fragment cases (v2.0.1)
 //! and the v2.0.2 cases (brand capitalisation statistics, generic head nouns, gerund leads,
 //! off-topic low-cosine phrases). A case may name a `site` whose statistics (`sites`: docs,
-//! word df, capitalisation counts) replace the default site65 counts, and a `semantic` map
+//! word df, capitalisation counts) replace the default site69 counts, and a `semantic` map
 //! (lowercase phrase -> cosine to the target post) as the plan's semantic step would give.
 //!
 //! "Natural" = the anchor is one of the hand-labelled acceptable anchors, or passes the strict

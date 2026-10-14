@@ -10,6 +10,7 @@
 //!
 //! Spec: `docs/research/01-engine-spec.md` §10; accuracy C.2–C.7; bugs B-9, B-20, B-29, B-30.
 
+pub mod batch;
 pub mod classify;
 pub mod guards;
 pub mod pick;

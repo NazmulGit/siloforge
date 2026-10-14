@@ -10,15 +10,13 @@ use serde_json::{Value, json};
 use sf_core::crypto;
 use sf_store::err;
 
-use super::common::{
-    ClientIp, JsonBody, audit_user, conflict_as, lockout, rate_check, rate_fail, rate_guard,
-};
+use super::common::{ClientIp, JsonBody, audit_user, rate_fail, rate_guard};
 use crate::auth::User;
 use crate::{ApiError, ApiResult, AppState};
 
-const MAX_PASSWORD: usize = 1024;
+pub(crate) const MAX_PASSWORD: usize = 1024;
 
-fn valid_email(email: &str) -> bool {
+pub(crate) fn valid_email(email: &str) -> bool {
     if email.len() > 320 || email.chars().any(char::is_whitespace) {
         return false;
     }
@@ -62,103 +60,32 @@ fn sign_user(st: &AppState, role: &str, id: &str, tv: i64) -> ApiResult<String> 
     )?)
 }
 
-async fn bcrypt_hash(pw: String) -> ApiResult<String> {
+pub(crate) async fn bcrypt_hash(pw: String) -> ApiResult<String> {
     tokio::task::spawn_blocking(move || crypto::hash_password(&pw))
         .await
         .map_err(|e| ApiError::internal(format!("hash task: {e}")))?
         .map_err(Into::into)
 }
 
-async fn bcrypt_verify(pw: String, hash: String) -> bool {
+pub(crate) async fn bcrypt_verify(pw: String, hash: String) -> bool {
     tokio::task::spawn_blocking(move || crypto::verify_password(&pw, &hash))
         .await
         .unwrap_or(false)
 }
 
-#[derive(Deserialize)]
-pub struct RegisterBody {
-    email: String,
-    password: String,
-    #[serde(default)]
-    name: Option<String>,
-}
-
-/// Registration is closed unless `auth.allow_registration` (fixes v1 S6) or no user exists yet; the
-/// very first account becomes the admin.
+/// Registration follows the v2.4 platform mode (closed by default, legacy
+/// `auth.allow_registration=true` = open); the very first account becomes the admin (first-run
+/// bootstrap, IP/localhost Host only). Answer keeps the v1 shape `201 {token, user}`.
 pub async fn register(
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
     headers: HeaderMap,
-    JsonBody(b): JsonBody<RegisterBody>,
+    JsonBody(b): JsonBody<crate::v2::auth2::RegisterBody>,
 ) -> ApiResult<Response> {
-    rate_check(&st, "register", &ip)?;
-    let users: i64 = st
-        .db
-        .read(|c| {
-            c.query_row("SELECT count(*) FROM users", [], |r| r.get(0))
-                .map_err(err)
-        })
-        .await?;
-    if users > 0 && !st.cfg.auth.allow_registration {
-        return Err(ApiError::forbidden("registration is disabled"));
-    }
-    // L-17: the first-run bootstrap (becomes admin) only answers a Host that is an IP literal or
-    // `localhost`, so a web page using DNS rebinding cannot claim a fresh install.
-    if users == 0 && !bootstrap_host_ok(&headers) {
-        return Err(ApiError::forbidden(
-            "first-run registration must use http://127.0.0.1:<port> or http://localhost:<port>",
-        ));
-    }
-    let email = b.email.trim().to_lowercase();
-    if !valid_email(&email) {
-        return Err(ApiError::bad("invalid email address"));
-    }
-    let pw_len = b.password.chars().count();
-    if pw_len < 8 {
-        return Err(ApiError::bad("password must be at least 8 characters"));
-    }
-    if pw_len > MAX_PASSWORD {
-        return Err(ApiError::bad("password is too long"));
-    }
-    let name: String = b
-        .name
-        .unwrap_or_default()
-        .trim()
-        .chars()
-        .take(200)
-        .collect();
-    let hash = bcrypt_hash(b.password).await?;
-    let id = sf_core::new_id();
-    let (id2, email2, name2) = (id.clone(), email.clone(), name.clone());
-    let role = st
-        .db
-        .write(move |t| {
-            let n: i64 = t
-                .query_row("SELECT count(*) FROM users", [], |r| r.get(0))
-                .map_err(err)?;
-            let role = if n == 0 { "admin" } else { "user" };
-            t.execute(
-                "INSERT INTO users(id, email, password_hash, name, role) VALUES(?1,?2,?3,?4,?5)",
-                params![id2, email2, hash, name2, role],
-            )
-            .map_err(err)?;
-            Ok(role.to_string())
-        })
-        .await
-        .map_err(|e| conflict_as(e, "email already registered"))?;
-    let token = sign_user(&st, &role, &id, 0)?;
-    crate::auth::audit(
-        &st,
-        &format!("user:{id}"),
-        "ui",
-        "auth.register",
-        Some(&id),
-        json!({ "role": role }),
-    )
-    .await;
+    let v = crate::v2::auth2::register_core(&st, &ip, &headers, b).await?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "token": token, "user": { "id": id, "email": email, "name": name, "role": role } })),
+        Json(json!({ "token": v["token"], "user": v["user"] })),
     )
         .into_response())
 }
@@ -169,124 +96,40 @@ pub struct LoginBody {
     password: String,
 }
 
+/// v1 login: `{token, user}` (30-day session). Users with 2FA must use `/api/v2/auth/login`.
 pub async fn login(
     State(st): State<AppState>,
     ClientIp(ip): ClientIp,
+    headers: HeaderMap,
     JsonBody(b): JsonBody<LoginBody>,
 ) -> ApiResult<Json<Value>> {
-    // M-03: per-IP limit on failures (successes are free) plus per-account lockout.
-    rate_guard(&st, "login", &ip)?;
-    let email = b.email.trim().to_lowercase();
-    if let Some(d) = lockout(&st).locked_for(&email) {
-        crate::eventlog::log(&st).record_auth(
-            "anonymous",
-            "login refused (account locked)",
-            "denied",
-            None,
-            Some(&email),
-            json!({"ip": ip.clone()}),
-        );
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!(
-                "too many failed logins for this account, try again in {} s",
-                d.as_secs().max(1)
-            ),
+    let who = crate::v2::auth2::password_login(&st, &ip, &b.email, &b.password).await?;
+    if who.totp {
+        return Err(ApiError::unauthorized(
+            "two-factor authentication required; sign in through the web app",
         ));
     }
-    let account = email.clone();
-    let row = st
-        .db
-        .read(move |c| {
-            c.query_row(
-                "SELECT id, email, name, role, password_hash, token_version FROM users WHERE email=?1",
-                [&email],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, String>(4)?,
-                        r.get::<_, i64>(5)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(err)
-        })
-        .await?;
-    // Always run one bcrypt compare so timing does not reveal whether the email exists.
-    let hash = row
-        .as_ref()
-        .map(|r| r.4.clone())
-        .unwrap_or_else(|| crypto::DUMMY_BCRYPT.to_string());
-    let pw: String = b.password.chars().take(MAX_PASSWORD).collect();
-    let ok = bcrypt_verify(pw.clone(), hash).await;
-    let Some((id, email, name, role, old_hash, tv)) = row.filter(|_| ok) else {
-        rate_fail(&st, "login", &ip);
-        let ev = crate::eventlog::log(&st);
-        ev.record_auth(
-            "anonymous",
-            "login failed",
-            "denied",
-            None,
-            Some(&account),
-            json!({"ip": ip.clone()}),
-        );
-        if let Some(d) = lockout(&st).fail(&account) {
-            tracing::warn!(
-                lock_secs = d.as_secs(),
-                "login: account locked after repeated failures"
-            );
-            ev.record_auth(
-                "anonymous",
-                "account locked",
-                "denied",
-                None,
-                Some(&account),
-                json!({"ip": ip.clone(), "lock_secs": d.as_secs()}),
-            );
-        }
-        return Err(ApiError::unauthorized("invalid email or password"));
-    };
-    lockout(&st).success(&account);
+    let s = crate::sessions::issue(
+        &st,
+        &who.id,
+        &who.role,
+        who.tv,
+        true,
+        &ip,
+        &crate::sessions::user_agent(&headers),
+    )
+    .await?;
     crate::eventlog::log(&st).record_auth(
-        &format!("user:{id}"),
+        &format!("user:{}", who.id),
         "login ok",
         "ok",
-        Some(&id),
-        Some(&id),
+        Some(&who.id),
+        Some(&who.id),
         json!({"ip": ip.clone()}),
     );
-    // L-15: upgrade a weaker (v1 cost 10) hash in the background; the session is unaffected.
-    if crypto::password_needs_rehash(&old_hash) {
-        let (st2, uid) = (st.clone(), id.clone());
-        tokio::spawn(async move {
-            let Ok(new_hash) = bcrypt_hash(pw).await else {
-                return;
-            };
-            let res = st2
-                .db
-                .write(move |t| {
-                    t.execute(
-                        "UPDATE users SET password_hash=?2 WHERE id=?1 AND password_hash=?3",
-                        params![uid, new_hash, old_hash],
-                    )
-                    .map_err(err)?;
-                    Ok(())
-                })
-                .await;
-            if let Err(e) = res {
-                tracing::warn!(error = %e, "login: password rehash failed");
-            }
-        });
-    }
-    let token = sign_user(&st, &role, &id, tv)?;
-    Ok(Json(json!({
-        "token": token,
-        "user": { "id": id, "email": email, "name": name, "role": role },
-    })))
+    Ok(Json(
+        json!({ "token": s["token"], "user": who.user_json() }),
+    ))
 }
 
 pub async fn me(State(st): State<AppState>, u: User) -> ApiResult<Json<Value>> {
@@ -365,6 +208,7 @@ pub async fn change_password(
                 params![id, new_hash],
             )
             .map_err(err)?;
+            crate::sessions::revoke_all_sync(t, &id)?;
             t.query_row(
                 "SELECT role, token_version FROM users WHERE id=?1",
                 [&id],

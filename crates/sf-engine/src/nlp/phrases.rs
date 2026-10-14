@@ -507,7 +507,7 @@ mod tests {
         );
     }
 
-    /// Hermes acceptance 2026-10-14 (site46.example): "V kits perfect", "inch cordless Impact
+    /// Hermes acceptance 2026-10-14 (site39.example): "V kits perfect", "inch cordless Impact
     /// Wrenches". A unit or lone letter never starts a phrase, a phrase never starts inside a
     /// glued spec, and the last word is a content noun.
     #[test]

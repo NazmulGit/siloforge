@@ -54,7 +54,7 @@ text_enum!(InsertModule { Native => "native", Rephrase => "rephrase", Context =>
 text_enum!(JobKind {
     Crawl => "crawl", Plan => "plan", Inject => "inject", Undo => "undo", KeywordLink => "keyword_link",
     LinkHealth => "link_health", Audit => "audit", Embed => "embed", Backup => "backup", Maintenance => "maintenance",
-    Gsc => "gsc",
+    Gsc => "gsc", LinkRun => "link_run",
 });
 text_enum!(JobStatus { Queued => "queued", Running => "running", Done => "done", Failed => "failed", Cancelled => "cancelled" });
 
@@ -71,6 +71,7 @@ impl JobKind {
                 | Self::Audit
                 | Self::Embed
                 | Self::Gsc
+                | Self::LinkRun
         )
     }
     /// Kinds that use a lot of CPU (respect the CPU budget / defer rules).

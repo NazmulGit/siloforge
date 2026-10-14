@@ -146,6 +146,24 @@ pub async fn run(home: PathBuf) -> Result<()> {
     );
     state.services.insert(Arc::new(notifier.clone()));
     state.services.insert(Arc::new(monitor.clone()));
+    // v2.3: every AI call goes to the event log; budget exhaustion also notifies.
+    ai.set_observer(crate::wire::ai_observer(events.clone(), notifier.clone()));
+    if let Err(e) = sf_ai::seed::seed_tier_chains(&db).await {
+        tracing::warn!(error = %e, "default AI tier chains not seeded");
+    }
+    // v2.4: Default workspace + owner, unassigned sites/tokens, purge of soft-deleted workspaces
+    // and the monthly usage snapshot: at boot, then once a day.
+    {
+        let db2 = db.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = sf_server::tenancy::ensure_default_workspace(&db2).await {
+                    tracing::warn!(error = %e, "workspace maintenance failed");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+            }
+        });
+    }
     state.services.insert(Arc::new(ai.clone()));
     state.services.insert(embed.clone());
     state.services.insert(Arc::new(errors.clone()));

@@ -3,6 +3,46 @@
 All notable changes to SiloForge. Versions follow [SemVer](https://semver.org). v2 is a rewrite in Rust; the v1
 history (TypeScript, Docker) is summarised at the end.
 
+## [2.4.0] - 2026-10-14
+
+Rolls up the 2.2 (Link Runs), 2.3 (AI tiers) and 2.4 (SaaS) work into one release. The v1 API contract is unchanged; a
+single-admin install sees exactly what it saw before (all data moves into its own workspace on the Unlimited plan).
+
+### Added — Link Runs & Auto-Linker (2.2)
+- **Link Run** page per site, 9 steps: crawl → opportunities → strategies (in-text, contextual, semantic, keyword rules, silo,
+  orphan rescue, money pages, fix broken) → linking mode (link opportunity, reverse, serial, priority, circle, bidirectional)
+  → run → review grouped by post (untick, edit anchor, alternates) → **Deploy** → **Results** per post/link with
+  **Open ↗** (opens the live page scrolled to the link via a `#:~:text=` fragment) → **Apply properly** (repair).
+- Runs history with **Undo run** (byte-exact, including AI-written sentences); discard a ready run.
+- **Auto-Linker**: scheduled runs per site, dry-run (stop at ready + notify) or live (deploy + verify + one repair pass),
+  daily cap, auto-pause on failure rate.
+- 15 MCP tools for runs and the Auto-Linker.
+
+### Added — AI tiers & token accounting (2.3)
+- Model chains per tier **low / main / high** (seeded: low gpt-5.6-luna → claude-haiku-4-5; main gpt-6-luna → Haiku;
+  high gpt-6-sol → claude-haiku-5-5 → gpt-6-luna) with configurable task routing and reasoning effort.
+- Token savings: batched low-tier calls, 30-day AI answer cache, confidence skip rules, prompt compaction, daily budgets per
+  tier and site with automatic heuristic fallback.
+- Every AI call accounted (tokens, cost, cache hits, fallbacks): **Logs → AI** chip with token columns and totals,
+  Settings → AI Models → **Usage** panel, `GET /api/v2/ai/usage`.
+- **Always use AI for perfect linking** switch; token/cost estimate before a Link Run; High priority runs use the high tier.
+
+### Added — SaaS (2.4)
+- **Workspaces** with members and roles (owner, admin, member, viewer), invites, workspace switcher; API tokens and MCP
+  policy are workspace-scoped.
+- **Plans & quotas** (Free, Pro, Agency, Unlimited): sites, posts, runs/month, AI tokens/month, members, tokens; over-limit
+  → HTTP 402 with an upgrade prompt; usage bars. Manual billing (Stripe hook stubbed).
+- New **Login / Register / Forgot / Reset / Verify / 2FA** pages; registration modes closed (default) / invite-only / open;
+  email verification; TOTP 2FA with recovery codes; sessions list with revoke; SMTP (rustls) with an admin outbox fallback.
+- **Admin console**: overview, users, workspaces, plans, invites, email, registration, branding, platform audit,
+  read-only view-as. 162 MCP tools in total (workspace and admin tools added).
+- SaaS deployment guide (reverse proxy TLS, public URL, trust proxy, security checklist).
+
+### Fixed
+- 18 issues found by the real-browser Link Run test (live verification on host-aliased sites, lost unplaceable items,
+  AI sentence placement in lists, undo of AI sentences, UI step jumps, history refresh, …) — see docs/testing/link-runs-e2e.md.
+- A Link Run's `ai_refine` option now reaches its plan step.
+
 ## [2.1.0] - 2026-10-14
 
 Settings, resources and agent control. The app UI was refreshed; v1 API contract unchanged.

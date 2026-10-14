@@ -1,10 +1,14 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { clearToken, fetchMe, getToken, type AuthUser } from './api';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { clearToken, fetchMe, getToken, logoutSession, type AuthUser } from './api';
+import { writeViewAs } from './wsStore';
 
 interface UserCtx {
   user: AuthUser | null;
   setUser: (u: AuthUser | null) => void;
-  logout: () => void;
+  /** Re-read /auth/me (after profile, email or 2FA changes). */
+  refresh: () => Promise<void>;
+  /** Revokes the session server-side (v2.4), then drops the token. */
+  logout: () => Promise<void>;
 }
 
 const Ctx = createContext<UserCtx | null>(null);
@@ -12,32 +16,27 @@ const Ctx = createContext<UserCtx | null>(null);
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (!getToken()) return;
-    let cancelled = false;
-    fetchMe()
-      .then((u) => {
-        if (!cancelled) setUser(u);
-      })
-      .catch(() => {
-        /* 401s are handled globally by the api wrapper */
-      });
-    return () => {
-      cancelled = true;
-    };
+    try {
+      setUser(await fetchMe());
+    } catch {
+      /* 401s are handled globally by the api wrapper */
+    }
   }, []);
 
-  const value = useMemo<UserCtx>(
-    () => ({
-      user,
-      setUser,
-      logout: () => {
-        clearToken();
-        setUser(null);
-      },
-    }),
-    [user],
-  );
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const logout = useCallback(async () => {
+    await logoutSession();
+    clearToken();
+    writeViewAs(null);
+    setUser(null);
+  }, []);
+
+  const value = useMemo<UserCtx>(() => ({ user, setUser, refresh, logout }), [user, refresh, logout]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

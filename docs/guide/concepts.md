@@ -21,6 +21,10 @@ Every link goes through the same six steps. Only the last two touch WordPress.
 
 Steps 2 and 3 run together as one **plan** job. Each step is a job you can watch under **Jobs** or **All jobs**.
 
+A **Link Run** (2.2) bundles steps 1-5 for one site into a single guided batch with its own options (strategies,
+linking mode, filters), results per post, a repair step and **Undo run**. See [Link Runs](link-runs); the
+[Auto-Linker](auto-linker) starts Link Runs on a schedule.
+
 ## Link statuses
 
 | Status | Meaning |

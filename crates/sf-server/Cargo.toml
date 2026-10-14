@@ -40,8 +40,12 @@ tokio-util = { workspace = true, features = ["io"] }
 # v2.1: live compute-thread limit readout (settings), download checksums
 sf-engine = { workspace = true }
 sha2 = { workspace = true }
+# v2.4 SMTP mail (rustls + ring, no OpenSSL; builds on windows-gnu)
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots", "builder", "hostname"] }
 hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 tower = { workspace = true, features = ["util"] }
+# v2.2 link-run E2E (runner + fake embedder against a stub WordPress)
+sf-embed = { workspace = true }

@@ -229,6 +229,8 @@ export interface ApiTokenRow {
   /** v2.1: token this one was derived from (scopes can never exceed the parent's). */
   parent_id?: string | null;
   tool_policy?: { allow?: string[] | null } | null;
+  /** v2.4: workspace the token belongs to. */
+  workspace_id?: string | null;
 }
 
 /** POST /api/v2/tokens response: the row plus the plaintext token, shown once. */
@@ -339,6 +341,7 @@ export interface ServerSettings {
   server?: ServerSettingsSection;
   backup?: { dir?: string; keep?: number; schedule?: string; passphrase_set?: boolean };
   monitor?: Record<string, number>;
+  ai?: AiSettings;
   restart_required?: string[];
   restart_supported?: boolean;
 }
@@ -409,7 +412,7 @@ export interface DownloadsList {
 
 // ---- v2.1: unified event log (§9) ----
 
-export type LogSource = 'ui' | 'api' | 'mcp' | 'job' | 'system' | 'auth' | 'notify';
+export type LogSource = 'ui' | 'api' | 'mcp' | 'job' | 'system' | 'auth' | 'notify' | 'ai';
 export type LogStatus = 'ok' | 'error' | 'denied';
 
 export interface LogRow {
@@ -449,4 +452,279 @@ export interface LogStats {
   total?: number;
   by_source: Record<string, number>;
   by_status: Record<string, number>;
+  /** v2.3: AI token totals for the same window. */
+  ai?: { calls: number; tokens_in: number; tokens_out: number; cost_usd: number; cache_hits: number } | null;
+}
+
+// ---- v2.2: Link Runs + Auto-Linker (docs/specs/v2.2-link-runs.md §1–§5) ----
+
+export type LinkRunStatus =
+  | 'draft'
+  | 'crawling'
+  | 'planning'
+  | 'ready'
+  | 'deploying'
+  | 'deployed'
+  | 'partially_deployed'
+  | 'failed'
+  | 'cancelled'
+  | 'undone';
+
+export type LinkRunCrawl = 'always' | 'if_stale' | 'skip';
+
+export type LinkStrategy =
+  | 'in_text'
+  | 'contextual'
+  | 'semantic'
+  | 'keyword_rules'
+  | 'silo'
+  | 'orphan_rescue'
+  | 'money_pages'
+  | 'fix_broken';
+
+export type LinkRunMode = 'opportunity' | 'reverse' | 'serial' | 'priority' | 'circle' | 'bidirectional';
+
+export interface LinkRunFilters {
+  min_score: number;
+  max_links_per_post: number;
+  max_new_per_post: number;
+  max_total: number;
+  anchor_types: string[];
+  max_exact_share: number;
+  clusters: string[];
+  include_post_ids: string[];
+  exclude_post_ids: string[];
+  exclude_url_patterns: string[];
+  post_types: string[];
+}
+
+export interface LinkRunOptions {
+  crawl: LinkRunCrawl;
+  strategies: Record<LinkStrategy, boolean>;
+  mode: LinkRunMode;
+  filters: LinkRunFilters;
+  ai_refine: boolean;
+  /** v2.3: route this run's AI work to the high tier (stronger model). */
+  high_priority?: boolean;
+  verify: boolean;
+  approve: 'selected';
+}
+
+export interface LinkRunStats {
+  opportunities?: number;
+  selected?: number;
+  applied?: number;
+  failed?: number;
+  not_present?: number;
+  repaired?: number;
+  skipped?: number;
+  by_strategy?: Record<string, number>;
+  [k: string]: unknown;
+}
+
+export interface LinkRun {
+  id: string;
+  site_id: string;
+  name?: string | null;
+  status: LinkRunStatus | string;
+  options?: Partial<LinkRunOptions> | null;
+  stats?: LinkRunStats | null;
+  progress?: { phase?: string; pct?: number; message?: string } | null;
+  crawl_job_id?: string | null;
+  plan_job_id?: string | null;
+  deploy_job_id?: string | null;
+  repair_job_id?: string | null;
+  created_by?: string | null;
+  created_by_name?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+  deployed_at?: string | null;
+  auto?: boolean;
+  error?: string | null;
+  /** v2.3: AI usage of this run (model_call_log by run id). */
+  ai?: LinkRunAiSummary | null;
+}
+
+export type LinkItemStatus = 'suggested' | 'selected' | 'applied' | 'failed' | 'not_present' | 'skipped' | 'reverted';
+
+export interface LinkRunPostRef {
+  id: string;
+  title: string;
+  url: string;
+}
+
+export interface LinkRunItem {
+  edge_id: string;
+  source: LinkRunPostRef;
+  target: LinkRunPostRef;
+  anchor: string;
+  anchor_type?: string | null;
+  strategy?: string | null;
+  insert_module?: string | null;
+  score?: number | null;
+  status: LinkItemStatus | string;
+  error?: string | null;
+  failure_kind?: string | null;
+  verify?: { checked_at?: string | null; present?: boolean | null } | null;
+  live_url?: string | null;
+  open_url?: string | null;
+  /** Assumed: alternate anchors from the anchor picker (`alternates` or `anchor_alternates`). */
+  alternates?: string[];
+}
+
+export interface LinkRunPostGroup {
+  post: LinkRunPostRef;
+  links: LinkRunItem[];
+}
+
+export interface LinkRunItemsQuery {
+  status?: string;
+  post_id?: string;
+  strategy?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface OpportunityCount {
+  key: string;
+  count: number;
+}
+
+/** GET /sites/{id}/opportunities, normalised (field names read defensively). */
+export interface Opportunities {
+  posts_total?: number;
+  last_crawl_at?: string | null;
+  /** Hours since the last crawl, when the server sends an age instead of a timestamp. */
+  last_crawl_age_hours?: number | null;
+  counts: OpportunityCount[];
+  by_strategy: Record<string, number>;
+}
+
+/** Site settings `auto_linker` (spec §5). */
+export interface AutoLinkerConfig {
+  enabled: boolean;
+  cron: string;
+  tz: string;
+  options: LinkRunOptions;
+  live: boolean;
+  max_per_day: number;
+  pause_on_failure_rate: number;
+}
+
+// ---- v2.3: AI tiers, budgets, usage (docs/specs/v2.3-ai-tiers.md §5–§6) ----
+
+export type AiTier = 'low' | 'main' | 'high';
+export const AI_TIERS: AiTier[] = ['low', 'main', 'high'];
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high';
+export const REASONING_EFFORTS: ReasoningEffort[] = ['none', 'low', 'medium', 'high'];
+
+export const AI_TASKS: { key: string; label: string; what: string; def: AiTier }[] = [
+  { key: 'anchor_pick', label: 'Anchor pick', what: 'Choose or propose the anchor among candidates (batched).', def: 'low' },
+  { key: 'relevance_check', label: 'Relevance check', what: 'Judge how relevant the target is to the paragraph, 0–1 (batched).', def: 'low' },
+  { key: 'link_verify_judge', label: 'Verify judge', what: 'Ambiguous verification decisions.', def: 'low' },
+  { key: 'rephrase', label: 'Rephrase', what: 'Rewrite a sentence so it carries the link.', def: 'main' },
+  { key: 'context_sentence', label: 'Context sentence', what: 'Write a new bridging sentence with the link.', def: 'main' },
+  { key: 'repair_insert', label: 'Repair insert', what: '"Apply properly" AI fallback during repair.', def: 'main' },
+  { key: 'money_page', label: 'Money page', what: 'Any task whose target is a money page.', def: 'high' },
+  { key: 'priority', label: 'High priority', what: 'Any task of a run or site marked high priority.', def: 'high' },
+];
+
+export interface AiSettings {
+  always_on: boolean;
+  task_tiers: Record<string, AiTier>;
+  batch_size: number;
+  confidence_skip: { anchor: number; relevance: number };
+  budget: { daily_tokens: Record<AiTier, number>; per_site_daily_tokens: number };
+  cache_ttl_days: number;
+  reasoning_effort: Record<AiTier, ReasoningEffort>;
+}
+
+export interface AiRungInfo {
+  position: number;
+  model_row_id?: string | null;
+  model_id: string;
+  provider_name: string;
+  provider_kind?: string;
+  usable?: boolean;
+  skip_reason?: string | null;
+  breaker?: string;
+}
+
+export interface AiTierView {
+  tier: AiTier;
+  chain_id: string | null;
+  chain_name: string | null;
+  source: 'site' | 'global' | 'env' | 'none' | string;
+  resolved_from: 'tier' | 'main' | 'env' | 'none' | string;
+  reasoning_effort?: string | null;
+  rungs: AiRungInfo[];
+}
+
+export type AiUsageGroup = 'day' | 'model' | 'tier' | 'task' | 'site' | 'provider';
+
+export interface AiUsageRow {
+  key: string;
+  label?: string | null;
+  calls: number;
+  items?: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  cache_hits: number;
+  errors: number;
+  estimated?: number;
+}
+
+export interface AiBudgetTier {
+  used: number;
+  limit: number;
+  remaining: number | null;
+  exhausted: boolean;
+}
+
+export interface AiUsage {
+  group: string;
+  since?: string;
+  until?: string;
+  rows: AiUsageRow[];
+  totals: AiUsageRow & { cache_hit_rate?: number };
+  budget?: {
+    day?: string;
+    tiers: Partial<Record<AiTier, AiBudgetTier>>;
+    per_site_limit?: number;
+    sites?: { site_id: string; name?: string | null; used: number; limit: number; exhausted: boolean }[];
+  } | null;
+}
+
+export interface LinkRunEstimate {
+  ai_enabled: boolean;
+  always_on: boolean;
+  items_estimated: number;
+  ai_items?: { anchor_pick?: number; relevance_check?: number; contextual?: number };
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  tokens_total: number;
+  cost_usd: number;
+  by_tier?: Partial<Record<AiTier, { calls: number; tokens: number; cost_usd: number }>>;
+  budget?: Partial<Record<AiTier | 'site', number | null>>;
+  within_budget: boolean;
+  basis?: 'history' | 'defaults' | string;
+  note?: string | null;
+}
+
+export interface LinkRunAiSummary {
+  calls?: number;
+  items?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+  cost_usd?: number;
+  cache_hits?: number;
+  errors?: number;
+  estimated?: number;
+  by_task?: Record<string, { calls?: number; tokens_in?: number; tokens_out?: number }>;
+  asked?: number;
+  skipped_confident?: number;
+  fallback?: string | null;
 }

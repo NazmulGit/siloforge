@@ -10,11 +10,13 @@
 //!   -> first valid result wins; hard deadline caps the whole call
 //! ```
 
+pub mod accounting;
 mod adapters;
 mod breaker;
 mod http;
 mod probe;
 mod resolve;
+pub mod seed;
 mod status;
 mod types;
 
@@ -23,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use sf_core::EMBED_DIM;
-use sf_core::config::LlmCfg;
+use sf_core::config::{AiCfg, LlmCfg};
 use sf_store::Db;
 use sf_store::rusqlite::params;
 
@@ -32,9 +34,12 @@ use crate::breaker::{Breakers, Permit};
 use crate::http::SendError;
 use crate::resolve::{DimPolicy, Resolved};
 
+pub use crate::accounting::{
+    AiCallEvent, AiCallMeta, AiEvent, AiObserver, BudgetState, TierDetail, estimate_tokens,
+};
 pub use crate::types::{
     AiError, BreakerView, ChainDetail, ChainSource, ChatMessage, ChatRequest, ChatResponse,
-    EmbedResponse, ModelStatus, ProviderKind, ProviderStatus, Role, RungInfo,
+    EmbedResponse, ModelStatus, ProviderKind, ProviderStatus, Role, RungInfo, Tier,
 };
 
 /// Probe timeout (v1: 20 s).
@@ -101,6 +106,13 @@ impl LlmSource {
             Self::Live(l) => l.get().llm.clone(),
         }
     }
+    /// `[ai]` (v2.3): live, or the defaults for a fixed source.
+    fn ai(&self) -> AiCfg {
+        match self {
+            Self::Fixed(_) => AiCfg::default(),
+            Self::Live(l) => l.get().ai.clone(),
+        }
+    }
 }
 
 struct Inner {
@@ -110,6 +122,10 @@ struct Inner {
     opts: AiOptions,
     client: reqwest::Client,
     breakers: Breakers,
+    /// v2.3: receives one event per chat call (event log) and budget exhaustion (notification).
+    observer: parking_lot::RwLock<Option<AiObserver>>,
+    /// Budget notifications already sent (`<day>:<scope>:<key>`).
+    budget_notified: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Cheap-to-clone handle to the AI layer.
@@ -124,6 +140,7 @@ enum Op<'a> {
         max_tokens: u32,
         temperature: f32,
         json_mode: bool,
+        reasoning_effort: Option<&'a str>,
     },
     Embed {
         texts: &'a [String],
@@ -293,6 +310,8 @@ impl Ai {
                 opts,
                 client,
                 breakers,
+                observer: parking_lot::RwLock::new(None),
+                budget_notified: parking_lot::Mutex::new(Default::default()),
             }),
         })
     }
@@ -301,13 +320,48 @@ impl Ai {
         &self.inner.db
     }
 
-    /// Resolves the executable chain for a role. Never fails on DB errors (falls back to env).
+    /// The current `[ai]` settings (live when built with [`Ai::with_live`]).
+    pub fn ai_config(&self) -> AiCfg {
+        self.inner.llm.ai()
+    }
+
+    /// The tier a task runs on per `ai.task_tiers`.
+    pub fn tier_for_task(&self, task: &str) -> Tier {
+        Tier::parse(&self.ai_config().tier_for(task))
+    }
+
+    /// Installs the observer (event log + notifications). Replaces any previous one.
+    pub fn set_observer(&self, obs: AiObserver) {
+        *self.inner.observer.write() = Some(obs);
+    }
+
+    pub(crate) fn emit(&self, ev: AiEvent) {
+        let obs = self.inner.observer.read().clone();
+        if let Some(o) = obs {
+            o(ev);
+        }
+    }
+
+    /// Resolves the executable chain for a role (main tier). Never fails on DB errors.
     async fn resolve(&self, role: Role, site_id: Option<&str>, policy: DimPolicy) -> Resolved {
+        self.resolve_tier(role, Tier::Main, site_id, policy).await
+    }
+
+    /// Resolves (role, tier): tier chain (site -> global) -> main chain -> env fallback.
+    pub(crate) async fn resolve_tier(
+        &self,
+        role: Role,
+        tier: Tier,
+        site_id: Option<&str>,
+        policy: DimPolicy,
+    ) -> Resolved {
         let site = site_id.map(str::to_string);
         let res = self
             .inner
             .db
-            .read(move |c| resolve::load_active(c, role, site.as_deref()).map_err(sf_store::err))
+            .read(move |c| {
+                resolve::load_active(c, role, tier, site.as_deref()).map_err(sf_store::err)
+            })
             .await;
         let mut skipped = Vec::new();
         match res {
@@ -340,6 +394,7 @@ impl Ai {
             },
             rungs: env,
             skipped,
+            tier: Tier::Main,
         }
     }
 
@@ -366,8 +421,56 @@ impl Ai {
             0.3
         };
         let max_tokens = req.max_tokens.clamp(1, 200_000);
+        let cfg = self.ai_config();
+        let task: String = req
+            .task
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or("chat")
+            .chars()
+            .take(64)
+            .collect();
+        let tier = req
+            .tier
+            .or_else(|| req.task.as_ref().map(|t| Tier::parse(&cfg.tier_for(t))))
+            .unwrap_or(Tier::Main);
+        let meta = AiCallMeta {
+            task,
+            tier,
+            site_id: req.site_id.clone(),
+            run_id: req.run_id.clone(),
+            items: req.items.max(1),
+        };
+        let budget = self.budget(tier, req.site_id.as_deref()).await;
+        if let Some(scope) = budget.exhausted() {
+            return Err(self.budget_exhausted(&meta, &budget, scope));
+        }
+        // v2.4: the workspace plan's monthly AI token quota (same fallback as a daily budget).
+        if let Some(site) = req.site_id.clone() {
+            let q = self
+                .db()
+                .read(move |c| Ok(accounting::workspace_quota(c, &site)))
+                .await
+                .ok()
+                .flatten();
+            if let Some((ws, used, limit)) = q
+                && used >= limit
+            {
+                let mut ev = AiCallEvent::failed(&meta, None, "workspace quota exhausted", 0);
+                ev.provider = "quota".into();
+                self.emit(AiEvent::Call(ev));
+                return Err(AiError::BudgetExhausted(format!(
+                    "monthly AI token quota of workspace {ws} used up ({used} of {limit} tokens)"
+                )));
+            }
+        }
+        let effort = req
+            .reasoning_effort
+            .clone()
+            .unwrap_or_else(|| cfg.reasoning_effort.get(tier.as_str()));
         let resolved = self
-            .resolve(Role::Chat, req.site_id.as_deref(), DimPolicy::Model)
+            .resolve_tier(Role::Chat, tier, req.site_id.as_deref(), DimPolicy::Model)
             .await;
         if resolved.rungs.is_empty() {
             return Err(AiError::NotConfigured(
@@ -379,22 +482,66 @@ impl Ai {
             max_tokens,
             temperature,
             json_mode: req.json_mode,
+            reasoning_effort: Some(effort.as_str()),
         };
-        let (out, rung, idx, latency, fallbacks) = self
-            .execute(Role::Chat, &resolved, &op, self.inner.opts.chat_deadline)
-            .await?;
+        let t0 = Instant::now();
+        let res = self
+            .execute_meta(
+                Role::Chat,
+                &resolved,
+                &op,
+                self.inner.opts.chat_deadline,
+                Some(&meta),
+            )
+            .await;
+        let (out, rung, idx, latency, fallbacks) = match res {
+            Ok(x) => x,
+            Err(e) => {
+                self.emit(AiEvent::Call(AiCallEvent::failed(
+                    &meta,
+                    resolved.rungs.first().map(|r| r.model_id.as_str()),
+                    &e.to_string(),
+                    ms(t0.elapsed()),
+                )));
+                return Err(e);
+            }
+        };
         let Outcome::Chat(parsed) = out else {
             return Err(AiError::InvalidOutput("unexpected outcome".into()));
         };
+        let (tin, tout, estimated) = accounting::chat_tokens(&parsed, &req.messages);
+        let cost = accounting::cost(rung.price_in, rung.price_out, tin, tout);
+        self.emit(AiEvent::Call(AiCallEvent {
+            task: meta.task.clone(),
+            tier: meta.tier,
+            provider: rung.provider_name.clone(),
+            model: rung.model_id.clone(),
+            ok: true,
+            error: None,
+            tokens_in: tin,
+            tokens_out: tout,
+            estimated,
+            cost_usd: cost,
+            cache_hit: false,
+            items: meta.items,
+            fallback_used: fallbacks,
+            rung: idx,
+            latency_ms: latency,
+            site_id: meta.site_id.clone(),
+            run_id: meta.run_id.clone(),
+        }));
         Ok(ChatResponse {
             text: parsed.text,
             provider: rung.provider_name.clone(),
             model: rung.model_id.clone(),
             rung: idx,
             latency_ms: latency,
-            tokens_in: parsed.tokens_in,
-            tokens_out: parsed.tokens_out,
+            tokens_in: Some(tin),
+            tokens_out: Some(tout),
             fallbacks_used: fallbacks,
+            tier: resolved.tier,
+            tokens_estimated: estimated,
+            cost_usd: cost,
         })
     }
 
@@ -480,7 +627,13 @@ impl Ai {
         }
         let op = Op::Embed { texts, policy };
         let (out, rung, idx, latency, fallbacks) = self
-            .execute(Role::Embed, &resolved, &op, self.inner.opts.embed_deadline)
+            .execute_meta(
+                Role::Embed,
+                &resolved,
+                &op,
+                self.inner.opts.embed_deadline,
+                None,
+            )
             .await?;
         let Outcome::Embed(vectors, tokens_in) = out else {
             return Err(AiError::InvalidOutput("unexpected outcome".into()));
@@ -496,13 +649,14 @@ impl Ai {
         })
     }
 
-    /// The fallback engine shared by chat and embed.
-    async fn execute<'r>(
+    /// The fallback engine shared by chat and embed. `meta` = v2.3 accounting of chat calls.
+    async fn execute_meta<'r>(
         &self,
         role: Role,
         resolved: &'r Resolved,
         op: &Op<'_>,
         deadline: Duration,
+        meta: Option<&AiCallMeta>,
     ) -> Result<(Outcome, &'r Rung, usize, u64, usize), AiError> {
         let started = Instant::now();
         let deadline_at = started + deadline;
@@ -541,7 +695,16 @@ impl Ai {
                 match res {
                     Ok((out, status)) => {
                         breakers.success(&bkey);
-                        let (tin, tout) = out.tokens();
+                        let (tin, tout, estimated) = match (&out, op) {
+                            (Outcome::Chat(p), Op::Chat { messages, .. }) => {
+                                let (i, o, e) = accounting::chat_tokens(p, messages);
+                                (Some(i), Some(o), e)
+                            }
+                            _ => {
+                                let (i, o) = out.tokens();
+                                (i, o, false)
+                            }
+                        };
                         self.log_call(
                             rung,
                             role,
@@ -552,6 +715,8 @@ impl Ai {
                             tin,
                             tout,
                             None,
+                            meta,
+                            estimated,
                         )
                         .await;
                         if idx > 0 {
@@ -567,9 +732,11 @@ impl Ai {
                             false,
                             f.status,
                             latency,
-                            None,
-                            None,
+                            meta.map(|_| 0),
+                            meta.map(|_| 0),
                             Some(&f.msg),
+                            meta,
+                            false,
                         )
                         .await;
                         if f.health {
@@ -638,10 +805,12 @@ impl Ai {
                 max_tokens,
                 temperature,
                 json_mode,
+                reasoning_effort,
             } => {
-                let req =
+                let mut req =
                     adapters::chat_request(rung, messages, *max_tokens, *temperature, *json_mode)
                         .map_err(|m| Failure::config(format!("{label}: {m}")))?;
+                adapters::apply_reasoning_effort(rung, &mut req, *reasoning_effort);
                 let (status, body) = http::send(&self.inner.client, &req, timeout)
                     .await
                     .map_err(|e| map_send_error(&label, e))?;
@@ -729,18 +898,38 @@ impl Ai {
         tokens_in: Option<i64>,
         tokens_out: Option<i64>,
         error: Option<&str>,
+        meta: Option<&AiCallMeta>,
+        estimated: bool,
     ) {
         let model_row_id = rung.model_row_id.clone();
         let chain_id = rung.chain_id.clone();
         let provider = rung.provider_name.clone();
+        let model_id = rung.model_id.clone();
         let error = error.map(|e| truncate(e, 500));
         let rung_idx = i64::try_from(idx).unwrap_or(i64::MAX);
         let latency = i64::try_from(latency_ms).unwrap_or(i64::MAX);
+        let cost = accounting::cost(
+            rung.price_in,
+            rung.price_out,
+            tokens_in.unwrap_or(0),
+            tokens_out.unwrap_or(0),
+        );
+        let (task, tier, site_id, run_id, items) = match meta {
+            Some(m) => (
+                Some(m.task.clone()),
+                Some(m.tier.as_str()),
+                m.site_id.clone(),
+                m.run_id.clone(),
+                i64::from(m.items.max(1)),
+            ),
+            None => (None, None, None, None, 1),
+        };
         let fut = self.inner.db.write(move |tx| {
             tx.execute(
                 "INSERT INTO model_call_log
-                   (model_row_id, chain_id, provider, role, rung, ok, status_code, latency_ms, tokens_in, tokens_out, error)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                   (model_row_id, chain_id, provider, role, rung, ok, status_code, latency_ms, tokens_in, tokens_out, error,
+                    task, tier, site_id, run_id, cache_hit, cost_usd, estimated, items, model_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, ?16, ?17, ?18, ?19)",
                 params![
                     model_row_id,
                     chain_id,
@@ -752,7 +941,15 @@ impl Ai {
                     latency,
                     tokens_in,
                     tokens_out,
-                    error
+                    error,
+                    task,
+                    tier,
+                    site_id,
+                    run_id,
+                    cost,
+                    estimated,
+                    items,
+                    model_id
                 ],
             )
             .map_err(sf_store::err)?;

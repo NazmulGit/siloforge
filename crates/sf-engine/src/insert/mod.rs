@@ -22,7 +22,7 @@ pub use llm::{
 };
 pub use splice::{
     InsertOutcome, InsertRequest, append_to_paragraph, count_links, insert_link, locate_paragraph,
-    remove_link, replace_paragraph, urls_match, validate_target_url, verify_link,
+    remove_link, replace_link, replace_paragraph, urls_match, validate_target_url, verify_link,
 };
 
 /// Typed insertion errors.

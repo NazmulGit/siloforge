@@ -26,6 +26,8 @@ pub struct Config {
     pub wordpress: WordpressCfg,
     /// Release downloads offered by `GET /api/v2/downloads` (v2.1).
     pub downloads: DownloadsCfg,
+    /// AI task tiers, batching, cache, budgets and "Always use AI" (v2.3).
+    pub ai: AiCfg,
     /// Never serialised (secret), see [`GscCfg`].
     #[serde(skip_serializing)]
     pub gsc: GscCfg,
@@ -261,6 +263,174 @@ impl Default for WordpressCfg {
     }
 }
 
+/// AI tasks (v2.3, `docs/specs/v2.3-ai-tiers.md`).
+pub mod ai_tasks {
+    pub const ANCHOR_PICK: &str = "anchor_pick";
+    pub const RELEVANCE_CHECK: &str = "relevance_check";
+    pub const LINK_VERIFY_JUDGE: &str = "link_verify_judge";
+    pub const REPHRASE: &str = "rephrase";
+    pub const CONTEXT_SENTENCE: &str = "context_sentence";
+    pub const REPAIR_INSERT: &str = "repair_insert";
+    pub const MONEY_PAGE: &str = "money_page";
+    pub const PRIORITY: &str = "priority";
+    /// Every task with its default tier.
+    pub const DEFAULTS: &[(&str, &str)] = &[
+        (ANCHOR_PICK, "low"),
+        (RELEVANCE_CHECK, "low"),
+        (LINK_VERIFY_JUDGE, "low"),
+        (REPHRASE, "main"),
+        (CONTEXT_SENTENCE, "main"),
+        (REPAIR_INSERT, "main"),
+        (MONEY_PAGE, "high"),
+        (PRIORITY, "high"),
+    ];
+    pub const TIERS: &[&str] = &["low", "main", "high"];
+    pub const EFFORTS: &[&str] = &["none", "low", "medium", "high"];
+}
+
+/// Heuristic confidence above which no AI call is made.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AiConfidenceSkip {
+    pub anchor: f64,
+    pub relevance: f64,
+}
+
+impl Default for AiConfidenceSkip {
+    fn default() -> Self {
+        Self {
+            anchor: 0.85,
+            relevance: 0.80,
+        }
+    }
+}
+
+/// Per-tier values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PerTier<T> {
+    pub low: T,
+    pub main: T,
+    pub high: T,
+}
+
+impl<T: Clone> PerTier<T> {
+    pub fn get(&self, tier: &str) -> T {
+        match tier {
+            "low" => self.low.clone(),
+            "high" => self.high.clone(),
+            _ => self.main.clone(),
+        }
+    }
+    pub fn set(&mut self, tier: &str, v: T) {
+        match tier {
+            "low" => self.low = v,
+            "high" => self.high = v,
+            _ => self.main = v,
+        }
+    }
+}
+
+impl Default for PerTier<u64> {
+    fn default() -> Self {
+        Self {
+            low: 2_000_000,
+            main: 1_000_000,
+            high: 300_000,
+        }
+    }
+}
+
+impl Default for PerTier<String> {
+    fn default() -> Self {
+        Self {
+            low: "low".into(),
+            main: "low".into(),
+            high: "medium".into(),
+        }
+    }
+}
+
+/// Daily token budgets (UTC day, tokens in + out; 0 = unlimited).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AiBudget {
+    pub daily_tokens: PerTier<u64>,
+    pub per_site_daily_tokens: u64,
+}
+
+impl Default for AiBudget {
+    fn default() -> Self {
+        Self {
+            daily_tokens: PerTier::default(),
+            per_site_daily_tokens: 300_000,
+        }
+    }
+}
+
+/// `[ai]` (v2.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AiCfg {
+    /// "Always use AI for perfect linking": AI anchor/relevance checks on every plan and run.
+    pub always_on: bool,
+    /// task -> tier (missing tasks use [`ai_tasks::DEFAULTS`]).
+    pub task_tiers: std::collections::BTreeMap<String, String>,
+    /// Edges per batched low-tier request.
+    pub batch_size: usize,
+    pub confidence_skip: AiConfidenceSkip,
+    pub budget: AiBudget,
+    /// 0 = cache off.
+    pub cache_ttl_days: u32,
+    /// Per tier: `none` | `low` | `medium` | `high`.
+    pub reasoning_effort: PerTier<String>,
+}
+
+impl Default for AiCfg {
+    fn default() -> Self {
+        Self {
+            always_on: false,
+            task_tiers: ai_tasks::DEFAULTS
+                .iter()
+                .map(|(t, v)| ((*t).to_string(), (*v).to_string()))
+                .collect(),
+            batch_size: 20,
+            confidence_skip: AiConfidenceSkip::default(),
+            budget: AiBudget::default(),
+            cache_ttl_days: 30,
+            reasoning_effort: PerTier::default(),
+        }
+    }
+}
+
+impl AiCfg {
+    /// The tier a task runs on (configured, else its default, else `main`).
+    pub fn tier_for(&self, task: &str) -> String {
+        if let Some(t) = self.task_tiers.get(task)
+            && ai_tasks::TIERS.contains(&t.as_str())
+        {
+            return t.clone();
+        }
+        ai_tasks::DEFAULTS
+            .iter()
+            .find(|(t, _)| *t == task)
+            .map(|(_, v)| (*v).to_string())
+            .unwrap_or_else(|| "main".into())
+    }
+
+    /// Every known task with its effective tier (for the settings document).
+    pub fn effective_task_tiers(&self) -> std::collections::BTreeMap<String, String> {
+        ai_tasks::DEFAULTS
+            .iter()
+            .map(|(t, _)| ((*t).to_string(), self.tier_for(t)))
+            .collect()
+    }
+
+    pub fn batch(&self) -> usize {
+        self.batch_size.clamp(1, 50)
+    }
+}
+
 /// Where release zips are listed from.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -283,6 +453,7 @@ impl Default for Config {
             monitor: MonitorCfg::default(),
             wordpress: WordpressCfg::default(),
             downloads: DownloadsCfg::default(),
+            ai: AiCfg::default(),
             gsc: GscCfg::default(),
         }
     }

@@ -1,6 +1,10 @@
 //! MCP server configuration. Env var names are identical to the v1 Node server so the Hermes
 //! `config.yaml` entries keep working; prefer `SILOFORGE_TOKEN` (a revocable `sfk_...` API token)
 //! over the legacy email/password pair (fixes R1: plaintext admin password in agent configs).
+//!
+//! v2.4: `SILOFORGE_WORKSPACE` (optional, a workspace id such as `default` or `ws-<id>`) is sent as
+//! `X-SiloForge-Workspace` on every REST call, so list routes are scoped to that workspace and
+//! creates land in it. Unset = no header = the server's default (pre-2.4 behaviour).
 
 use std::fmt;
 use std::time::Duration;
@@ -34,6 +38,9 @@ pub struct McpConfig {
     /// How long an effective MCP tool policy (`GET /api/v2/mcp/policy/effective`) stays cached
     /// per identity before it is fetched again.
     pub policy_ttl: Duration,
+    /// `SILOFORGE_WORKSPACE`: workspace id sent as `X-SiloForge-Workspace` on every REST call.
+    /// Only `[A-Za-z0-9_-]{1,128}` is accepted; anything else is ignored with a warning.
+    pub workspace: Option<String>,
 }
 
 impl Default for McpConfig {
@@ -49,12 +56,14 @@ impl Default for McpConfig {
             min_poll: Duration::from_secs(2),
             http_allowed_hosts: Vec::new(),
             policy_ttl: Duration::from_secs(60),
+            workspace: None,
         }
     }
 }
 
 impl McpConfig {
-    /// Reads `SILOFORGE_API_URL`, `SILOFORGE_TOKEN`, `SILOFORGE_EMAIL`, `SILOFORGE_PASSWORD`.
+    /// Reads `SILOFORGE_API_URL`, `SILOFORGE_TOKEN`, `SILOFORGE_EMAIL`, `SILOFORGE_PASSWORD`,
+    /// `SILOFORGE_WORKSPACE`.
     pub fn from_env() -> Self {
         Self::from_lookup(|k| std::env::var(k).ok())
     }
@@ -80,6 +89,16 @@ impl McpConfig {
             cfg.email = email;
         }
         cfg.password = nonempty("SILOFORGE_PASSWORD");
+        cfg.workspace = nonempty("SILOFORGE_WORKSPACE").and_then(|w| {
+            if is_workspace_id(&w) {
+                Some(w)
+            } else {
+                tracing::warn!(
+                    "SILOFORGE_WORKSPACE ignored: a workspace id may only contain A-Z, a-z, 0-9, `_` and `-` (max 128)"
+                );
+                None
+            }
+        });
         cfg
     }
 
@@ -95,6 +114,14 @@ impl McpConfig {
     }
 }
 
+/// `[A-Za-z0-9_-]{1,128}`: safe as an HTTP header value and as a path segment.
+pub fn is_workspace_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 impl fmt::Debug for McpConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("McpConfig")
@@ -103,6 +130,7 @@ impl fmt::Debug for McpConfig {
             .field("email", &self.email)
             .field("token", &self.token.as_ref().map(|_| "***"))
             .field("password", &self.password.as_ref().map(|_| "***"))
+            .field("workspace", &self.workspace)
             .finish_non_exhaustive()
     }
 }
@@ -134,5 +162,30 @@ mod tests {
         assert_eq!(cfg.auth_mode(), "password");
         let dbg = format!("{cfg:?}");
         assert!(!dbg.contains("hunter2"));
+        assert_eq!(cfg.workspace, None);
+    }
+
+    #[test]
+    fn workspace_env_is_validated() {
+        let with = |v: &'static str| {
+            McpConfig::from_lookup(move |k| (k == "SILOFORGE_WORKSPACE").then(|| v.to_string()))
+                .workspace
+        };
+        assert_eq!(with(" ws-abc_1 ").as_deref(), Some("ws-abc_1"));
+        assert_eq!(with("default").as_deref(), Some("default"));
+        for bad in [
+            "",
+            "  ",
+            "a b",
+            "x\r\nX-Evil: 1",
+            "../x",
+            "日本",
+            "w".repeat(129).as_str(),
+        ] {
+            let bad = bad.to_string();
+            let got = McpConfig::from_lookup(|k| (k == "SILOFORGE_WORKSPACE").then(|| bad.clone()))
+                .workspace;
+            assert_eq!(got, None, "{bad:?}");
+        }
     }
 }

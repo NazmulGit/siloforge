@@ -32,6 +32,12 @@ Edit a token: you can change its **name**, **scopes** and **expiry** later. A ch
 never get more rights than the token or user that created it, and only admins can grant `admin` or `*`. Revoking a
 token also revokes the tokens it created. The table shows **Last used** so you can spot unused tokens.
 
+**Workspace tokens (2.4).** Every token belongs to a [workspace](workspaces-and-members): the one that was current
+when you created it (existing tokens belong to the Default workspace). Workspace admins manage them in
+**Workspace → Settings → API tokens**. A normal user's token only reaches the sites of its workspace, with the
+user's role there. A platform admin's token keeps access to everything, so an existing Hermes setup keeps working.
+Each token counts towards the workspace's [plan](plans-and-usage) limit.
+
 > **Warning:** If a token leaks, revoke it at once. To end every session as well, an admin can call
 > `POST /api/v2/auth/logout-all`; it also revokes your API tokens.
 
@@ -63,6 +69,9 @@ Setup for a Hermes profile:
 
 4. Start a new agent session and ask it to call `siloforge_capabilities`, then `siloforge_list_sites`.
 
+To point an agent at one workspace, add `SILOFORGE_WORKSPACE: <workspace id>` to `env`. It is sent as the
+`X-SiloForge-Workspace` header on every call, so lists show only that workspace and new sites are created there.
+
 ## 3. What the agent can do
 
 Ask the agent to start with **`siloforge_capabilities`**: it returns the tool catalogue grouped by area, with usage
@@ -85,6 +94,13 @@ this guide with `siloforge_docs_list` and `siloforge_docs_get`.
 | Backups and notifications | create, list, verify, delete backups; channels, test, read notifications | admin |
 | Tokens and MCP policy | list, create, change scopes, revoke; get and update the policy | admin |
 | Logs, docs, downloads | `siloforge_logs_query`, docs, download list | read |
+| Link Runs (2.2) | `siloforge_opportunities`, `siloforge_link_run_create`, `siloforge_link_run_status`, `siloforge_link_run_items`, `siloforge_link_run_select`, `siloforge_link_run_verify`; `siloforge_link_run_deploy`, `siloforge_link_run_repair`, `siloforge_link_run_undo` (confirm) | read / write |
+| Auto-Linker (2.2) | `siloforge_auto_linker_get`, `siloforge_auto_linker_update`, `siloforge_auto_linker_run_now` | read / write |
+| AI tiers and usage (2.3) | `siloforge_ai_usage`, `siloforge_ai_settings_get`, `siloforge_ai_settings_update`, `siloforge_link_run_estimate` | read / admin |
+| Workspaces and plans (2.4) | `siloforge_workspaces_list`, `siloforge_workspace_usage`, `siloforge_plans_list` | read |
+| Admin console (2.4, platform admins) | `siloforge_admin_overview`, `siloforge_admin_users_*`, `siloforge_admin_workspaces_*` | admin |
+
+See [Link Runs](link-runs) and [Auto-Linker](auto-linker) for what the options and statuses mean.
 
 The 28 tool names from 2.0 are unchanged, so existing skills and kanban cards keep working.
 
@@ -108,6 +124,10 @@ The 28 tool names from 2.0 are unchanged, so existing skills and kanban cards ke
   report tools). Empty means "all tools its scopes allow".
 - **HTTP endpoint on/off**: turn off `/mcp` over HTTP if you only use stdio.
 - **Stats**: calls and errors per tool in the last 24 hours, and when each was last called.
+
+**Per workspace (2.4).** Each workspace has its own MCP policy in **Workspace → Settings → MCP policy** (admins);
+the Default workspace's policy is the one on this page. The HTTP endpoint switch stays platform-wide. On a plan
+without MCP (for example Free) agents using that workspace's tokens see no tools. See [Plans and usage](plans-and-usage).
 
 ### The raw API tool
 
@@ -140,6 +160,19 @@ Create an `audit` schedule per site (or run one), wait with `siloforge_wait_for_
 `siloforge_list_edges` → `siloforge_anchor_report` → (you reply) → `siloforge_edit_anchor` as needed →
 `siloforge_bulk_decide(decision="approved")` → `siloforge_bulk_inject(edge_ids=[...], confirm=true)` →
 `siloforge_wait_for_job` → `siloforge_link_history`
+
+**Weekly auto-linking with review (Link Runs)**
+> "Every Monday, start a Link Run on example.com with in-text, semantic, keyword rules and orphan rescue, mode
+> reverse, min score 0.6, max 3 new links per post, max 60 in total. When it is ready, send me the links grouped by
+> post. Untick the ones I reject, deploy the rest after I confirm, then report applied / failed / not present with
+> the Open links, and run Apply properly on anything that failed."
+
+`siloforge_opportunities` → `siloforge_link_run_create(options={...})` → `siloforge_link_run_status` (until `ready`) →
+`siloforge_link_run_items(group="post")` → (you reply) → `siloforge_link_run_select(edge_ids=[...], deselect=true)` →
+`siloforge_link_run_deploy(confirm=true)` → `siloforge_link_run_status` → `siloforge_link_run_items(status="failed")` →
+`siloforge_link_run_repair(confirm=true)` → summary with each item's `open_url`.
+To let SiloForge prepare the run itself, the agent can instead set a dry-run schedule with
+`siloforge_auto_linker_update(enabled=true, cron="0 3 * * 1", live=false)` and only review and deploy the ready run.
 
 **Fix broken links**
 > "Run an internal link-health check on example.com and give me a table of broken links and redirect chains, with the

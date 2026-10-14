@@ -29,7 +29,7 @@ Legend: [x] done · [~] in progress (agent) · [ ] open. Details: docs/PLAN.md. 
 - [x] Migrate v1 data into a test home; verify counts + embedding samples
 - [x] Side-by-side run on 8610/8611; JSON diff vs v1 for UI + MCP endpoints
 - [x] Pilot one site end to end (crawl → plan → approve → inject on a test WP → verify → undo)
-- [x] Perf: CPU/RAM v1 vs v2 on site24 (112k paragraphs) plan; report
+- [x] Perf: CPU/RAM v1 vs v2 on site30 (112k paragraphs) plan; report
 - [x] Linking accuracy test (golden set + spot checks)
 - [x] Security/code audit by review agents; fix findings
 - [x] Cutover to 8600/8601; v1 containers stopped (kept for rollback); autostart task

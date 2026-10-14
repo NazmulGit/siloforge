@@ -396,10 +396,100 @@ fn hostile_input_never_panics() {
         let _ = rephrase_prompt(c, c, c, c);
         let _ = context_prompt(c, c, c, c);
         let _ = strip_code_fences(c);
+        let _ = replace_link(c, URL, URL, Some(c), Some(usize::MAX));
+        let _ = replace_link(c, c, URL, None, None);
     }
     let big = "x".repeat(html::MAX_HTML_BYTES + 1);
     assert_eq!(
         remove_link(&big, URL, "x", None),
         Err(InsertError::TooLarge)
+    );
+}
+
+#[test]
+fn replace_link_swaps_only_the_href_and_reverts_byte_for_byte() {
+    let raw = "<!-- wp:paragraph -->
+<p>Read <a class=\"x\" HREF='https://example.com/old-lock/' rel=\"noopener\">our <b>lock</b> guide</a> and <a href=\"https://example.com/old-lock/\">old</a>.</p>
+<!-- /wp:paragraph -->";
+    let out = replace_link(
+        raw,
+        "https://example.com/old-lock/",
+        URL,
+        Some("our lock guide"),
+        None,
+    )
+    .unwrap();
+    assert!(out.content.contains(&format!(
+        "HREF='{URL}' rel=\"noopener\">our <b>lock</b> guide</a>"
+    )));
+    // the second link (other text) is untouched
+    assert!(
+        out.content
+            .contains("<a href=\"https://example.com/old-lock/\">old</a>")
+    );
+    assert_eq!(out.wrapped, "https://example.com/old-lock/");
+    assert!(out.content[out.link_start..].starts_with("<a class"));
+    assert!(out.content[..out.link_end].ends_with("</a>"));
+    assert_eq!(count_links(&out.content, URL, "our lock guide"), 1);
+    // and back
+    let back = replace_link(
+        &out.content,
+        URL,
+        &out.wrapped,
+        Some("our lock guide"),
+        Some(out.link_start),
+    )
+    .unwrap();
+    assert_eq!(back.content, raw);
+    // anchor that matches nothing falls back to the first link with that href
+    let any = replace_link(raw, "https://example.com/old-lock", URL, Some("zzz"), None).unwrap();
+    assert!(any.content.contains(&format!("HREF='{URL}'")));
+    // unquoted values and missing links
+    let unq = "<p><a href=/old/ id=1>x</a></p>";
+    let o = replace_link(unq, "/old/", "/new/", None, None).unwrap();
+    assert_eq!(o.content, "<p><a href=/new/ id=1>x</a></p>");
+    assert_eq!(
+        replace_link(unq, "/nope/", "/new/", None, None),
+        Err(InsertError::LinkNotFound)
+    );
+    assert_eq!(
+        replace_link(unq, "/old/", "javascript:alert(1)", None, None),
+        Err(InsertError::InvalidUrl)
+    );
+    // `data-href` is not the href
+    let tricky = "<p><a data-href=\"/old/\" href=\"/old/\">x</a></p>";
+    let o = replace_link(tricky, "/old/", "/new/", None, None).unwrap();
+    assert_eq!(
+        o.content,
+        "<p><a data-href=\"/old/\" href=\"/new/\">x</a></p>"
+    );
+}
+
+#[test]
+fn append_to_a_list_goes_inside_the_last_item() {
+    // E2E 2.2: a context sentence landed between `</li>` and `</ul>`
+    let raw = format!(
+        "<ul><li>{}</li><li>{}</li></ul>",
+        pad("Strong straps keep the helmet stable."),
+        pad("Bright colours help in traffic during commutes or trail use.")
+    );
+    let paras = html::paragraphs(&raw, SplitMode::Prose).unwrap();
+    let (i, p) = paras
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, p)| p.text.contains("trail use"))
+        .unwrap();
+    let app = append_to_paragraph(
+        &raw,
+        i,
+        &p.hash,
+        "See <a href=\"/x\">this</a>.",
+        SplitMode::Prose,
+    )
+    .unwrap();
+    assert!(
+        app.ends_with("long enough. See <a href=\"/x\">this</a>.</li></ul>"),
+        "{app}"
     );
 }
